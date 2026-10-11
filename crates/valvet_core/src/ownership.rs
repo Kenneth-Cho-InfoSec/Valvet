@@ -222,6 +222,7 @@ fn number_uses(
                 ExprKind::AddrOf { expr, .. } => self.walk_expr(expr),
                 ExprKind::Assign { target, value, .. } => {
                     Self::walk_place_static(target, &mut self.last_use, self.next);
+                    Self::walk_place_idx(target, self);
                     self.walk_expr(value);
                 }
                 ExprKind::If {
@@ -254,6 +255,10 @@ fn number_uses(
                 }
                 ExprKind::Field { base, .. } => self.walk_expr(base),
                 ExprKind::OptField { base, .. } => self.walk_expr(base),
+                ExprKind::Index { base, idx } => {
+                    self.walk_expr(base);
+                    self.walk_expr(idx);
+                }
                 ExprKind::Variant { args, .. } => {
                     for a in args {
                         self.walk_expr(a);
@@ -274,6 +279,19 @@ fn number_uses(
                 }
                 Place::Field { base, .. } => Self::walk_place_static(base, last_use, cur),
                 Place::Deref { inner, .. } => Self::walk_place_static(inner, last_use, cur),
+                Place::Index { base, .. } => Self::walk_place_static(base, last_use, cur),
+            }
+        }
+        /// Index expressions inside places read like ordinary expressions.
+        fn walk_place_idx(target: &Place, w: &mut W) {
+            match target {
+                Place::Var(_, _) => {}
+                Place::Field { base, .. } => Self::walk_place_idx(base, w),
+                Place::Deref { inner, .. } => Self::walk_place_idx(inner, w),
+                Place::Index { base, idx, .. } => {
+                    Self::walk_place_idx(base, w);
+                    w.walk_expr(idx);
+                }
             }
         }
     }
@@ -440,6 +458,10 @@ impl<'a> Cx<'a> {
                 p.push(field.clone());
                 (r, p)
             }
+            // Indices are runtime values: an element place overlaps the
+            // whole vector (conservative; disjoint indices are not
+            // distinguished).
+            Place::Index { base, .. } => self.resolve_place(base),
             Place::Deref { inner, .. } => {
                 // Reborrow through the holder's loan. The holder is the RAW
                 // root variable (no auto-deref: `*mb` looks up loans held by
@@ -463,12 +485,26 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// Index expressions inside a place (read in borrow position).
+    fn place_indices<'p>(target: &'p Place, out: &mut Vec<&'p Expr>) {
+        match target {
+            Place::Index { base, idx, .. } => {
+                Self::place_indices(base, out);
+                out.push(idx);
+            }
+            Place::Field { base, .. } => Self::place_indices(base, out),
+            Place::Deref { inner, .. } => Self::place_indices(inner, out),
+            Place::Var(_, _) => {}
+        }
+    }
+
     /// Raw root variable of a place (no loan-region resolution).
     fn raw_root(target: &Place) -> Option<String> {
         match target {
             Place::Var(n, _) => Some(n.clone()),
             Place::Field { base, .. } => Self::raw_root(base),
             Place::Deref { inner, .. } => Self::raw_root(inner),
+            Place::Index { base, .. } => Self::raw_root(base),
         }
     }
 
@@ -569,6 +605,7 @@ impl<'a> Cx<'a> {
             }
             Place::Field { base, .. } => Self::collect_target_holders(base, out),
             Place::Deref { inner, .. } => Self::collect_target_holders(inner, out),
+            Place::Index { base, .. } => Self::collect_target_holders(base, out),
         }
     }
 
@@ -580,6 +617,7 @@ impl<'a> Cx<'a> {
                 format!("{}.{}", Self::describe_target(base), field)
             }
             Place::Deref { inner, .. } => format!("*{}", Self::describe_target(inner)),
+            Place::Index { base, .. } => format!("{}[_]", Self::describe_target(base)),
         }
     }
 
@@ -612,9 +650,14 @@ impl<'a> Cx<'a> {
                         }
                         Place::Field { base: b, .. } => root = b,
                         Place::Deref { .. } => break,
+                        // Element writes keep base move state: the vector
+                        // itself is neither moved nor restored.
+                        Place::Index { .. } => break,
                     }
                 }
             }
+            // Element writes keep base move state (see above).
+            Place::Index { .. } => {}
             Place::Deref { .. } => {}
         }
     }
@@ -1066,6 +1109,10 @@ impl<'a> Cx<'a> {
                 }
             }
             ExprKind::Field { base, .. } => Self::collect_ref_vars(base, cx, out),
+            ExprKind::Index { base, idx } => {
+                Self::collect_ref_vars(base, cx, out);
+                Self::collect_ref_vars(idx, cx, out);
+            }
             ExprKind::OptField { base, .. } => Self::collect_ref_vars(base, cx, out),
             ExprKind::Variant { args, .. } => {
                 for a in args {
@@ -1495,6 +1542,12 @@ impl<'a> Cx<'a> {
                 // Conversions borrow (all convertible types are `Copy` anyway).
                 self.check_expr(expr, false);
             }
+            ExprKind::Index { base, idx } => {
+                // Element reads never move out (codegen clones owned
+                // elements, exactly like `get`); both sides borrow.
+                self.check_expr(base, false);
+                self.check_expr(idx, false);
+            }
             ExprKind::StructLit { fields, .. } => {
                 // Literal construction consumes non-Copy field values (like args).
                 for (_, _, fexpr) in fields {
@@ -1645,11 +1698,31 @@ impl<'a> Cx<'a> {
             ExprKind::Assign { target, value, .. } => {
                 let moves = self.moves_ty(value.id);
                 self.check_expr(value, moves);
+                // Index expressions read in borrow position; writing
+                // through an index of a moved-away base is E0301.
+                let mut idxs = vec![];
+                Self::place_indices(target, &mut idxs);
+                for ix in &idxs {
+                    self.check_expr(ix, false);
+                }
                 // Resolve the target place and check write conflicts: any live
                 // loan on an overlapping place forbids the write, except loans
                 // held by vars in the target's own deref chain (writing
                 // through the loan itself, e.g. `*r = v`).
                 let (root, path) = self.resolve_place(target);
+                if !idxs.is_empty() && self.place_moved(&root, &path) {
+                    self.errs.push(
+                        Diagnostic::error(
+                            "E0301",
+                            value.span,
+                            format!(
+                                "cannot assign into moved `{}`",
+                                Self::describe_target(target)
+                            ),
+                        )
+                        .with_help("the vector was moved away; clone it before moving".to_string()),
+                    );
+                }
                 let mut chain = vec![];
                 Self::collect_target_holders(target, &mut chain);
                 let conflicts: Vec<usize> = self

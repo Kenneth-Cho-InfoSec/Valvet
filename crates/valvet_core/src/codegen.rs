@@ -63,6 +63,35 @@ static int vstr_eq(VStr a, VStr b) {
     if (alen == 0) return 1;
     return memcmp(a.s, b.s, (size_t)alen) == 0;
 }
+/// J1 conversions + string kernels (all allocate fresh owned values).
+static VStr vstr_from_i32(int32_t v) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%" PRId32, v);
+    return vstr_from_c(buf);
+}
+static VStr vstr_from_i64(int64_t v) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%" PRId64, v);
+    return vstr_from_c(buf);
+}
+static VStr vstr_from_f64(double v) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%.17g", v);
+    return vstr_from_c(buf);
+}
+static VStr vstr_from_bool(int v) {
+    return vstr_from_c(v ? "true" : "false");
+}
+static VStr vstr_trim(VStr v) {
+    int64_t a = 0, b = v.s ? v.len : 0;
+    while (a < b && (v.s[a] == ' ' || v.s[a] == '\t' || v.s[a] == '\n' || v.s[a] == '\r')) a++;
+    while (b > a && (v.s[b - 1] == ' ' || v.s[b - 1] == '\t' || v.s[b - 1] == '\n' || v.s[b - 1] == '\r')) b--;
+    char *p = (char *)malloc((size_t)(b - a) + 1);
+    if (!p) { fprintf(stderr, "alloc error\n"); abort(); }
+    if (b > a) memcpy(p, v.s + a, (size_t)(b - a));
+    p[b - a] = '\0';
+    return (VStr){p, b - a};
+}
 /// Element formatters (no trailing newline; composite `vfmt_` helpers call
 /// these per element, and top-level `vprint_` wraps them with `"\n"`).
 static void vfmt_i32(int32_t v) { printf("%" PRId32, v); }
@@ -1029,6 +1058,8 @@ impl<'a> Gen<'a> {
                 self.emit_inst_clone(&base, &args)?;
             }
         }
+        // J1 string kernels (need vec/union layouts above to exist).
+        self.emit_str_kernels()?;
         // `println` format helpers, gated on printed instantiations (sorted
         // for reproducibility; protos first — formatters call each other).
         let mut pkeys: Vec<String> = self.print_insts.iter().cloned().collect();
@@ -1057,6 +1088,112 @@ impl<'a> Gen<'a> {
             self.emit_print_fmt(&base, &args)?;
         }
         Ok(())
+    }
+
+    /// J1 string kernels over the generated vec/union layouts above.
+    /// Each emits only when its result instantiation was recorded.
+    fn emit_str_kernels(&mut self) -> Result<(), Ice> {
+        if self.has_inst("Vec", &[Ty::Str]) {
+            let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Str));
+            let iname = iname_of(&vct);
+            self.out.push_str(&format!(
+                concat!(
+                    "static {vct} vstr_split(VStr v, VStr d) {{",
+                    "{vct} out = vvec_{iname}_new();",
+                    "char sep = (d.s && d.len > 0) ? d.s[0] : '\\0';",
+                    "int64_t n = v.s ? v.len : 0;int64_t start = 0;",
+                    "for (int64_t i = 0; i <= n; ++i) {{",
+                    "if (i == n || (sep != '\\0' && v.s[i] == sep)) {{",
+                    "int64_t len = i - start;",
+                    "char *p = (char *)malloc((size_t)len + 1);",
+                    "if (!p) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "if (len) memcpy(p, v.s + start, (size_t)len);p[len] = '\\0';",
+                    "vvec_{iname}_push(&out, (VStr){{p, len}});start = i + 1;",
+                    "}}}}return out;}}\n"
+                ),
+                vct = vct,
+                iname = iname
+            ));
+        }
+        if self.has_inst("Option", &[Ty::Int64]) {
+            let oct = ctype_inst("Option", std::slice::from_ref(&Ty::Int64));
+            let none = format!("({oct}){{ .tag = 1 }}", oct = oct);
+            let some = |x: &str| {
+                format!(
+                    "({oct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    oct = oct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {oct} vstr_parse_int(VStr v) {{",
+                    "int64_t n = v.s ? v.len : 0;int64_t i = 0;int neg = 0;",
+                    "if (i < n && (v.s[i] == '+' || v.s[i] == '-')) {{ neg = (v.s[i] == '-'); i++; }}",
+                    "if (i >= n) return {none};",
+                    "uint64_t acc = 0;",
+                    "for (; i < n; i++) {{",
+                    "if (v.s[i] < '0' || v.s[i] > '9') return {none};",
+                    "unsigned d = (unsigned)(v.s[i] - '0');",
+                    "if (acc > (18446744073709551615ULL - d) / 10) return {none};",
+                    "acc = acc * 10 + d;}}",
+                    "if (!neg && acc > 9223372036854775807ULL) return {none};",
+                    "if (neg && acc > 9223372036854775808ULL) return {none};",
+                    "int64_t val = neg ? (int64_t)(~acc + 1) : (int64_t)acc;",
+                    "return {some};}}\n"
+                ),
+                oct = oct,
+                none = none,
+                some = some("val")
+            ));
+        }
+        if self.has_inst("Option", &[Ty::Float64]) {
+            let oct = ctype_inst("Option", std::slice::from_ref(&Ty::Float64));
+            let none = format!("({oct}){{ .tag = 1 }}", oct = oct);
+            let some = |x: &str| {
+                format!(
+                    "({oct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    oct = oct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {oct} vstr_parse_float(VStr v) {{",
+                    "int64_t n = v.s ? v.len : 0;",
+                    "if (n == 0) return {none};",
+                    "char *p = (char *)malloc((size_t)n + 1);",
+                    "if (!p) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "memcpy(p, v.s, (size_t)n);p[n] = '\\0';",
+                    "char *end = 0;double d = strtod(p, &end);",
+                    "int ok = (end != p && *end == '\\0');free(p);",
+                    "if (!ok) return {none};",
+                    "return {some};}}\n"
+                ),
+                oct = oct,
+                none = none,
+                some = some("d")
+            ));
+        }
+        Ok(())
+    }
+
+    /// J1 `String` methods (sema checked name/arity/types; receiver borrows).
+    fn emit_str_method(&mut self, method: &str, r: &str, args: &[Expr]) -> Result<String, Ice> {
+        match method {
+            "trim" => Ok(format!("vstr_trim({})", r)),
+            "split" => {
+                let a = args.first().ok_or_else(|| Ice("split arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let d = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vstr_split({}, {})", r, d))
+            }
+            "parse_int" => Ok(format!("vstr_parse_int({})", r)),
+            "parse_float" => Ok(format!("vstr_parse_float({})", r)),
+            _ => Err(Ice("unknown String method".into())),
+        }
     }
 
     /// Dynamic-array runtime + numeric kernels for one `Vec<T>`.
@@ -1967,8 +2104,30 @@ impl<'a> Gen<'a> {
                     target, op, value, ..
                 } = &expr.kind
                 {
-                    let cname = place_lvalue(target, self);
                     let vt = self.ty_of(value.id);
+                    // J1 indexed store: check bounds first (index evaluates
+                    // before the value), then reuse the plain-slot logic
+                    // with the element slot as the target.
+                    let cname = match target {
+                        Place::Index { base, idx, .. } => {
+                            if place_has_index(base) {
+                                return Err(Ice("nested index store".into()));
+                            }
+                            let bv = place_lvalue(base, self);
+                            let sv = self.cur_move;
+                            self.cur_move = false;
+                            let iw = self.emit_expr(idx)?;
+                            self.cur_move = sv;
+                            let i64_ = format!("(int64_t)({})", iw);
+                            self.out.push_str(&format!(
+                                "if ({i} < 0 || {i} >= {bv}.len) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n",
+                                i = i64_,
+                                bv = bv
+                            ));
+                            format!("{}.data[{}]", bv, i64_)
+                        }
+                        _ => place_lvalue(target, self),
+                    };
                     match op {
                         AssignOp::Set => {
                             if self.moves(&vt) {
@@ -2375,6 +2534,37 @@ impl<'a> Gen<'a> {
                 }
                 path
             }
+            ExprKind::Index { base, idx } => {
+                // Element copy out (owned elements clone, exactly like
+                // `get`: the buffer is never aliased). Out-of-bounds is a
+                // defined trap, mirroring integer division by zero.
+                let et = match self.ty_of(base.id) {
+                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                        args[0].clone()
+                    }
+                    _ => return Err(Ice("index on non-Vec".into())),
+                };
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let b = self.mat_str(base)?;
+                let iw = self.emit_expr(idx)?;
+                self.cur_move = saved;
+                let i64_ = format!("(int64_t)({})", iw);
+                let slot = format!("{}.data[{}]", b, i64_);
+                let val = if self.type_needs_drop(&et) {
+                    self.clone_call(&et, &slot)
+                } else {
+                    slot
+                };
+                let zero = format!("({}){{0}}", self.cty(&et));
+                format!(
+                    "({i} < 0 || {i} >= {b}.len ? (fprintf(stderr, \"index out of bounds\\n\"), abort(), {zero}) : ({val}))",
+                    i = i64_,
+                    b = b,
+                    zero = zero,
+                    val = val
+                )
+            }
             ExprKind::Call { name, args } => {
                 if name == "println" || name == "print" {
                     let a = args.first().ok_or_else(|| Ice("print arity".into()))?;
@@ -2409,6 +2599,21 @@ impl<'a> Gen<'a> {
                         // Anything else is rejected by sema (structs, enums,
                         // references, Unit); reaching here is a compiler bug.
                         _ => return Err(Ice("print of non-printable type".into())),
+                    }
+                } else if name == "to_string" {
+                    // J1 total scalar conversions (sema checked the type).
+                    let a = args.first().ok_or_else(|| Ice("to_string arity".into()))?;
+                    let t = self.ty_of(a.id);
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.emit_expr(a)?;
+                    self.cur_move = saved;
+                    match t {
+                        Ty::Int32 => format!("vstr_from_i32({})", inner),
+                        Ty::Int64 => format!("vstr_from_i64({})", inner),
+                        Ty::Float64 => format!("vstr_from_f64({})", inner),
+                        Ty::Bool => format!("vstr_from_bool({})", inner),
+                        _ => return Err(Ice("to_string of non-scalar".into())),
                     }
                 } else if name == "Some" || name == "Ok" || name == "Err" {
                     // Option/Result constructors (sema typed the result).
@@ -2945,6 +3150,14 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 let rt = self.ty_of(receiver.id);
+                // J1 `String` methods (receiver borrows like `Vec`).
+                if rt == Ty::Str {
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let r = self.mat_str(receiver)?;
+                    self.cur_move = saved;
+                    return self.emit_str_method(method, &r, args);
+                }
                 let (elem_ty, iname) = match &rt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
                         let t = args[0].clone();
@@ -3534,6 +3747,21 @@ fn place_lvalue(place: &Place, gen: &Gen) -> String {
             }
         }
         Place::Deref { inner, .. } => format!("(*{})", place_lvalue(inner, gen)),
+        // Index is always the outermost layer (parser nests outside-in)
+        // and assignment lowering intercepts it above, so this is dead.
+        // Nested index stores are rejected in sema.
+        Place::Index { .. } => unreachable!("nested index store reached codegen"),
+    }
+}
+
+/// Whether a place contains an index layer (defense in depth: nested
+/// index stores are rejected in sema before lowering).
+fn place_has_index(p: &Place) -> bool {
+    match p {
+        Place::Index { .. } => true,
+        Place::Field { base, .. } => place_has_index(base),
+        Place::Deref { inner, .. } => place_has_index(inner),
+        Place::Var(_, _) => false,
     }
 }
 

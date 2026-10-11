@@ -308,6 +308,17 @@ impl Cx {
         self.warns.push(d);
     }
 
+    /// Whether a place contains an index layer (nested index stores are
+    /// rejected: only the outermost index carries a bounds check).
+    fn place_has_index(p: &Place) -> bool {
+        match p {
+            Place::Index { .. } => true,
+            Place::Field { base, .. } => Self::place_has_index(base),
+            Place::Deref { inner, .. } => Self::place_has_index(inner),
+            Place::Var(_, _) => false,
+        }
+    }
+
     /// Resolve an assignment target to (type, mutable?). `var` roots need
     /// mutable bindings; `*r` needs `&mut`; field paths recurse.
     fn check_place(&mut self, target: &Place) -> Option<(Ty, bool)> {
@@ -378,6 +389,44 @@ impl Cx {
                             "E0201",
                             *span,
                             format!("cannot dereference {}", bt.name()),
+                            None,
+                        );
+                        None
+                    }
+                }
+            }
+            Place::Index { base, idx, span } => {
+                if Self::place_has_index(base) {
+                    self.err(
+                        "E0201",
+                        *span,
+                        "nested index assignment is not supported (bind the inner element first)",
+                        None,
+                    );
+                    return None;
+                }
+                let (bt, bmut) = self.check_place(base)?;
+                match bt {
+                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                        let it = self.check_expr(idx);
+                        if !matches!(it, Ty::Int32 | Ty::Int64) {
+                            self.err(
+                                "E0201",
+                                idx.span,
+                                format!("vector index must be Int32/Int64, found {}", it.name()),
+                                None,
+                            );
+                        }
+                        Some((args[0].clone(), bmut))
+                    }
+                    _ => {
+                        self.err(
+                            "E0401",
+                            *span,
+                            format!(
+                                "type {} cannot be indexed (only `Vec` supports `v[i]`)",
+                                bt.name()
+                            ),
                             None,
                         );
                         None
@@ -1040,6 +1089,9 @@ impl Cx {
             }
             ExprKind::Binary { lhs, rhs, .. } => {
                 self.contains_local_borrow(lhs, params) || self.contains_local_borrow(rhs, params)
+            }
+            ExprKind::Index { base, idx } => {
+                self.contains_local_borrow(base, params) || self.contains_local_borrow(idx, params)
             }
             ExprKind::Unary { expr, .. } => self.contains_local_borrow(expr, params),
             ExprKind::Assign { value, .. } => self.contains_local_borrow(value, params),
@@ -2184,12 +2236,17 @@ impl Cx {
                         self.record_ty(&t);
                         t
                     }
+                    Ty::Str => {
+                        let t = self.check_str_method(e.span, method, *method_span, call_args);
+                        self.record_ty(&t);
+                        t
+                    }
                     _ => {
                         self.err(
                             "E0401",
                             *method_span,
                             format!(
-                                "type {} has no methods in 0.1.0 (only `Vec` has methods)",
+                                "type {} has no methods (only `Vec` and `String` have methods)",
                                 rt.name()
                             ),
                             None,
@@ -2390,6 +2447,37 @@ impl Cx {
                             "E0201",
                             *field_span,
                             format!("type {} has no fields", other.name()),
+                            None,
+                        );
+                        Ty::Unit
+                    }
+                }
+            }
+            ExprKind::Index { base, idx } => {
+                let bt = self.check_expr(base);
+                let it = self.check_expr(idx);
+                if !matches!(it, Ty::Int32 | Ty::Int64) {
+                    self.err(
+                        "E0201",
+                        idx.span,
+                        format!("vector index must be Int32/Int64, found {}", it.name()),
+                        None,
+                    );
+                }
+                match bt {
+                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                        let t = args[0].clone();
+                        self.record_ty(&t);
+                        t
+                    }
+                    _ => {
+                        self.err(
+                            "E0401",
+                            e.span,
+                            format!(
+                                "type {} cannot be indexed (only `Vec` supports `v[i]`)",
+                                bt.name()
+                            ),
                             None,
                         );
                         Ty::Unit
@@ -3703,6 +3791,83 @@ impl Cx {
         }
     }
 
+    /// `String` methods (J1): splitting, trimming, and total parsing.
+    /// Parsing yields `Option` (never traps): `None` on any malformed input.
+    fn check_str_method(
+        &mut self,
+        span: Span,
+        method: &str,
+        method_span: Span,
+        args: &[Expr],
+    ) -> Ty {
+        let opt_of = |t: Ty| Ty::Generic {
+            base: "Option".to_string(),
+            args: vec![t],
+        };
+        match method {
+            "split" => {
+                if args.len() != 1 {
+                    self.err("E0201", span, "`split` takes exactly 1 argument", None);
+                    return Ty::Generic {
+                        base: "Vec".to_string(),
+                        args: vec![Ty::Str],
+                    };
+                }
+                let at = self.check_expr(&args[0]);
+                if at != Ty::Str {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`split` expects a String delimiter, found {}", at.name()),
+                        None,
+                    );
+                }
+                self.record_vec_inst(&Ty::Str);
+                Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![Ty::Str],
+                }
+            }
+            "trim" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`trim` takes no arguments", None);
+                }
+                Ty::Str
+            }
+            "parse_int" | "parse_float" => {
+                if !args.is_empty() {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`{}` takes no arguments", method),
+                        None,
+                    );
+                }
+                let t = if method == "parse_int" {
+                    Ty::Int64
+                } else {
+                    Ty::Float64
+                };
+                let key = Self::inst_key("Option", std::slice::from_ref(&t));
+                self.generic_insts
+                    .insert(key, ("Option".to_string(), vec![t.clone()]));
+                opt_of(t)
+            }
+            _ => {
+                self.err(
+                    "E0401",
+                    method_span,
+                    format!(
+                        "unknown method `{}` (available on String: split, trim, parse_int, parse_float)",
+                        method
+                    ),
+                    None,
+                );
+                Ty::Unit
+            }
+        }
+    }
+
     /// Whether a value can be `println`-ed: primitives plus `Vec` /
     /// `Option` / `Result` nesting over printable types (structs, enums,
     /// and references stay E0201 until stdlib `Display` in 0.2.0).
@@ -3767,7 +3932,37 @@ impl Cx {
             }
             return Ty::Unit;
         }
-        if (name == "Some" || name == "Ok" || name == "Err") && self.resolve_fun(name).is_none() {
+        // `to_string` (J1): total conversions to `String` for the four
+        // printable scalar types. Floats format with full precision.
+        if name == "to_string" {
+            if args.len() != 1 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`to_string` takes exactly 1 argument, found {}", args.len()),
+                    None,
+                );
+                return Ty::Str;
+            }
+            let t = self.check_expr(&args[0]);
+            return match t {
+                Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool => Ty::Str,
+                _ => {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "`to_string` supports Int32/Int64/Float64/Bool, found {}",
+                            t.name()
+                        ),
+                        None,
+                    );
+                    Ty::Str
+                }
+            };
+        } else if (name == "Some" || name == "Ok" || name == "Err")
+            && self.resolve_fun(name).is_none()
+        {
             return self.check_ctor_call(id, span, name, args, None);
         }
         if name == "None" && self.resolve_fun(name).is_none() {

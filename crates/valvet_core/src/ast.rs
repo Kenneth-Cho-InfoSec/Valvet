@@ -402,12 +402,17 @@ pub enum ExprKind {
     VecMacro {
         elems: Vec<Expr>,
     },
-    /// `recv.method(args)` — method call (0.1.0: `Vec` methods only).
+    /// `recv.method(args)` — method call (J1: `Vec` and `String` methods).
     Method {
         receiver: Box<Expr>,
         method: String,
         method_span: Span,
         args: Vec<Expr>,
+    },
+    /// `v[i]` — vector element read (J1: copy out, never an alias).
+    Index {
+        base: Box<Expr>,
+        idx: Box<Expr>,
     },
     /// `Shape::Circle(args)` — enum variant construction.
     Variant {
@@ -457,6 +462,12 @@ pub enum Place {
     },
     Deref {
         inner: Box<Place>,
+        span: Span,
+    },
+    /// `v[i]` — element slot (J1: bounds are a runtime trap).
+    Index {
+        base: Box<Place>,
+        idx: Box<Expr>,
         span: Span,
     },
 }

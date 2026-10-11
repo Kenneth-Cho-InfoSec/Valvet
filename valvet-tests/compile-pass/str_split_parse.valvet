@@ -1,0 +1,11 @@
+fun main() {
+    val parts = "a,b,c".split(",")
+    println(parts.len())
+    println(parts[0])
+    println(parts[2])
+    println("  hi  ".trim() == "hi")
+    println("42".parse_int())
+    println("xx".parse_int())
+    println("2.5".parse_float())
+    println("2.5x".parse_float())
+}

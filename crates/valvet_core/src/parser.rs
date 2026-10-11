@@ -999,6 +999,14 @@ impl Parser {
                     span: e.span,
                 })
             }
+            ExprKind::Index { base, idx } => {
+                let inner = Self::as_place(*base)?;
+                Some(Place::Index {
+                    base: Box::new(inner),
+                    idx,
+                    span: e.span,
+                })
+            }
             _ => None,
         }
     }
@@ -1793,8 +1801,25 @@ impl Parser {
                     };
                 }
                 Tok::LBracket => {
-                    self.err("E0800", "indexing is not yet supported in Valvet 0.1.0");
-                    return None;
+                    // `base[idx]` element access (J1).
+                    self.bump();
+                    self.skip_nls();
+                    let idx = self.parse_expr()?;
+                    self.skip_nls();
+                    if !matches!(self.cur(), Tok::RBracket) {
+                        self.err("E0005", "expected `]` after index expression");
+                        return None;
+                    }
+                    self.bump();
+                    let end = self.prev_span().end;
+                    e = Expr {
+                        id: self.fresh(),
+                        span: Span::new(e.span.start, end),
+                        kind: ExprKind::Index {
+                            base: Box::new(e),
+                            idx: Box::new(idx),
+                        },
+                    };
                 }
                 _ => break,
             }

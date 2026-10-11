@@ -466,6 +466,10 @@ fn renumber_expr(e: &mut crate::ast::Expr, next: &mut crate::ast::NodeId) {
         | AddrOf { expr, .. }
         | Field { base: expr, .. }
         | OptField { base: expr, .. } => renumber_expr(expr, next),
+        Index { base, idx } => {
+            renumber_expr(base, next);
+            renumber_expr(idx, next);
+        }
         Assign { value, .. } => renumber_expr(value, next),
         StructLit { fields, .. } => {
             for (_, _, fe) in fields {
