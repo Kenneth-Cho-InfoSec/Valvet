@@ -432,6 +432,18 @@ fn renumber_stmt(s: &mut crate::ast::Stmt, next: &mut crate::ast::NodeId) {
     }
 }
 
+fn renumber_place(p: &mut crate::ast::Place, next: &mut crate::ast::NodeId) {
+    use crate::ast::Place::*;
+    match p {
+        Var(_, _) => {}
+        Field { base, .. } | Deref { inner: base, .. } => renumber_place(base, next),
+        Index { base, idx, .. } => {
+            renumber_place(base, next);
+            renumber_expr(idx, next);
+        }
+    }
+}
+
 fn renumber_arm(a: &mut crate::ast::MatchArm, next: &mut crate::ast::NodeId) {
     // Patterns carry no ids; guard + body do.
     if let Some(g) = &mut a.guard {
@@ -470,7 +482,10 @@ fn renumber_expr(e: &mut crate::ast::Expr, next: &mut crate::ast::NodeId) {
             renumber_expr(base, next);
             renumber_expr(idx, next);
         }
-        Assign { value, .. } => renumber_expr(value, next),
+        Assign { target, value, .. } => {
+            renumber_place(target, next);
+            renumber_expr(value, next);
+        }
         StructLit { fields, .. } => {
             for (_, _, fe) in fields {
                 renumber_expr(fe, next);

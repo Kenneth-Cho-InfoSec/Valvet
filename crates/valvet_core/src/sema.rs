@@ -3574,6 +3574,9 @@ impl Cx {
             }
         }
         if value {
+            // Borrow-position matches clone arm values into the result
+            // slot: record the type so its clone helper is emitted.
+            self.record_ty(&result);
             result
         } else {
             Ty::Unit

@@ -1,0 +1,25 @@
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::frame::frame_nrows;
+import std::frame::frame_ncols;
+import std::frame::frame_names;
+import std::frame::frame_col;
+import std::frame::frame_select;
+
+fun main() {
+    val h = vec!["name", "age"];
+    val r0 = vec!["ada", "36"];
+    val r1 = vec!["bob", "25"];
+    val t = CsvTable { header: h, rows: vec![r0, r1] };
+    val f = frame_from_table(t);
+    println(frame_nrows(&f));
+    println(frame_ncols(&f));
+    println(frame_names(&f));
+    val ec: Vec<String> = vec![];
+    val ages = match (frame_col(&f, "age")) { Some(c) -> c, None -> ec, };
+    println(ages);
+    println(match (frame_col(&f, "nope")) { Some(c) -> c.len(), None -> (0 - 1) as Int64, });
+    val s = frame_select(&f, vec!["name"]);
+    println(frame_names(&s));
+    println(frame_nrows(&s));
+}

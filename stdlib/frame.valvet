@@ -1,0 +1,240 @@
+module std.frame;
+
+import std::csv::CsvTable;
+
+// Column-major frame: every column has exactly `nrows` cells.
+// A frame with no columns still knows its row count via `nrows`.
+pub struct DynamicFrame { names: Vec<String>, cols: Vec<Vec<String>>, nrows: Int64 }
+
+pub fun frame_from_table(t: CsvTable): DynamicFrame {
+    val ncols = t.header.len()
+    var cols: Vec<Vec<String>> = vec![]
+    var c = 0 as Int64
+    while (c < ncols) {
+        var col: Vec<String> = vec![]
+        var r = 0 as Int64
+        while (r < t.rows.len()) {
+            col.push(t.rows[r][c]);
+            r += 1 as Int64
+        }
+        cols.push(col);
+        c += 1 as Int64
+    }
+    val nrows = t.rows.len()
+    DynamicFrame { names: t.header, cols: cols, nrows: nrows }
+}
+
+pub fun frame_nrows(f: &DynamicFrame): Int64 {
+    f.nrows
+}
+
+pub fun frame_ncols(f: &DynamicFrame): Int64 {
+    f.names.len()
+}
+
+pub fun frame_names(f: &DynamicFrame): Vec<String> {
+    var out: Vec<String> = vec![]
+    var i = 0 as Int64
+    while (i < f.names.len()) {
+        out.push(f.names[i]);
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun frame_col(f: &DynamicFrame, name: String): Option<Vec<String>> {
+    var i = 0 as Int64
+    while (i < f.names.len()) {
+        if (f.names[i] == name) {
+            return Some(f.cols[i]);
+        }
+        i += 1 as Int64
+    }
+    return None;
+}
+
+pub fun frame_select(f: &DynamicFrame, names: Vec<String>): DynamicFrame {
+    var onames: Vec<String> = vec![]
+    var ocols: Vec<Vec<String>> = vec![]
+    var i = 0 as Int64
+    while (i < names.len()) {
+        val want = names[i]
+        var j = 0 as Int64
+        while (j < f.names.len()) {
+            if (f.names[j] == want) {
+                onames.push(f.names[j]);
+                ocols.push(f.cols[j]);
+            }
+            j += 1 as Int64
+        }
+        i += 1 as Int64
+    }
+    val n = f.nrows
+    DynamicFrame { names: onames, cols: ocols, nrows: n }
+}
+
+fun kept_indices(mask: Vec<Bool>, nrows: Int64): Vec<Int64> {
+    var out: Vec<Int64> = vec![]
+    var r = 0 as Int64
+    while (r < nrows) {
+        val keep = if (r < mask.len()) { mask[r] } else { false }
+        if (keep) {
+            out.push(r);
+        }
+        r += 1 as Int64
+    }
+    out
+}
+
+pub fun frame_filter_mask(f: &DynamicFrame, mask: Vec<Bool>): DynamicFrame {
+    val kept = kept_indices(mask, f.nrows);
+    var onames: Vec<String> = vec![]
+    var ocols: Vec<Vec<String>> = vec![]
+    var c = 0 as Int64
+    while (c < f.names.len()) {
+        onames.push(f.names[c]);
+        val col = f.cols[c]
+        var ncol: Vec<String> = vec![]
+        var k = 0 as Int64
+        while (k < kept.len()) {
+            ncol.push(col[kept[k]]);
+            k += 1 as Int64
+        }
+        ocols.push(ncol);
+        c += 1 as Int64
+    }
+    val n = kept.len()
+    DynamicFrame { names: onames, cols: ocols, nrows: n }
+}
+
+pub fun frame_group_count(f: &DynamicFrame, key: String): DynamicFrame {
+    val keyname = key.clone();
+    val no_col: Vec<String> = vec![];
+    val keycol = match (frame_col(f, key)) { Some(c) -> c, None -> no_col, };
+    var keys: Vec<String> = vec![]
+    var counts: Vec<Int64> = vec![]
+    var r = 0 as Int64
+    while (r < keycol.len()) {
+        val k = keycol[r]
+        var g = (0 - 1) as Int64
+        var j = 0 as Int64
+        while (j < keys.len()) {
+            if (keys[j] == k) {
+                g = j;
+            }
+            j += 1 as Int64
+        }
+        if (g < (0 as Int64)) {
+            keys.push(k);
+            counts.push(1 as Int64);
+        } else {
+            counts[g] = counts[g] + (1 as Int64);
+        }
+        r += 1 as Int64
+    }
+    var scounts: Vec<String> = vec![]
+    var i = 0 as Int64
+    while (i < counts.len()) {
+        scounts.push(to_string(counts[i]));
+        i += 1 as Int64
+    }
+    val n = keys.len()
+    DynamicFrame { names: vec![keyname, "count"], cols: vec![keys, scounts], nrows: n }
+}
+
+pub fun frame_group_sum(f: &DynamicFrame, key: String, value: String): DynamicFrame {
+    val keyname = key.clone();
+    val no_col: Vec<String> = vec![];
+    val keycol = match (frame_col(f, key)) { Some(c) -> c, None -> no_col, };
+    val no_col2: Vec<String> = vec![];
+    val valcol = match (frame_col(f, value)) { Some(c) -> c, None -> no_col2, };
+    var keys: Vec<String> = vec![]
+    var sums: Vec<Float64> = vec![]
+    var r = 0 as Int64
+    while (r < keycol.len()) {
+        val k = keycol[r]
+        var g = (0 - 1) as Int64
+        var j = 0 as Int64
+        while (j < keys.len()) {
+            if (keys[j] == k) {
+                g = j;
+            }
+            j += 1 as Int64
+        }
+        val parsed = valcol[r].parse_float()
+        val isna = match (parsed) { Some(x) -> false, None -> true, };
+        val amount = match (parsed) { Some(x) -> x, None -> 0.0, };
+        if (g < (0 as Int64)) {
+            keys.push(k);
+            if (isna) {
+                sums.push(0.0);
+            } else {
+                sums.push(amount);
+            }
+        } else {
+            if (!isna) {
+                sums[g] = sums[g] + amount;
+            }
+        }
+        r += 1 as Int64
+    }
+    var ssums: Vec<String> = vec![]
+    var i = 0 as Int64
+    while (i < sums.len()) {
+        ssums.push(to_string(sums[i]));
+        i += 1 as Int64
+    }
+    val n = keys.len()
+    DynamicFrame { names: vec![keyname, "sum"], cols: vec![keys, ssums], nrows: n }
+}
+
+pub fun frame_group_mean(f: &DynamicFrame, key: String, value: String): DynamicFrame {
+    val keyname = key.clone();
+    val no_col: Vec<String> = vec![];
+    val keycol = match (frame_col(f, key)) { Some(c) -> c, None -> no_col, };
+    val no_col2: Vec<String> = vec![];
+    val valcol = match (frame_col(f, value)) { Some(c) -> c, None -> no_col2, };
+    var keys: Vec<String> = vec![]
+    var sums: Vec<Float64> = vec![]
+    var counts: Vec<Int64> = vec![]
+    var r = 0 as Int64
+    while (r < keycol.len()) {
+        val k = keycol[r]
+        var g = (0 - 1) as Int64
+        var j = 0 as Int64
+        while (j < keys.len()) {
+            if (keys[j] == k) {
+                g = j;
+            }
+            j += 1 as Int64
+        }
+        val parsed = valcol[r].parse_float()
+        val isna = match (parsed) { Some(x) -> false, None -> true, };
+        val amount = match (parsed) { Some(x) -> x, None -> 0.0, };
+        if (g < (0 as Int64)) {
+            keys.push(k);
+            if (isna) {
+                sums.push(0.0);
+                counts.push(0 as Int64);
+            } else {
+                sums.push(amount);
+                counts.push(1 as Int64);
+            }
+        } else {
+            if (!isna) {
+                sums[g] = sums[g] + amount;
+                counts[g] = counts[g] + (1 as Int64);
+            }
+        }
+        r += 1 as Int64
+    }
+    var scells: Vec<String> = vec![]
+    var i = 0 as Int64
+    while (i < sums.len()) {
+        val cell = if (counts[i] == (0 as Int64)) { "NA" } else { to_string(sums[i] / (counts[i] as Float64)) };
+        scells.push(cell);
+        i += 1 as Int64
+    }
+    val n = keys.len()
+    DynamicFrame { names: vec![keyname, "mean"], cols: vec![keys, scells], nrows: n }
+}

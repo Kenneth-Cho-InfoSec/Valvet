@@ -863,6 +863,28 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Emit destruction for every live temp in every frame WITHOUT
+    /// popping: for `return` inside a partially-evaluated construct, the
+    /// enclosing owners still pop (and destroy) on fallthrough paths, and
+    /// exactly one path runs at runtime. Popping here orphaned those pops:
+    /// they found nothing, leaking every temp on non-return paths.
+    fn destroy_all_temps(&mut self) {
+        let live: Vec<(String, String)> = self
+            .tmp_frames
+            .iter()
+            .rev()
+            .flat_map(|f| f.iter().rev().cloned())
+            .collect();
+        for (t, cty) in &live {
+            if cty == "VStr" {
+                self.out.push_str(&format!("vstr_free(&{});\n", t));
+            } else {
+                let vty = self.valvet_ty_of_cty(cty);
+                self.emit_destroy(t, &vty);
+            }
+        }
+    }
+
     /// Best-effort reverse map from temp C type to Valvet type (temps only
     /// ever hold Strings or nominal ADTs, both unambiguous here).
     fn valvet_ty_of_cty(&self, cty: &str) -> Ty {
@@ -3015,11 +3037,11 @@ impl<'a> Gen<'a> {
                 Ok(())
             }
             Stmt::Return { value, .. } => {
-                // Abandon every live statement temp (transferred values were
-                // already nulled, so freeing the rest is safe).
-                while !self.tmp_frames.is_empty() {
-                    self.pop_frame();
-                }
+                // Free every live statement temp on the return path, but
+                // keep the frames registered (see `destroy_all_temps`):
+                // transferred values were already nulled, so freeing the
+                // rest is safe.
+                self.destroy_all_temps();
                 self.push_frame();
                 let saved = self.cur_move;
                 match value {
@@ -3295,7 +3317,12 @@ impl<'a> Gen<'a> {
                     let saved = self.cur_move;
                     let mut parts = vec![];
                     let mut moved_tmps = vec![];
+                    // Shield: same hazard as calls/struct literals (an
+                    // argument flushing internally must not write earlier
+                    // arguments' queued poisons before assembly).
+                    let mut shielded: Vec<(String, Ty)> = vec![];
                     for (j, a) in args.iter().enumerate() {
+                        shielded.extend(std::mem::take(&mut self.nulls));
                         let t = self.ty_of(a.id);
                         self.cur_move = self.moves(&t);
                         let before = self.frame_len();
@@ -3309,13 +3336,20 @@ impl<'a> Gen<'a> {
                     for t in moved_tmps {
                         self.null_slot(&t);
                     }
+                    self.nulls.extend(shielded);
                     format!("({}){{ {} }}", ctype_name(&q), parts.join(", "))
                 } else {
                     // Arguments: move owned values into the callee (callee frees params).
                     let saved = self.cur_move;
                     let mut parts = vec![];
                     let mut moved_tmps = vec![];
+                    // Shield (as in struct literals): an argument that
+                    // flushes internally (e.g. a nested `vec![..]`) must
+                    // not write poisons queued by earlier arguments — the
+                    // call text has not been emitted yet.
+                    let mut shielded: Vec<(String, Ty)> = vec![];
                     for a in args {
+                        shielded.extend(std::mem::take(&mut self.nulls));
                         let t = self.ty_of(a.id);
                         self.cur_move = self.moves(&t);
                         let before = self.frame_len();
@@ -3333,6 +3367,7 @@ impl<'a> Gen<'a> {
                     for t in moved_tmps {
                         self.null_slot(&t);
                     }
+                    self.nulls.extend(shielded);
                     // NOTE: no flush here — nulls are statement-level effects and must
                     // be written after the enclosing statement text (else use-after-NULL).
                     call
@@ -3538,7 +3573,15 @@ impl<'a> Gen<'a> {
                 let saved = self.cur_move;
                 let mut parts = vec![];
                 let mut moved_tmps = vec![];
+                // Shield: poisons queued by earlier fields must not be
+                // written by flushes inside later fields (e.g. a nested
+                // `vec![..]` flushes after each push) — the literal has
+                // not been assembled yet, so early writes would blank live
+                // sources. Each field sees only its own poisons; earlier
+                // ones re-queue after the literal text is built.
+                let mut shielded: Vec<(String, Ty)> = vec![];
                 for (fname, _, fexpr) in fields {
+                    shielded.extend(std::mem::take(&mut self.nulls));
                     let t = self.ty_of(fexpr.id);
                     self.cur_move = self.moves(&t);
                     let before = self.frame_len();
@@ -3552,6 +3595,7 @@ impl<'a> Gen<'a> {
                 for t in moved_tmps {
                     self.null_slot(&t);
                 }
+                self.nulls.extend(shielded);
                 // Missing fields are rejected by sema; fill nothing here.
                 // Unit structs: empty initializer list.
                 format!("({}){{ {} }}", ctype_name(&q), parts.join(", "))
@@ -3865,6 +3909,11 @@ impl<'a> Gen<'a> {
             } else if let Ty::Struct(n) | Ty::Enum(n) = target_ty {
                 self.out
                     .push_str(&format!("{} = v_clone_{}({});\n", target, dname(n), v));
+            } else if let Ty::Generic { base, args } = target_ty {
+                let ct = ctype_inst(base, args);
+                let iname = ct.strip_prefix('V').unwrap_or(&ct);
+                self.out
+                    .push_str(&format!("{} = v_clone_{}({});\n", target, iname, v));
             } else {
                 return Err(Ice("owned arm with unexpected type".into()));
             }
@@ -4109,6 +4158,11 @@ impl<'a> Gen<'a> {
                                 dname(n),
                                 v
                             ));
+                        } else if let Ty::Generic { base, args } = ty {
+                            let ct = ctype_inst(base, args);
+                            let iname = ct.strip_prefix('V').unwrap_or(&ct);
+                            self.out
+                                .push_str(&format!("{} = v_clone_{}({});\n", target, iname, v));
                         } else {
                             return Err(Ice("owned arm with unexpected type".into()));
                         }
