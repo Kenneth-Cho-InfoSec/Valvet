@@ -1,12 +1,39 @@
 # Valvet
 
-Valvet is a small, statically typed, compiled programming language. No
-garbage collector: owned values live in exactly one slot and are freed
-deterministically at scope exit. The 0.1.0 core language is complete;
-data-analysis foundations (frames, CSV/JSON, stats) come in 0.2.0.
+<img src="docs/logo.png" width="250" alt="Valvet logo">
 
-Status: **0.1.0 implemented and tested** — 100 unit tests, 91/91 fixture
-programs green in debug and release, generated C ASan/UBSan-clean.
+Valvet is a small, safe, compiled language for data work. It compiles to
+native binaries through C11, with no garbage collector and no runtime:
+owned values live in exactly one slot and are freed deterministically at
+scope exit. It is for expressing numeric analyses, statistics,
+iteration-heavy models, small simulations, directly and fast.
+
+If your analyses currently live in an interpreted statistics environment,
+Valvet is the compiled counterpart: the same small scripts for means,
+models, and simulations, but checked before they run, freed
+deterministically while they run, and shipped as dependency-free binaries.
+The 0.2.0 data layer (frames, CSV/JSON import, core stats) closes the
+remaining gap between prototyping and production.
+
+```valvet
+fun mean(v: Vec<Float64>): Float64 {
+    var total = 0.0
+    for (x in v) {
+        total += x
+    }
+    total / (v.len() as Float64)
+}
+
+fun main() {
+    println(mean(vec![2.0, 4.0, 6.0, 8.0]))  // 5
+}
+```
+
+Vectors, loops, functions, floats, with borrow-checked memory safety.
+The same core has reproduced textbook results end to end: ordinary least
+squares (16/16 statistics match a reference implementation), logistic
+regression on the Challenger O-ring data, PageRank power iteration, and
+perceptron training, all identical to their references and ASan-clean.
 
 ## Quick start
 
@@ -59,7 +86,7 @@ structs, enums, `Option<T>`, `Result<T, E>`, `Vec<T>`, and references
 `Vec`/`Option`/`Result` of printable types (`[1, 2]`, `Some(7)`/`None`,
 `Ok(1)`/`Err(e)`); `print` remains as a deprecated alias (warns `W1002`).
 
-Multi-file projects — root is the entry file's directory:
+Multi-file projects: the root is the entry file's directory:
 
 ```valvet
 // main.valvet
@@ -81,7 +108,7 @@ pub fun double(n: Int32): Int32 {
 Cross-module access requires `pub` (default-private). Imports use `::`
 (dotted imports are rejected); cycles and missing modules are compile errors.
 
-Errors never panic the compiler — they carry file, position, code, and help:
+Errors never panic the compiler. They carry file, position, code, and help:
 
 ```
 error[E0205]: cannot assign through this place (immutable binding or shared reference) --> prog.valvet:3:5
@@ -126,10 +153,12 @@ valvet test              # end-to-end fixtures, debug and release
 
 See `docs/implementation/TEST_STRATEGY.md` for the gate policy and
 `docs/implementation/IMPLEMENTATION_STATUS.md` for current totals.
+Current gates: 100 unit tests, 93/93 fixtures (debug+release),
+ASan/UBSan-clean output.
 
 ## Scope notes
 
 - Single C translation unit per program; target is the local machine.
 - No file I/O, closures, traits, generics beyond the builtins, or
-  `Display` for user structs yet — these are 0.2.0+ scope.
+  `Display` for user structs yet. Those are 0.2.0+ scope.
 - `docs/implementation/SPECIFICATION_GAPS.md` records resolved ambiguities.
