@@ -1,0 +1,448 @@
+module std.plot;
+
+import std::stats::quantile;
+import std::stats::MissingPolicy;
+
+pub struct PlotBuilder {
+    kind: String,
+    xs: Vec<Float64>,
+    ys: Vec<Float64>,
+    labels: Vec<String>,
+    bins: Int64,
+    title: String,
+    width: Int64,
+    height: Int64,
+}
+
+pub fun plot_points(xs: Vec<Float64>, ys: Vec<Float64>): PlotBuilder {
+    val labels: Vec<String> = vec![];
+    PlotBuilder {
+        kind: "points",
+        xs: xs,
+        ys: ys,
+        labels: labels,
+        bins: 10 as Int64,
+        title: "",
+        width: 400 as Int64,
+        height: 300 as Int64,
+    }
+}
+
+pub fun plot_line(xs: Vec<Float64>, ys: Vec<Float64>): PlotBuilder {
+    val labels: Vec<String> = vec![];
+    PlotBuilder {
+        kind: "line",
+        xs: xs,
+        ys: ys,
+        labels: labels,
+        bins: 10 as Int64,
+        title: "",
+        width: 400 as Int64,
+        height: 300 as Int64,
+    }
+}
+
+pub fun plot_bar(labels: Vec<String>, vals: Vec<Float64>): PlotBuilder {
+    val xs: Vec<Float64> = vec![];
+    PlotBuilder {
+        kind: "bar",
+        xs: xs,
+        ys: vals,
+        labels: labels,
+        bins: 10 as Int64,
+        title: "",
+        width: 400 as Int64,
+        height: 300 as Int64,
+    }
+}
+
+pub fun plot_hist(vals: Vec<Float64>, bins: Int64): PlotBuilder {
+    val labels: Vec<String> = vec![];
+    PlotBuilder {
+        kind: "hist",
+        xs: vals.clone(),
+        ys: vals,
+        labels: labels,
+        bins: bins,
+        title: "",
+        width: 400 as Int64,
+        height: 300 as Int64,
+    }
+}
+
+pub fun plot_box(vals: Vec<Float64>): PlotBuilder {
+    val labels: Vec<String> = vec![];
+    PlotBuilder {
+        kind: "box",
+        xs: vals.clone(),
+        ys: vals,
+        labels: labels,
+        bins: 10 as Int64,
+        title: "",
+        width: 400 as Int64,
+        height: 300 as Int64,
+    }
+}
+
+pub fun plot_title(p: PlotBuilder, t: String): PlotBuilder {
+    PlotBuilder {
+        kind: p.kind.clone(),
+        xs: p.xs.clone(),
+        ys: p.ys.clone(),
+        labels: p.labels.clone(),
+        bins: p.bins,
+        title: t,
+        width: p.width,
+        height: p.height,
+    }
+}
+
+pub fun plot_size(p: PlotBuilder, w: Int64, h: Int64): PlotBuilder {
+    PlotBuilder {
+        kind: p.kind.clone(),
+        xs: p.xs.clone(),
+        ys: p.ys.clone(),
+        labels: p.labels.clone(),
+        bins: p.bins,
+        title: p.title.clone(),
+        width: w,
+        height: h,
+    }
+}
+
+fun esc(s: String): String {
+    val parts = s.split("&");
+    var out = "";
+    var i = 0 as Int64
+    while (i < parts.len()) {
+        if (i > (0 as Int64)) {
+            out = out + "&amp;";
+        }
+        out = out + parts[i];
+        i += 1 as Int64
+    }
+    val lt = out.split("<");
+    var o2 = "";
+    var j = 0 as Int64
+    while (j < lt.len()) {
+        if (j > (0 as Int64)) {
+            o2 = o2 + "&lt;";
+        }
+        o2 = o2 + lt[j];
+        j += 1 as Int64
+    }
+    o2
+}
+
+fun fmin(v: Vec<Float64>): Float64 {
+    var best = v[0]
+    var i = 1 as Int64
+    while (i < v.len()) {
+        if (v[i] < best) {
+            best = v[i];
+        }
+        i += 1 as Int64
+    }
+    best
+}
+
+fun fmax(v: Vec<Float64>): Float64 {
+    var best = v[0]
+    var i = 1 as Int64
+    while (i < v.len()) {
+        if (v[i] > best) {
+            best = v[i];
+        }
+        i += 1 as Int64
+    }
+    best
+}
+
+fun xmap(x: Float64, lo: Float64, hi: Float64, w: Float64): Float64 {
+    val pad = 40.0
+    if (hi == lo) {
+        return w / 2.0;
+    }
+    pad + (x - lo) / (hi - lo) * (w - pad * 2.0)
+}
+
+fun ymap(y: Float64, lo: Float64, hi: Float64, h: Float64): Float64 {
+    val pad = 30.0
+    if (hi == lo) {
+        return h / 2.0;
+    }
+    h - pad - (y - lo) / (hi - lo) * (h - pad * 2.0)
+}
+
+fun head(p: &PlotBuilder): String {
+    var s = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"";
+    s = s + to_string(p.width);
+    s = s + "\" height=\"";
+    s = s + to_string(p.height);
+    s = s + "\">";
+    if (p.title == "") {
+        s = s + "";
+    } else {
+        s = s + "<text x=\"20\" y=\"22\" font-size=\"14\">" + esc(p.title.clone()) + "</text>";
+    }
+    s
+}
+
+fun frame_axes(xlo: Float64, xhi: Float64, ylo: Float64, yhi: Float64, w: Float64, h: Float64): String {
+    var s = "<line x1=\"";
+    s = s + to_string(xmap(xlo, xlo, xhi, w));
+    s = s + "\" y1=\"";
+    s = s + to_string(ymap(ylo, ylo, yhi, h));
+    s = s + "\" x2=\"";
+    s = s + to_string(xmap(xhi, xlo, xhi, w));
+    s = s + "\" y2=\"";
+    s = s + to_string(ymap(ylo, ylo, yhi, h));
+    s = s + "\" stroke=\"black\"/>";
+    s = s + "<line x1=\"";
+    s = s + to_string(xmap(xlo, xlo, xhi, w));
+    s = s + "\" y1=\"";
+    s = s + to_string(ymap(ylo, ylo, yhi, h));
+    s = s + "\" x2=\"";
+    s = s + to_string(xmap(xlo, xlo, xhi, w));
+    s = s + "\" y2=\"";
+    s = s + to_string(ymap(yhi, ylo, yhi, h));
+    s = s + "\" stroke=\"black\"/>";
+    s = s + "<text x=\"";
+    s = s + to_string(xmap(xlo, xlo, xhi, w));
+    s = s + "\" y=\"";
+    s = s + to_string(ymap(ylo, ylo, yhi, h) + 14.0);
+    s = s + "\" font-size=\"10\">";
+    s = s + to_string(xlo);
+    s = s + "</text>";
+    s = s + "<text x=\"";
+    s = s + to_string(xmap(xhi, xlo, xhi, w) - 30.0);
+    s = s + "\" y=\"";
+    s = s + to_string(ymap(ylo, ylo, yhi, h) + 14.0);
+    s = s + "\" font-size=\"10\">";
+    s = s + to_string(xhi);
+    s = s + "</text>";
+    s
+}
+
+fun draw_points(p: &PlotBuilder): String {
+    val w = p.width as Float64
+    val h = p.height as Float64
+    val xlo = fmin(p.xs.clone())
+    val xhi = fmax(p.xs.clone())
+    val ylo = fmin(p.ys.clone())
+    val yhi = fmax(p.ys.clone())
+    var s = frame_axes(xlo, xhi, ylo, yhi, w, h);
+    var i = 0 as Int64
+    while (i < p.xs.len()) {
+        s = s + "<circle cx=\"";
+        s = s + to_string(xmap(p.xs[i], xlo, xhi, w));
+        s = s + "\" cy=\"";
+        s = s + to_string(ymap(p.ys[i], ylo, yhi, h));
+        s = s + "\" r=\"3\" fill=\"#524ce9\"/>";
+        i += 1 as Int64
+    }
+    s
+}
+
+fun draw_line(p: &PlotBuilder): String {
+    val w = p.width as Float64
+    val h = p.height as Float64
+    val xlo = fmin(p.xs.clone())
+    val xhi = fmax(p.xs.clone())
+    val ylo = fmin(p.ys.clone())
+    val yhi = fmax(p.ys.clone())
+    var s = frame_axes(xlo, xhi, ylo, yhi, w, h);
+    var pts = "";
+    var i = 0 as Int64
+    while (i < p.xs.len()) {
+        if (i > (0 as Int64)) {
+            pts = pts + " ";
+        }
+        pts = pts + to_string(xmap(p.xs[i], xlo, xhi, w));
+        pts = pts + ",";
+        pts = pts + to_string(ymap(p.ys[i], ylo, yhi, h));
+        i += 1 as Int64
+    }
+    s = s + "<polyline points=\"";
+    s = s + pts;
+    s = s + "\" fill=\"none\" stroke=\"#524ce9\" stroke-width=\"2\"/>";
+    s
+}
+
+fun draw_bar(p: &PlotBuilder): String {
+    val w = p.width as Float64
+    val h = p.height as Float64
+    val ylo = 0.0
+    val yhi = fmax(p.ys.clone())
+    var s = frame_axes(0.0, p.labels.len() as Float64, ylo, yhi, w, h);
+    val n = p.labels.len()
+    var i = 0 as Int64
+    while (i < n) {
+        val bx = xmap(i as Float64, 0.0, n as Float64, w);
+        val bw = (w - 80.0) / (n as Float64);
+        val by = ymap(p.ys[i], ylo, yhi, h);
+        val base = ymap(ylo, ylo, yhi, h);
+        s = s + "<rect x=\"";
+        s = s + to_string(bx);
+        s = s + "\" y=\"";
+        s = s + to_string(by);
+        s = s + "\" width=\"";
+        s = s + to_string(bw);
+        s = s + "\" height=\"";
+        s = s + to_string(base - by);
+        s = s + "\" fill=\"#524ce9\"/>";
+        s = s + "<text x=\"";
+        s = s + to_string(bx);
+        s = s + "\" y=\"";
+        s = s + to_string(base + 14.0);
+        s = s + "\" font-size=\"10\">";
+        s = s + esc(p.labels[i]);
+        s = s + "</text>";
+        i += 1 as Int64
+    }
+    s
+}
+
+fun draw_hist(p: &PlotBuilder): String {
+    val lo = fmin(p.xs.clone())
+    val hi = fmax(p.xs.clone())
+    val nb = p.bins
+    val span = hi - lo
+    val wdt = if (span == 0.0) { 1.0 } else { span / (nb as Float64) };
+    var counts: Vec<Int64> = vec![]
+    var b = 0 as Int64
+    while (b < nb) {
+        counts.push(0 as Int64);
+        b += 1 as Int64
+    }
+    var i = 0 as Int64
+    while (i < p.xs.len()) {
+        var bi = ((p.xs[i] - lo) / wdt) as Int64;
+        if (bi >= nb) {
+            bi = nb - (1 as Int64);
+        }
+        if (bi >= (0 as Int64)) {
+            counts[bi] = counts[bi] + (1 as Int64);
+        }
+        i += 1 as Int64
+    }
+    var top = 0 as Int64
+    var k = 0 as Int64
+    while (k < nb) {
+        if (counts[k] > top) {
+            top = counts[k];
+        }
+        k += 1 as Int64
+    }
+    val w = p.width as Float64
+    val h = p.height as Float64
+    var s = frame_axes(lo, hi, 0.0, top as Float64, w, h);
+    var j = 0 as Int64
+    while (j < nb) {
+        val bx = xmap(lo + (j as Float64) * wdt, lo, hi, w);
+        val bw = (w - 80.0) / (nb as Float64);
+        val by = ymap(counts[j] as Float64, 0.0, top as Float64, h);
+        val base = ymap(0.0, 0.0, top as Float64, h);
+        s = s + "<rect x=\"";
+        s = s + to_string(bx);
+        s = s + "\" y=\"";
+        s = s + to_string(by);
+        s = s + "\" width=\"";
+        s = s + to_string(bw);
+        s = s + "\" height=\"";
+        s = s + to_string(base - by);
+        s = s + "\" fill=\"#524ce9\"/>";
+        j += 1 as Int64
+    }
+    s
+}
+
+fun draw_box(p: &PlotBuilder): String {
+    var mv: Vec<Missing<Float64>> = vec![]
+    var i = 0 as Int64
+    while (i < p.xs.len()) {
+        mv.push(Missing::Present(p.xs[i]));
+        i += 1 as Int64
+    }
+    val q1 = match (quantile(mv.clone(), MissingPolicy::Skip, 0.25)) { Some(x) -> x, None -> 0.0, };
+    val med = match (quantile(mv.clone(), MissingPolicy::Skip, 0.5)) { Some(x) -> x, None -> 0.0, };
+    val q3 = match (quantile(mv, MissingPolicy::Skip, 0.75)) { Some(x) -> x, None -> 0.0, };
+    val w = p.width as Float64
+    val h = p.height as Float64
+    val lo = fmin(p.xs.clone())
+    val hi = fmax(p.xs.clone())
+    var s = frame_axes(lo, hi, lo, hi, w, h);
+    val cx = w / 2.0
+    val y0 = ymap(lo, lo, hi, h);
+    val y1 = ymap(q1, lo, hi, h);
+    val y2 = ymap(med, lo, hi, h);
+    val y3 = ymap(q3, lo, hi, h);
+    val y4 = ymap(hi, lo, hi, h);
+    s = s + "<line x1=\"";
+    s = s + to_string(cx);
+    s = s + "\" y1=\"";
+    s = s + to_string(y0);
+    s = s + "\" x2=\"";
+    s = s + to_string(cx);
+    s = s + "\" y2=\"";
+    s = s + to_string(y4);
+    s = s + "\" stroke=\"black\"/>";
+    s = s + "<rect x=\"";
+    s = s + to_string(cx - 30.0);
+    s = s + "\" y=\"";
+    s = s + to_string(y3);
+    s = s + "\" width=\"60\" height=\"";
+    s = s + to_string(y1 - y3);
+    s = s + "\" fill=\"#524ce9\" stroke=\"black\"/>";
+    s = s + "<line x1=\"";
+    s = s + to_string(cx - 30.0);
+    s = s + "\" y1=\"";
+    s = s + to_string(y2);
+    s = s + "\" x2=\"";
+    s = s + to_string(cx + 30.0);
+    s = s + "\" y2=\"";
+    s = s + to_string(y2);
+    s = s + "\" stroke=\"white\" stroke-width=\"2\"/>";
+    s
+}
+
+pub fun plot_svg(p: PlotBuilder): Result<String, String> {
+    if (p.kind != "points" && p.kind != "line" && p.kind != "bar" && p.kind != "hist" && p.kind != "box") {
+        return Err("unknown plot kind");
+    }
+    if (p.kind == "bar") {
+        if (p.labels.len() != p.ys.len() || p.ys.len() == (0 as Int64)) {
+            return Err("bar needs matching non-empty labels and values");
+        }
+    } else {
+        if (p.xs.len() != p.ys.len() || p.xs.len() == (0 as Int64)) {
+            return Err("plot needs matching non-empty x and y");
+        }
+    }
+    if (p.kind == "hist" && p.bins <= (0 as Int64)) {
+        return Err("hist needs positive bins");
+    }
+    var s = head(&p);
+    if (p.kind == "points") {
+        s = s + draw_points(&p);
+    }
+    if (p.kind == "line") {
+        s = s + draw_line(&p);
+    }
+    if (p.kind == "bar") {
+        s = s + draw_bar(&p);
+    }
+    if (p.kind == "hist") {
+        s = s + draw_hist(&p);
+    }
+    if (p.kind == "box") {
+        s = s + draw_box(&p);
+    }
+    s = s + "</svg>";
+    return Ok(s);
+}
+
+pub fun plot_save(p: PlotBuilder, path: String): Result<Int64, String> {
+    val svg = plot_svg(p)?;
+    return write_file(path, svg);
+}

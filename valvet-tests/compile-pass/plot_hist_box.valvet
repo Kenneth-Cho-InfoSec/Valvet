@@ -1,0 +1,8 @@
+import std::plot::plot_hist;
+import std::plot::plot_box;
+import std::plot::plot_svg;
+
+fun main() {
+    println(match (plot_svg(plot_hist(vec![1.0, 2.0, 2.0, 3.0, 9.0], 2 as Int64))) { Ok(s) -> s, Err(e) -> e, });
+    println(match (plot_svg(plot_box(vec![1.0, 2.0, 3.0, 4.0, 5.0]))) { Ok(s) -> s, Err(e) -> e, });
+}

@@ -1856,6 +1856,43 @@ impl<'a> Gen<'a> {
                 ok = some("rows")
             ));
         }
+        // `write_file(path, content): Result<Int64, String>` (bytes written).
+        if self.has_inst("Result", &[Ty::Int64, Ty::Str]) {
+            let rct = ctype_inst("Result", &[Ty::Int64, Ty::Str]);
+            let some = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            let none = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {rct} v_write_file_wrap(VStr path, VStr content) {{",
+                    "if (!path.s || path.len == 0) return {e1};",
+                    "FILE *f = fopen(path.s, \"wb\");",
+                    "if (!f) {{ VStr pre = vstr_from_c(\"cannot open file: \");",
+                    "VStr m = vstr_concat(pre, path); vstr_free(&pre); return {e2}; }}",
+                    "size_t n = content.s ? (size_t)content.len : 0;",
+                    "size_t wrote = n ? fwrite(content.s, 1, n, f) : 0;",
+                    "fclose(f);",
+                    "if (wrote != n) {{ VStr m2 = vstr_from_c(\"short write\"); return {e3}; }}",
+                    "return {ok};}}\n"
+                ),
+                rct = rct,
+                e1 = none("vstr_from_c(\"empty path\")"),
+                e2 = none("m"),
+                e3 = none("m2"),
+                ok = some("(int64_t)wrote")
+            ));
+        }
         Ok(())
     }
 
@@ -3365,8 +3402,9 @@ impl<'a> Gen<'a> {
                     || name == "csv_rows"
                     || name == "csv_bad_rows"
                     || name == "json_rows"
+                    || name == "write_file"
                 {
-                    // J2 file/CSV/JSON kernels (sema checked arity/types).
+                    // J2/J6 file/CSV/JSON kernels (sema checked arity/types).
                     // Arguments borrow; owned rvalues materialize into
                     // statement-lived temps like `println`.
                     let mut parts = vec![];
@@ -3386,6 +3424,7 @@ impl<'a> Gen<'a> {
                         "read_file" => format!("v_read_file_wrap({})", parts.join(", ")),
                         "csv_rows" => format!("v_csv_rows_wrap({})", parts.join(", ")),
                         "csv_bad_rows" => format!("v_csv_bad_rows_wrap({})", parts.join(", ")),
+                        "write_file" => format!("v_write_file_wrap({})", parts.join(", ")),
                         _ => format!("v_json_rows_wrap({})", parts.join(", ")),
                     }
                 } else if name == "Some" || name == "Ok" || name == "Err" {

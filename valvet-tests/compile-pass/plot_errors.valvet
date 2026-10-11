@@ -1,0 +1,12 @@
+import std::plot::plot_points;
+import std::plot::plot_hist;
+import std::plot::plot_svg;
+
+fun main() {
+    val ex: Vec<Float64> = vec![];
+    val ey: Vec<Float64> = vec![];
+    println(match (plot_svg(plot_points(ex, ey))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_points(vec![1.0], vec![1.0, 2.0]))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_hist(vec![1.0], 0 as Int64))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (write_file("/nope/x.svg", "hi")) { Ok(n) -> "unexpected", Err(e) -> e, });
+}

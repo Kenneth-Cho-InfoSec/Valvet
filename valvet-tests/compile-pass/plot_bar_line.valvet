@@ -1,0 +1,8 @@
+import std::plot::plot_line;
+import std::plot::plot_bar;
+import std::plot::plot_svg;
+
+fun main() {
+    println(match (plot_svg(plot_line(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 4.0]))) { Ok(s) -> s, Err(e) -> e, });
+    println(match (plot_svg(plot_bar(vec!["a", "b"], vec![5.0, 3.0]))) { Ok(s) -> s, Err(e) -> e, });
+}

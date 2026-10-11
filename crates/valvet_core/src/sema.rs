@@ -4088,6 +4088,15 @@ impl Cx {
 
     /// J2 file/CSV/JSON builtins (C-backed; row/offset-attributed `String`
     /// errors, so no new error types are needed).
+    fn io_result_int(&mut self) -> Ty {
+        let t = Ty::Generic {
+            base: "Result".to_string(),
+            args: vec![Ty::Int64, Ty::Str],
+        };
+        self.record_ty(&t);
+        t
+    }
+
     fn check_io_builtin(&mut self, span: Span, name: &str, args: &[Expr]) -> Ty {
         let rows_t = || Ty::Generic {
             base: "Vec".to_string(),
@@ -4277,6 +4286,40 @@ impl Cx {
             || name == "json_rows"
         {
             return self.check_io_builtin(span, name, args);
+        } else if name == "write_file" {
+            // J6: `write_file(path, content): Result<Int64, String>`
+            // (bytes written).
+            if args.len() != 2 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!(
+                        "`write_file` takes exactly 2 arguments, found {}",
+                        args.len()
+                    ),
+                    None,
+                );
+                return self.io_result_int();
+            }
+            let pt = self.check_expr(&args[0]);
+            if pt != Ty::Str {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!("`write_file` expects a String path, found {}", pt.name()),
+                    None,
+                );
+            }
+            let ct = self.check_expr(&args[1]);
+            if ct != Ty::Str {
+                self.err(
+                    "E0201",
+                    args[1].span,
+                    format!("`write_file` expects String content, found {}", ct.name()),
+                    None,
+                );
+            }
+            return self.io_result_int();
         } else if name == "rng_seeded" {
             // J5: `rng_seeded(seed: Int64): Rng` (seed bits feed splitmix64).
             if args.len() != 1 {
