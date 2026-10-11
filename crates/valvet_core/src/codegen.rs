@@ -92,6 +92,46 @@ static VStr vstr_trim(VStr v) {
     p[b - a] = '\0';
     return (VStr){p, b - a};
 }
+/// J5 xoshiro256++ (Blackman & Vigna 2021, public domain reference structure:
+/// rotl/add-xor-shift/xor-rotate; seeded here via splitmix64). All state is
+/// the inline `s[4]` array: `VRng` is `Copy` (256-bit memcpy, same choice as
+/// Rust's `rand_xoshiro`), so assignment forks the stream. Unsigned
+/// arithmetic is modular by definition (`-fwrapv` covers signed paths).
+typedef struct { uint64_t s[4]; } VRng;
+static inline uint64_t vrotl(const uint64_t x, int k) {
+    return (x << k) | (x >> (64 - k));
+}
+static uint64_t vsplitmix64(uint64_t *x) {
+    uint64_t z = (*x += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+static VRng vrng_seeded(uint64_t seed) {
+    VRng r;
+    uint64_t x = seed;
+    for (int i = 0; i < 4; i++) r.s[i] = vsplitmix64(&x);
+    if (!r.s[0] && !r.s[1] && !r.s[2] && !r.s[3]) r.s[0] = 1;
+    return r;
+}
+static uint64_t vrng_next(VRng *r) {
+    const uint64_t result = vrotl(r->s[0] + r->s[3], 23) + r->s[0];
+    const uint64_t t = r->s[1] << 17;
+    r->s[2] ^= r->s[0];
+    r->s[3] ^= r->s[1];
+    r->s[1] ^= r->s[2];
+    r->s[0] ^= r->s[3];
+    r->s[2] ^= t;
+    r->s[3] = vrotl(r->s[3], 45);
+    return result;
+}
+static double vrng_next_f64(VRng *r) {
+    return (double)(vrng_next(r) >> 11) * (1.0 / 9007199254740992.0);
+}
+static int64_t vrng_next_int(VRng *r, int64_t n) {
+    if (n <= 0) { fprintf(stderr, "rng range must be positive\n"); abort(); }
+    return (int64_t)(vrng_next(r) % (uint64_t)n);
+}
 /// Element formatters (no trailing newline; composite `vfmt_` helpers call
 /// these per element, and top-level `vprint_` wraps them with `"\n"`).
 static void vfmt_i32(int32_t v) { printf("%" PRId32, v); }
@@ -810,6 +850,7 @@ impl<'a> Gen<'a> {
             // Sema resolves every nominal type in place; reaching this means a
             // compiler bug, never user input.
             Ty::Named(n) => unreachable!("unresolved type {}", n),
+            Ty::Generic { base, args } if base == "Rng" && args.is_empty() => "VRng".to_string(),
             Ty::Generic { base, args } => ctype_inst(base, args),
         }
     }
@@ -1956,6 +1997,55 @@ impl<'a> Gen<'a> {
                 let _ = rf;
             }
         }
+
+        // J5 shuffle/sample: element-agnostic Fisher-Yates over any `T`
+        // (memcpy swap: permutation only, never duplicates ownership).
+        // Sampled elements clone out like `get`.
+        let elem_copy = if self.type_needs_drop(&t) {
+            self.clone_call(&t, "v->data[idx[i]]")
+        } else {
+            "v->data[idx[i]]".to_string()
+        };
+        self.out.push_str(&format!(
+            concat!(
+                "static void vvec_{iname}_shuffle({vct} *v, VRng *r) {{",
+                "if (v->len < 2) return;",
+                "char tmp[64];",
+                "for (int64_t i = v->len - 1; i > 0; --i) {{",
+                "int64_t j = (int64_t)(vrng_next(r) % (uint64_t)(i + 1));",
+                "if ((uint64_t)sizeof({et}) <= sizeof(tmp)) {{",
+                "memcpy(tmp, &v->data[i], sizeof({et}));",
+                "memcpy(&v->data[i], &v->data[j], sizeof({et}));",
+                "memcpy(&v->data[j], tmp, sizeof({et}));",
+                "}} else {{",
+                "char *big = (char *)malloc(sizeof({et}));",
+                "if (!big) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                "memcpy(big, &v->data[i], sizeof({et}));",
+                "memcpy(&v->data[i], &v->data[j], sizeof({et}));",
+                "memcpy(&v->data[j], big, sizeof({et}));",
+                "free(big);",
+                "}}}}",
+                "}}\n",
+                "static {vct} vvec_{iname}_sample({vct} *v, int64_t n, VRng *r) {{",
+                "{vct} out = vvec_{iname}_new();",
+                "if (v->len == 0 || n <= 0) return out;",
+                "if (n > v->len) n = v->len;",
+                "int64_t *idx = (int64_t *)malloc((size_t)v->len * sizeof(int64_t));",
+                "if (!idx) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                "for (int64_t i = 0; i < v->len; ++i) idx[i] = i;",
+                "for (int64_t i = 0; i < n; ++i) {{",
+                "int64_t j = i + (int64_t)(vrng_next(r) % (uint64_t)(v->len - i));",
+                "int64_t t2 = idx[i]; idx[i] = idx[j]; idx[j] = t2;",
+                "}}",
+                "for (int64_t i = 0; i < n; ++i) vvec_{iname}_push(&out, {elem});",
+                "free(idx);",
+                "return out;}}\n"
+            ),
+            iname = iname,
+            vct = ct,
+            et = et,
+            elem = elem_copy
+        ));
         Ok(())
     }
 
@@ -3263,6 +3353,14 @@ impl<'a> Gen<'a> {
                         Ty::Bool => format!("vstr_from_bool({})", inner),
                         _ => return Err(Ice("to_string of non-scalar".into())),
                     }
+                } else if name == "rng_seeded" {
+                    // J5 seeded xoshiro256++ (seed bits feed splitmix64).
+                    let a = args.first().ok_or_else(|| Ice("rng_seeded arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.emit_expr(a)?;
+                    self.cur_move = saved;
+                    format!("vrng_seeded((uint64_t)({}))", inner)
                 } else if name == "read_file"
                     || name == "csv_rows"
                     || name == "csv_bad_rows"
@@ -3877,6 +3975,27 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 let rt = self.ty_of(receiver.id);
+                // J5 `Rng` methods (receiver borrows like `Vec`, but the C
+                // kernel advances the caller's state through the pointer).
+                if matches!(&rt, Ty::Generic { base, args } if base == "Rng" && args.is_empty()) {
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let r = self.mat_str(receiver)?;
+                    self.cur_move = saved;
+                    let rptr = format!("&{}", r);
+                    match method.as_str() {
+                        "next_f64" => return Ok(format!("vrng_next_f64({})", rptr)),
+                        "next_int" => {
+                            let a = args.first().ok_or_else(|| Ice("next_int arity".into()))?;
+                            let sv = self.cur_move;
+                            self.cur_move = false;
+                            let v = self.emit_expr(a)?;
+                            self.cur_move = sv;
+                            return Ok(format!("vrng_next_int({}, (int64_t)({}))", rptr, v));
+                        }
+                        _ => return Err(Ice("unknown Rng method".into())),
+                    }
+                }
                 // J1 `String` methods (receiver borrows like `Vec`).
                 if rt == Ty::Str {
                     let saved = self.cur_move;
@@ -3914,6 +4033,24 @@ impl<'a> Gen<'a> {
                     "pop" | "get" | "clone" | "cast" | "add_scalar" | "add" | "mul" | "dot" => {
                         let rt = self.ty_of(e.id);
                         self.emit_vec_method(method, &elem_ty, &iname, &r, args, &rt)?
+                    }
+                    "shuffle" => {
+                        let a = args.first().ok_or_else(|| Ice("shuffle arity".into()))?;
+                        let sv = self.cur_move;
+                        self.cur_move = false;
+                        let o = self.mat_str(a)?;
+                        self.cur_move = sv;
+                        format!("vvec_{}_shuffle({}, &{})", iname, rptr, o)
+                    }
+                    "sample" => {
+                        let n = args.first().ok_or_else(|| Ice("sample arity".into()))?;
+                        let g = args.get(1).ok_or_else(|| Ice("sample arity".into()))?;
+                        let sv = self.cur_move;
+                        self.cur_move = false;
+                        let nv = self.emit_expr(n)?;
+                        let o = self.mat_str(g)?;
+                        self.cur_move = sv;
+                        format!("vvec_{}_sample({}, (int64_t)({}), &{})", iname, rptr, nv, o)
                     }
                     _ => return Err(Ice("unknown Vec method".into())),
                 }

@@ -691,7 +691,12 @@ impl Cx {
     /// `Option<T>` (pop/get signatures reference it).
     fn record_ty(&mut self, ty: &Ty) {
         if let Ty::Generic { base, args } = ty {
-            if base == "Vec" || base == "Option" || base == "Result" || base == "Missing" {
+            if base == "Vec"
+                || base == "Option"
+                || base == "Result"
+                || base == "Missing"
+                || base == "Rng"
+            {
                 for a in args {
                     self.record_ty(a);
                 }
@@ -770,7 +775,7 @@ impl Cx {
                     return Ty::Unit;
                 }
                 match (base.as_str(), resolved.len()) {
-                    ("Option", 1) | ("Result", 2) | ("Vec", 1) | ("Missing", 1) => {
+                    ("Option", 1) | ("Result", 2) | ("Vec", 1) | ("Missing", 1) | ("Rng", 0) => {
                         let t = Ty::Generic {
                             base: base.clone(),
                             args: resolved,
@@ -2268,12 +2273,15 @@ impl Cx {
                         self.record_ty(&t);
                         t
                     }
+                    Ty::Generic { base, args } if base == "Rng" && args.is_empty() => {
+                        self.check_rng_method(e.span, method, *method_span, call_args)
+                    }
                     _ => {
                         self.err(
                             "E0401",
                             *method_span,
                             format!(
-                                "type {} has no methods (only `Vec` and `String` have methods)",
+                                "type {} has no methods (only `Vec`, `String` and `Rng` have methods)",
                                 rt.name()
                             ),
                             None,
@@ -3882,11 +3890,65 @@ impl Cx {
                 }
                 res_of(Ty::Float64)
             }
+            "shuffle" => {
+                // In-place Fisher-Yates over any element type; the Rng
+                // advances through the receiver pointer model.
+                if args.len() != 1 {
+                    self.err("E0201", span, "`shuffle` takes exactly 1 argument", None);
+                    return Ty::Unit;
+                }
+                let at = self.check_expr(&args[0]);
+                let want = Ty::Generic {
+                    base: "Rng".to_string(),
+                    args: vec![],
+                };
+                if at != want {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`shuffle` expects Rng, found {}", at.name()),
+                        None,
+                    );
+                }
+                Ty::Unit
+            }
+            "sample" => {
+                // Random subset without replacement; `n` clamps to length.
+                if args.len() != 2 {
+                    self.err("E0201", span, "`sample` takes exactly 2 arguments", None);
+                    return vec_of(elem.clone());
+                }
+                let nt = self.check_expr(&args[0]);
+                if nt != Ty::Int64 && nt != Ty::Int32 {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`sample` expects an integer count, found {}", nt.name()),
+                        None,
+                    );
+                }
+                let at = self.check_expr(&args[1]);
+                let want = Ty::Generic {
+                    base: "Rng".to_string(),
+                    args: vec![],
+                };
+                if at != want {
+                    self.err(
+                        "E0201",
+                        args[1].span,
+                        format!("`sample` expects Rng, found {}", at.name()),
+                        None,
+                    );
+                }
+                let t = vec_of(elem.clone());
+                self.record_vec_inst(elem);
+                t
+            }
             _ => {
                 self.err(
                     "E0401",
                     method_span,
-                    format!("unknown method `{}` (available on Vec: len, push, pop, get, clone, cast, add_scalar, add, mul, dot)", method),
+                    format!("unknown method `{}` (available on Vec: len, push, pop, get, clone, cast, add_scalar, add, mul, dot, shuffle, sample)", method),
                     Some("map/filter/mask take closures or slices (deferred)".into()),
                 );
                 Ty::Unit
@@ -3968,6 +4030,53 @@ impl Cx {
                     method_span,
                     format!(
                         "unknown method `{}` (available on String: split, trim, clone, parse_int, parse_float)",
+                        method
+                    ),
+                    None,
+                );
+                Ty::Unit
+            }
+        }
+    }
+
+    /// J5 `Rng` methods. The generator mutates through the receiver pointer
+    /// (same model as `Vec::push`), so calls advance the caller's stream.
+    fn check_rng_method(
+        &mut self,
+        span: Span,
+        method: &str,
+        method_span: Span,
+        args: &[Expr],
+    ) -> Ty {
+        match method {
+            "next_f64" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`next_f64` takes no arguments", None);
+                }
+                Ty::Float64
+            }
+            "next_int" => {
+                if args.len() != 1 {
+                    self.err("E0201", span, "`next_int` takes exactly 1 argument", None);
+                    return Ty::Int64;
+                }
+                let at = self.check_expr(&args[0]);
+                if at != Ty::Int64 && at != Ty::Int32 {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`next_int` expects an integer bound, found {}", at.name()),
+                        None,
+                    );
+                }
+                Ty::Int64
+            }
+            _ => {
+                self.err(
+                    "E0401",
+                    method_span,
+                    format!(
+                        "unknown method `{}` (available on Rng: next_f64, next_int)",
                         method
                     ),
                     None,
@@ -4168,6 +4277,38 @@ impl Cx {
             || name == "json_rows"
         {
             return self.check_io_builtin(span, name, args);
+        } else if name == "rng_seeded" {
+            // J5: `rng_seeded(seed: Int64): Rng` (seed bits feed splitmix64).
+            if args.len() != 1 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!(
+                        "`rng_seeded` takes exactly 1 argument, found {}",
+                        args.len()
+                    ),
+                    None,
+                );
+                return Ty::Generic {
+                    base: "Rng".to_string(),
+                    args: vec![],
+                };
+            }
+            let at = self.check_expr(&args[0]);
+            if at != Ty::Int64 && at != Ty::Int32 {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!("`rng_seeded` expects an integer seed, found {}", at.name()),
+                    None,
+                );
+            }
+            let t = Ty::Generic {
+                base: "Rng".to_string(),
+                args: vec![],
+            };
+            self.record_ty(&t);
+            return t;
         } else if (name == "Some" || name == "Ok" || name == "Err" || name == "Present")
             && self.resolve_fun(name).is_none()
         {

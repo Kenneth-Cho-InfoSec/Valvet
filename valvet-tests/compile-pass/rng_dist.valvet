@@ -1,0 +1,21 @@
+fun main() {
+    val r = rng_seeded(7);
+    var s = 0.0
+    var n = 0 as Int64
+    while (n < (100000 as Int64)) {
+        s += r.next_f64();
+        n += 1 as Int64
+    }
+    val m = s / 100000.0
+    println(m > 0.49 && m < 0.51);
+    var ok = true
+    var k = 0 as Int64
+    while (k < (1000 as Int64)) {
+        val x = r.next_int(10 as Int64);
+        if (x < (0 as Int64) || x >= (10 as Int64)) {
+            ok = false;
+        }
+        k += 1 as Int64
+    }
+    println(ok);
+}
