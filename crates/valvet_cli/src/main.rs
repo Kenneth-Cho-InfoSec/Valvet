@@ -25,6 +25,7 @@ fn run(args: Vec<String>) -> i32 {
         "run" => cmd_run(get_path(&args)),
         "test" => cmd_test(args.get(1).map(|s| s.as_str())),
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
+        "repl" => cmd_repl(),
         _ => {
             eprintln!("error: unknown command `{}`", args[0]);
             eprintln!("run `valvet --help` for usage");
@@ -51,6 +52,7 @@ fn print_help() {
     println!("    valvet run <file.valvet>     compile, link and execute");
     println!("    valvet test [dir]            run the Valvet fixture test suite");
     println!("    valvet new <name>            scaffold a new single-dir project");
+    println!("    valvet repl                  interactive session (definitions persist)");
     println!("    valvet --version             display version");
     println!("    valvet --help                show this help");
     println!();
@@ -393,4 +395,399 @@ fn cmd_test(dir: Option<&str>) -> i32 {
     } else {
         0
     }
+}
+
+// ---------- interactive session (J7) ----------
+//
+// Model: definitions (`fun`/`struct`/`enum`) persist across entries and
+// recompile every round; statement/expression entries are wrapped in a
+// fresh `__rN` function and only the latest runs (no replay). `val`/`var`
+// entries evaluate once and are discarded (later entries cannot see them).
+// Errors never drop the session: failed entries roll back.
+// Line editing is plain stdin (no rustyline: keeps builds hermetic/offline).
+
+/// One persisted definition, sliced from its entry text by span.
+struct ReplItem {
+    kind: &'static str,
+    name: String,
+    text: String,
+}
+
+struct ReplSession {
+    imports: Vec<String>,
+    items: Vec<ReplItem>,
+    counter: u32,
+}
+
+impl ReplSession {
+    /// Session source: imports, definitions, latest snippet driver.
+    /// `snippet` is `Some(entry)` to run, `None` for definitions-only.
+    fn render(&self, snippet: Option<&str>) -> String {
+        let mut s = String::new();
+        for imp in &self.imports {
+            s.push_str(imp);
+            s.push('\n');
+        }
+        for it in &self.items {
+            s.push_str(&it.text);
+            s.push('\n');
+        }
+        match snippet {
+            Some(entry) => {
+                s.push_str(&format!(
+                    "fun __r{}(): Int32 {{\n{}\n0\n}}\n",
+                    self.counter, entry
+                ));
+                s.push_str(&format!("fun main() {{\n__r{}();\n}}\n", self.counter));
+            }
+            None => {
+                s.push_str("fun main() {\n}\n");
+            }
+        }
+        s
+    }
+}
+
+/// Brace depth over one line, aware of strings/comments (heuristic for
+/// continuation prompts; miscounts only on exotic nesting).
+fn scan_line(
+    line: &str,
+    depth: &mut i32,
+    in_block: &mut i32,
+    in_str: &mut bool,
+    triple: &mut bool,
+) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if *in_str {
+            if c == '\\' {
+                i += 2;
+                continue;
+            }
+            if c == '"' {
+                if *triple {
+                    if i + 2 < bytes.len() && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                        *in_str = false;
+                        *triple = false;
+                        i += 3;
+                        continue;
+                    }
+                } else {
+                    *in_str = false;
+                }
+            }
+            i += 1;
+            continue;
+        }
+        if *in_block > 0 {
+            if c == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+                *in_block += 1;
+                i += 2;
+                continue;
+            }
+            if c == '*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                *in_block -= 1;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            break;
+        }
+        if c == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            *in_block = 1;
+            i += 2;
+            continue;
+        }
+        if c == '"' {
+            if i + 2 < bytes.len() && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' {
+                *in_str = true;
+                *triple = true;
+                i += 3;
+                continue;
+            }
+            *in_str = true;
+            *triple = false;
+            i += 1;
+            continue;
+        }
+        if c == '{' {
+            *depth += 1;
+        } else if c == '}' {
+            *depth -= 1;
+        }
+        i += 1;
+    }
+}
+
+/// Slice `[start, end)` bytes from entry text (span-stamped, same buffer).
+fn slice_of(entry: &str, start: usize, end: usize) -> String {
+    entry.get(start..end).unwrap_or("").trim().to_string()
+}
+
+fn cmd_repl() -> i32 {
+    use std::io::{BufRead, IsTerminal, Write};
+    use valvet_core::source::Source;
+
+    let interactive = std::io::stdin().is_terminal();
+    if interactive {
+        println!("valvet repl — definitions persist, snippets run once. `:help` for commands.");
+    }
+    let dir = target_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("error: cannot create `{}`: {}", dir.display(), e);
+        return 1;
+    }
+    let session_path = dir.join("repl_session.valvet");
+    let session_file = session_path.to_string_lossy().to_string();
+
+    let mut session = ReplSession {
+        imports: vec![],
+        items: vec![],
+        counter: 0,
+    };
+    let stdin = std::io::stdin();
+    let mut lines = stdin.lock().lines();
+    let mut depth = 0i32;
+    let mut in_block = 0i32;
+    let mut in_str = false;
+    let mut triple = false;
+    let mut buf = String::new();
+    let mut first_line = true;
+    loop {
+        if (first_line || depth != 0 || in_block != 0 || in_str) && interactive {
+            print!("{}", if first_line { "valvet> " } else { "... " });
+            let _ = std::io::stdout().flush();
+        }
+        let line = match lines.next() {
+            Some(Ok(l)) => l,
+            Some(Err(e)) => {
+                eprintln!("error: cannot read stdin: {}", e);
+                return 1;
+            }
+            None => break,
+        };
+        if !buf.is_empty() {
+            buf.push('\n');
+        }
+        // Explicit continuation: a trailing `\` joins the next line
+        // (for multi-item entries, e.g. a struct plus its functions).
+        let continued = line.ends_with('\\') && !line.ends_with("\\\\");
+        let piece = if continued {
+            &line[..line.len() - 1]
+        } else {
+            &line[..]
+        };
+        buf.push_str(piece);
+        scan_line(piece, &mut depth, &mut in_block, &mut in_str, &mut triple);
+        first_line = false;
+        if continued || depth > 0 || in_block != 0 || in_str {
+            continue;
+        }
+        // Complete entry.
+        first_line = true;
+        depth = 0;
+        let entry = std::mem::take(&mut buf);
+        let trimmed = entry.trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed == ":quit" || trimmed == ":q" {
+            break;
+        }
+        if trimmed == ":reset" {
+            session = ReplSession {
+                imports: vec![],
+                items: vec![],
+                counter: 0,
+            };
+            if interactive {
+                println!("session reset");
+            }
+            continue;
+        }
+        if trimmed == ":help" {
+            println!("entries: `fun`/`struct`/`enum` persist (redefine by name); anything else runs once.");
+            println!("imports persist (`import a::b::x;`). `fun main` and `module` are rejected.");
+            println!("commands: :help :reset :quit");
+            continue;
+        }
+        if trimmed.starts_with(':') {
+            eprintln!(
+                "error: unknown command `{}` (`:help` lists commands)",
+                trimmed
+            );
+            continue;
+        }
+        // Classify: items (persist) vs snippet (run once).
+        let probe = Source::new("<repl>".to_string(), entry.clone());
+        let as_unit = pipeline::parse_unit(&probe).ok();
+        let has_items = as_unit
+            .as_ref()
+            .map(|p| !p.funs.is_empty() || !p.structs.is_empty() || !p.enums.is_empty())
+            .unwrap_or(false);
+        let has_module = as_unit.as_ref().and_then(|p| p.module.clone());
+        if has_module.is_some() {
+            eprintln!("error: `module` declarations live in files, not the repl");
+            continue;
+        }
+        if has_items {
+            let prog = as_unit.unwrap();
+            if prog.funs.iter().any(|f| f.name == "main") {
+                eprintln!("error: the repl drives `main` itself; define other functions");
+                continue;
+            }
+            if !prog.imports.is_empty() {
+                eprintln!("error: one thing per entry (imports go on their own line)");
+                continue;
+            }
+            // Tentatively replace same-named definitions, roll back on failure.
+            let saved_len = session.items.len();
+            let saved: Vec<(String, String, String)> = session
+                .items
+                .iter()
+                .map(|it| (it.kind.to_string(), it.name.clone(), it.text.clone()))
+                .collect();
+            for f in &prog.funs {
+                session
+                    .items
+                    .retain(|it| !(it.kind == "fun" && it.name == f.name));
+                session.items.push(ReplItem {
+                    kind: "fun",
+                    name: f.name.clone(),
+                    text: slice_of(&entry, f.span.start, f.span.end),
+                });
+            }
+            for d in &prog.structs {
+                session
+                    .items
+                    .retain(|it| !(it.kind == "struct" && it.name == d.name));
+                session.items.push(ReplItem {
+                    kind: "struct",
+                    name: d.name.clone(),
+                    text: slice_of(&entry, d.span.start, d.span.end),
+                });
+            }
+            for d in &prog.enums {
+                session
+                    .items
+                    .retain(|it| !(it.kind == "enum" && it.name == d.name));
+                session.items.push(ReplItem {
+                    kind: "enum",
+                    name: d.name.clone(),
+                    text: slice_of(&entry, d.span.start, d.span.end),
+                });
+            }
+            let text = session.render(None);
+            if std::fs::write(&session_path, &text).is_err() {
+                eprintln!("error: cannot write session file");
+                session.items.truncate(saved_len);
+                continue;
+            }
+            match pipeline::front_end_file(&session_path) {
+                Ok(_) => {
+                    if interactive {
+                        println!("ok");
+                    }
+                }
+                Err(fd) => {
+                    eprintln!("{}", fd.render());
+                    session.items.clear();
+                    for (kind, name, text) in saved {
+                        let kind = match kind.as_str() {
+                            "fun" => "fun",
+                            "struct" => "struct",
+                            _ => "enum",
+                        };
+                        session.items.push(ReplItem { kind, name, text });
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&session_path);
+            continue;
+        }
+        // Import-only entry: persist verbatim (deduplicated).
+        if let Some(prog) = as_unit {
+            if !prog.imports.is_empty() {
+                if !session.imports.contains(&trimmed) {
+                    session.imports.push(trimmed.clone());
+                }
+                let text = session.render(None);
+                if std::fs::write(&session_path, &text).is_err() {
+                    eprintln!("error: cannot write session file");
+                    session.imports.retain(|i| i != &trimmed);
+                    continue;
+                }
+                match pipeline::front_end_file(&session_path) {
+                    Ok(_) => {
+                        if interactive {
+                            println!("ok");
+                        }
+                    }
+                    Err(fd) => {
+                        eprintln!("{}", fd.render());
+                        session.imports.retain(|i| i != &trimmed);
+                    }
+                }
+                let _ = std::fs::remove_file(&session_path);
+                continue;
+            }
+        }
+        // Snippet entry: must parse wrapped in a function body.
+        let wrapped = format!("fun __rpl() {{\n{}\n}}\n", entry);
+        let wprobe = Source::new("<repl>".to_string(), wrapped);
+        if let Err(ds) = pipeline::parse_unit(&wprobe) {
+            // Item-looking input gets unit errors, else expression errors.
+            let first = entry.trim_start();
+            let itemy = [
+                "fun", "struct", "enum", "import", "module", "pub", "impl", "trait", "type",
+                "const", "static",
+            ]
+            .iter()
+            .any(|k: &&str| first.starts_with(*k));
+            if itemy {
+                match pipeline::parse_unit(&probe) {
+                    Ok(_) => eprintln!("error: entry defines nothing usable"),
+                    Err(es) => {
+                        for d in es {
+                            eprintln!("{}", d.render(&probe));
+                        }
+                    }
+                }
+            } else {
+                for d in ds {
+                    eprintln!("{}", d.render(&wprobe));
+                }
+            }
+            continue;
+        }
+        // Check + run (failed snippets never persist: nothing was added).
+        session.counter += 1;
+        let text = session.render(Some(&entry));
+        if std::fs::write(&session_path, &text).is_err() {
+            eprintln!("error: cannot write session file");
+            continue;
+        }
+        let exe = match build_exe(&session_file) {
+            Ok(e) => e,
+            Err(_) => {
+                let _ = std::fs::remove_file(&session_path);
+                continue;
+            }
+        };
+        match Command::new(&exe).status() {
+            Ok(st) => {
+                if !st.success() {
+                    eprintln!("exit {}", st.code().unwrap_or(1));
+                }
+            }
+            Err(e) => eprintln!("error: cannot execute: {}", e),
+        }
+        let _ = std::fs::remove_file(&session_path);
+    }
+    0
 }
