@@ -1,0 +1,7 @@
+fun main() {
+    val one32 = 1
+    val one64 = 1 as Int64
+    println(2147483647 + one32 == (0 as Int64 - 2147483648) as Int32)
+    println(9223372036854775807 + one64 == 0 as Int64 - 9223372036854775807 - one64)
+    println(100000 * 100000 == 1410065408)
+}

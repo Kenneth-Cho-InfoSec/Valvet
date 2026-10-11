@@ -84,6 +84,24 @@ impl Crate {
     }
 }
 
+/// Ordered stdlib roots for `std::` imports (J0), first hit wins:
+/// explicit `VALVET_STDLIB` override, install layout beside the binary,
+/// then a live dev checkout. Missing candidates are skipped, so any
+/// subset may exist.
+pub fn default_stdlib_roots() -> Vec<PathBuf> {
+    let mut roots = vec![];
+    if let Ok(v) = std::env::var("VALVET_STDLIB") {
+        roots.push(PathBuf::from(v));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.join("../share/valvet/stdlib"));
+        }
+    }
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib"));
+    roots.into_iter().filter(|p| p.is_dir()).collect()
+}
+
 /// Load the entry file plus its transitive imports. Always returns the
 /// (possibly partial) crate alongside errors so failures still render
 /// per-file; callers proceed only when errors are empty.
@@ -95,6 +113,7 @@ pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
         .unwrap_or_else(|| PathBuf::from("."));
     let mut l = Loader {
         root,
+        stdlib_roots: default_stdlib_roots(),
         units: vec![],
         sources: vec![],
         index: HashMap::new(),
@@ -114,6 +133,9 @@ pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
 
 struct Loader {
     root: PathBuf,
+    /// Ordered fallbacks for `std::` imports (J0): explicit override,
+    /// install layout, then a live dev checkout.
+    stdlib_roots: Vec<PathBuf>,
     units: Vec<Unit>,
     sources: Vec<Source>,
     /// Normalized absolute path -> unit index (diamond dedup).
@@ -249,7 +271,33 @@ impl Loader {
                 rel.push(seg);
             }
             rel.set_extension("valvet");
-            let target = self.root.join(&rel);
+            // `std::` imports also consult the stdlib roots in order;
+            // anything else resolves from the entry directory only.
+            // Under a stdlib root the leading `std` segment is dropped
+            // (`import std.math::sqrt` lives at `<root>/math.valvet`
+            // declaring `module std.math;`). A miss everywhere falls back
+            // to the entry-relative path so the diagnostic still names
+            // the file the user would create.
+            let target = if ipath.first().map(|s| s == "std").unwrap_or(false) {
+                let mut hit = self.root.join(&rel);
+                if !hit.is_file() && ipath.len() > 1 {
+                    let mut srel = PathBuf::new();
+                    for seg in &ipath[1..] {
+                        srel.push(seg);
+                    }
+                    srel.set_extension("valvet");
+                    for r in &self.stdlib_roots {
+                        let cand = r.join(&srel);
+                        if cand.is_file() {
+                            hit = cand;
+                            break;
+                        }
+                    }
+                }
+                hit
+            } else {
+                self.root.join(&rel)
+            };
             let target_display = target.display().to_string();
             self.load_unit(&target, &target_display, dotted, Some((display, ispan)))?;
         }

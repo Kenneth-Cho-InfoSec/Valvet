@@ -3667,6 +3667,7 @@ pub fn cc_build(c_file: &Path, exe: &Path) -> Result<(), String> {
     let mut cmd = Command::new(&cc);
     cmd.arg("-std=c11")
         .arg("-O2")
+        .arg("-fwrapv")
         .arg("-o")
         .arg(exe)
         .arg(c_file);
