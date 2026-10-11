@@ -1,0 +1,17 @@
+fun unm(): Missing<Float64> {
+    return Missing::Missing;
+}
+
+fun main() {
+    val a = Missing::Present(1.5);
+    val b: Missing<Float64> = Missing;
+    val c = unm();
+    println(a);
+    println(b);
+    println(c);
+    println(a == a);
+    println(b == b);
+    println(a == b);
+    println(match (a) { Present(x) -> x, Missing -> 0.0, });
+    println(match (b) { Missing::Present(x) -> x, Missing::Missing -> 0.0, });
+}

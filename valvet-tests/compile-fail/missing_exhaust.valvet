@@ -1,0 +1,4 @@
+fun main() {
+    val a: Missing<Float64> = Missing::Present(1.0);
+    println(match (a) { Missing::Present(x) -> x, });
+}

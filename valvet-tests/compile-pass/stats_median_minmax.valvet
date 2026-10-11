@@ -1,0 +1,20 @@
+import std::stats::median;
+import std::stats::min_v;
+import std::stats::max_v;
+import std::stats::quantile;
+import std::stats::MissingPolicy;
+
+fun col(): Vec<Missing<Float64>> {
+    vec![Missing::Present(2.0), Missing::Present(4.0), Missing, Missing::Present(4.0), Missing::Present(8.0)]
+}
+
+fun main() {
+    println(median(col(), MissingPolicy::Skip));
+    println(median(col(), MissingPolicy::Propagate));
+    println(min_v(col(), MissingPolicy::Skip));
+    println(max_v(col(), MissingPolicy::Skip));
+    println(quantile(col(), MissingPolicy::Skip, 0.25));
+    println(quantile(col(), MissingPolicy::Skip, 2.0));
+    val e: Vec<Missing<Float64>> = vec![];
+    println(median(e, MissingPolicy::Skip));
+}

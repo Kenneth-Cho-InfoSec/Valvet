@@ -1,0 +1,292 @@
+module std.stats;
+
+import std::math::sqrt;
+
+pub enum MissingPolicy { Skip, Propagate }
+
+fun skip_of(p: MissingPolicy): Bool {
+    match (p) { MissingPolicy::Skip -> true, MissingPolicy::Propagate -> false, }
+}
+
+struct Acc { sum: Float64, n: Int64, bad: Bool }
+
+fun scan(col: Vec<Missing<Float64>>, skip_na: Bool): Acc {
+    var sum = 0.0
+    var c = 0.0
+    var n = 0 as Int64
+    var bad = false
+    for (m in col) {
+        val isna = match (m) { Missing::Present(x) -> false, Missing -> true, };
+        val x = match (m) { Missing::Present(v) -> v, Missing -> 0.0, };
+        if (isna) {
+            if (!skip_na) {
+                bad = true;
+            }
+        } else {
+            val y = x - c
+            val t = sum + y
+            c = (t - sum) - y
+            sum = t
+            n += 1 as Int64
+        }
+    }
+    Acc { sum: sum, n: n, bad: bad }
+}
+
+pub fun n_missing(col: Vec<Missing<Float64>>): Int64 {
+    var n = 0 as Int64
+    for (m in col) {
+        val isna = match (m) { Missing::Present(x) -> false, Missing -> true, };
+        if (isna) {
+            n += 1 as Int64;
+        }
+    }
+    n
+}
+
+pub fun mean(col: Vec<Missing<Float64>>, policy: MissingPolicy): Option<Float64> {
+    val a = scan(col, skip_of(policy));
+    if (a.bad) {
+        return None;
+    }
+    if (a.n == (0 as Int64)) {
+        return None;
+    }
+    return Some(a.sum / (a.n as Float64));
+}
+
+pub fun sum_v(col: Vec<Missing<Float64>>, policy: MissingPolicy): Option<Float64> {
+    val a = scan(col, skip_of(policy));
+    if (a.bad) {
+        return None;
+    }
+    if (a.n == (0 as Int64)) {
+        return None;
+    }
+    return Some(a.sum);
+}
+
+fun sort_asc(v: Vec<Float64>): Vec<Float64> {
+    var a = v;
+    var i = 0 as Int64
+    while (i < a.len()) {
+        var m = i
+        var j = i + (1 as Int64)
+        while (j < a.len()) {
+            if (a[j] < a[m]) {
+                m = j;
+            }
+            j += 1 as Int64
+        }
+        val t = a[i]
+        a[i] = a[m];
+        a[m] = t;
+        i += 1 as Int64
+    }
+    a
+}
+
+fun present_vec(col: Vec<Missing<Float64>>): Vec<Float64> {
+    var out: Vec<Float64> = vec![]
+    for (m in col) {
+        val x = match (m) { Missing::Present(v) -> v, Missing -> 0.0, };
+        val isna = match (m) { Missing::Present(v) -> false, Missing -> true, };
+        if (!isna) {
+            out.push(x);
+        }
+    }
+    out
+}
+
+fun all_present(col: Vec<Missing<Float64>>): Bool {
+    n_missing(col) == (0 as Int64)
+}
+
+pub fun median(col: Vec<Missing<Float64>>, policy: MissingPolicy): Option<Float64> {
+    val skip = skip_of(policy);
+    if (!skip && !all_present(col.clone())) {
+        return None;
+    }
+    val vals = present_vec(col);
+    val n = vals.len()
+    if (n == (0 as Int64)) {
+        return None;
+    }
+    val s = sort_asc(vals);
+    val h = (n as Float64) / 2.0
+    val lo = h as Int64
+    if (n % (2 as Int64) == (0 as Int64)) {
+        return Some((s[lo - (1 as Int64)] + s[lo]) / 2.0);
+    }
+    return Some(s[lo]);
+}
+
+pub fun min_v(col: Vec<Missing<Float64>>, policy: MissingPolicy): Option<Float64> {
+    if (!skip_of(policy) && !all_present(col.clone())) {
+        return None;
+    }
+    val vals = present_vec(col);
+    if (vals.len() == (0 as Int64)) {
+        return None;
+    }
+    var best = vals[0]
+    var i = 1 as Int64
+    while (i < vals.len()) {
+        if (vals[i] < best) {
+            best = vals[i];
+        }
+        i += 1 as Int64
+    }
+    return Some(best);
+}
+
+pub fun max_v(col: Vec<Missing<Float64>>, policy: MissingPolicy): Option<Float64> {
+    if (!skip_of(policy) && !all_present(col.clone())) {
+        return None;
+    }
+    val vals = present_vec(col);
+    if (vals.len() == (0 as Int64)) {
+        return None;
+    }
+    var best = vals[0]
+    var i = 1 as Int64
+    while (i < vals.len()) {
+        if (vals[i] > best) {
+            best = vals[i];
+        }
+        i += 1 as Int64
+    }
+    return Some(best);
+}
+
+pub fun var_v(col: Vec<Missing<Float64>>, policy: MissingPolicy): Option<Float64> {
+    val m = mean(col.clone(), policy);
+    val have = match (m) { Some(x) -> true, None -> false, };
+    if (!have) {
+        return None;
+    }
+    val mu = match (m) { Some(x) -> x, None -> 0.0, };
+    var ssd = 0.0
+    var c = 0.0
+    var n = 0 as Int64
+    for (e in col) {
+        val isna = match (e) { Missing::Present(v) -> false, Missing -> true, };
+        val x = match (e) { Missing::Present(v) -> v, Missing -> 0.0, };
+        if (!isna) {
+            val d = x - mu
+            val y = d * d - c
+            val t = ssd + y
+            c = (t - ssd) - y
+            ssd = t
+            n += 1 as Int64
+        }
+    }
+    if (n < (2 as Int64)) {
+        return None;
+    }
+    return Some(ssd / ((n - (1 as Int64)) as Float64));
+}
+
+pub fun sd(col: Vec<Missing<Float64>>, policy: MissingPolicy): Option<Float64> {
+    val v = var_v(col, policy);
+    val have = match (v) { Some(x) -> true, None -> false, };
+    if (!have) {
+        return None;
+    }
+    val x = match (v) { Some(y) -> y, None -> 0.0, };
+    return Some(sqrt(x));
+}
+
+pub fun quantile(col: Vec<Missing<Float64>>, policy: MissingPolicy, q: Float64): Option<Float64> {
+    if (q < 0.0 || q > 1.0) {
+        return None;
+    }
+    if (!skip_of(policy) && !all_present(col.clone())) {
+        return None;
+    }
+    val vals = present_vec(col);
+    val n = vals.len()
+    if (n == (0 as Int64)) {
+        return None;
+    }
+    val s = sort_asc(vals);
+    val h = q * ((n - (1 as Int64)) as Float64)
+    val lo = h as Int64
+    val frac = h - (lo as Float64)
+    if (frac == 0.0) {
+        return Some(s[lo]);
+    }
+    return Some(s[lo] + frac * (s[lo + (1 as Int64)] - s[lo]));
+}
+
+fun pair_sums(x: Vec<Missing<Float64>>, y: Vec<Missing<Float64>>, skip_na: Bool): Vec<Float64> {
+    var sx = 0.0
+    var sy = 0.0
+    var sxx = 0.0
+    var syy = 0.0
+    var sxy = 0.0
+    var n = 0 as Int64
+    var bad = false
+    var i = 0 as Int64
+    val nx = x.len()
+    val ny = y.len()
+    val nloc = if (nx < ny) { nx } else { ny }
+    while (i < nloc) {
+        val a = x[i]
+        val b = y[i]
+        val na = match (a) { Missing::Present(v) -> false, Missing -> true, };
+        val nb = match (b) { Missing::Present(v) -> false, Missing -> true, };
+        val av = match (a) { Missing::Present(v) -> v, Missing -> 0.0, };
+        val bv = match (b) { Missing::Present(v) -> v, Missing -> 0.0, };
+        if (na || nb) {
+            if (!skip_na) {
+                bad = true;
+            }
+        } else {
+            sx += av
+            sy += bv
+            sxx += av * av
+            syy += bv * bv
+            sxy += av * bv
+            n += 1 as Int64
+        }
+        i += 1 as Int64
+    }
+    val badf = if (bad) { 1.0 } else { 0.0 }
+    vec![sx, sy, sxx, syy, sxy, n as Float64, badf]
+}
+
+pub fun cov(x: Vec<Missing<Float64>>, y: Vec<Missing<Float64>>, policy: MissingPolicy): Option<Float64> {
+    val s = pair_sums(x, y, skip_of(policy));
+    if (s[6] == 1.0) {
+        return None;
+    }
+    val n = s[5]
+    if (n < 2.0) {
+        return None;
+    }
+    val c = (s[4] - s[0] * s[1] / n) / (n - 1.0)
+    return Some(c);
+}
+
+pub fun cor(x: Vec<Missing<Float64>>, y: Vec<Missing<Float64>>, policy: MissingPolicy): Option<Float64> {
+    val s = pair_sums(x, y, skip_of(policy));
+    if (s[6] == 1.0) {
+        return None;
+    }
+    val n = s[5]
+    if (n < 2.0) {
+        return None;
+    }
+    val dx = s[2] - s[0] * s[0] / n
+    val dy = s[3] - s[1] * s[1] / n
+    val denom = sqrt(dx * dy)
+    if (denom == 0.0) {
+        return None;
+    }
+    return Some((s[4] - s[0] * s[1] / n) / denom);
+}
+
+pub fun na(): Missing<Float64> {
+    return Missing::Missing;
+}

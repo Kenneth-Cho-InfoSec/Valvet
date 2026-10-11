@@ -1,0 +1,19 @@
+import std::stats::var_v;
+import std::stats::sd;
+import std::stats::cor;
+import std::stats::cov;
+import std::stats::MissingPolicy;
+
+fun main() {
+    val a = vec![Missing::Present(2.0), Missing::Present(4.0), Missing, Missing::Present(4.0), Missing::Present(8.0)];
+    println(var_v(a.clone(), MissingPolicy::Skip));
+    println(sd(a.clone(), MissingPolicy::Skip));
+    println(var_v(a.clone(), MissingPolicy::Propagate));
+    val x = vec![Missing::Present(1.0), Missing::Present(2.0), Missing::Present(3.0)];
+    val y = vec![Missing::Present(2.0), Missing::Present(4.0), Missing::Present(6.0)];
+    println(cor(x.clone(), y.clone(), MissingPolicy::Skip));
+    println(cov(x, y, MissingPolicy::Skip));
+    val flat = vec![Missing::Present(5.0), Missing::Present(5.0)];
+    val z = vec![Missing::Present(1.0), Missing::Present(2.0)];
+    println(cor(flat, z, MissingPolicy::Skip));
+}

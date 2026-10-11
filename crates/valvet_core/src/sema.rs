@@ -691,7 +691,7 @@ impl Cx {
     /// `Option<T>` (pop/get signatures reference it).
     fn record_ty(&mut self, ty: &Ty) {
         if let Ty::Generic { base, args } = ty {
-            if base == "Vec" || base == "Option" || base == "Result" {
+            if base == "Vec" || base == "Option" || base == "Result" || base == "Missing" {
                 for a in args {
                     self.record_ty(a);
                 }
@@ -770,7 +770,7 @@ impl Cx {
                     return Ty::Unit;
                 }
                 match (base.as_str(), resolved.len()) {
-                    ("Option", 1) | ("Result", 2) | ("Vec", 1) => {
+                    ("Option", 1) | ("Result", 2) | ("Vec", 1) | ("Missing", 1) => {
                         let t = Ty::Generic {
                             base: base.clone(),
                             args: resolved,
@@ -2182,22 +2182,49 @@ impl Cx {
                         }
                     }
                 } else {
-                    let t0 = self.check_expr(&elems[0]);
-                    for el in &elems[1..] {
-                        let t = self.check_expr(el);
-                        if t != t0 {
-                            self.err(
-                                "E0201",
-                                el.span,
-                                format!(
-                                    "`vec!` elements must share one type (found {} vs {})",
-                                    t0.name(),
-                                    t.name()
-                                ),
-                                None,
-                            );
+                    // Seed the expected element type from the annotation,
+                    // else from the first element, so bare constructors
+                    // (`None`, `Missing`) resolve against their siblings:
+                    // `vec![Some(1), None]`, `vec![Present(1.0), Missing]`.
+                    let mut seed: Option<Ty> = exp_elem.clone();
+                    let mut t0_opt: Option<Ty> = None;
+                    for (idx, el) in elems.iter().enumerate() {
+                        // Qualified variants (`Missing::Missing`) read the
+                        // ambient expectation: seed it when known.
+                        let saved_exp = self.expected.clone();
+                        if idx > 0 && self.expected.is_none() {
+                            self.expected = seed.clone();
+                        }
+                        let t = match self.ctor_use(el) {
+                            Some((cn, cargs)) => {
+                                let exp = seed.as_ref().or(t0_opt.as_ref());
+                                self.check_ctor_call(el.id, el.span, &cn, &cargs, exp)
+                            }
+                            None => self.check_expr(el),
+                        };
+                        self.expected = saved_exp;
+                        if seed.is_none() {
+                            seed = Some(t.clone());
+                        }
+                        match &t0_opt {
+                            None => t0_opt = Some(t),
+                            Some(t0) => {
+                                if t != *t0 {
+                                    self.err(
+                                        "E0201",
+                                        el.span,
+                                        format!(
+                                            "`vec!` elements must share one type (found {} vs {})",
+                                            t0.name(),
+                                            t.name()
+                                        ),
+                                        None,
+                                    );
+                                }
+                            }
                         }
                     }
+                    let t0 = t0_opt.unwrap_or(Ty::Unit);
                     let vt = if let Some(exp) = exp_elem {
                         if exp != t0 {
                             self.err(
@@ -2530,10 +2557,11 @@ impl Cx {
                 args,
                 ..
             } => {
-                // Builtin `Option::`/`Result::` construction. Known sides come
-                // from the arguments; unknown sides (`None`, bare `Ok`/`Err`)
-                // come from the expected type; otherwise E0201 (never guess).
-                if ty == "Option" || ty == "Result" {
+                // Builtin `Option::`/`Result::`/`Missing::` construction. Known sides come
+                // from the arguments; unknown sides (`None`, bare `Ok`/`Err`,
+                // `Missing::Missing`) come from the expected type; otherwise
+                // E0201 (never guess).
+                if ty == "Option" || ty == "Result" || ty == "Missing" {
                     let exp = self.expected.clone();
                     let t = self.check_builtin_variant(
                         e.span,
@@ -2649,13 +2677,17 @@ impl Cx {
         self.locals.iter().rev().any(|m| m.contains_key(name))
     }
 
-    /// Whether an expression is an Option/Result constructor call that needs
-    /// an expected type (`None` bare, or `Some`/`Ok`/`Err` calls). User
-    /// bindings/functions with those names shadow the builtins.
+    /// Whether an expression is an Option/Result/Missing constructor call
+    /// that needs an expected type (`None`/`Missing` bare, or
+    /// `Some`/`Ok`/`Err`/`Present` calls). User bindings/functions with
+    /// those names shadow the builtins.
     fn ctor_use(&self, e: &Expr) -> Option<(String, Vec<Expr>)> {
         match &e.kind {
             ExprKind::Var(n) if n == "None" && !self.shadowed(n) => {
                 Some(("None".to_string(), vec![]))
+            }
+            ExprKind::Var(n) if n == "Missing" && !self.shadowed(n) => {
+                Some(("Missing".to_string(), vec![]))
             }
             ExprKind::Call { name, args }
                 if name == "None" && args.is_empty() && !self.shadowed(name) =>
@@ -2663,7 +2695,12 @@ impl Cx {
                 Some(("None".to_string(), vec![]))
             }
             ExprKind::Call { name, args }
-                if (name == "Some" || name == "Ok" || name == "Err")
+                if name == "Missing" && args.is_empty() && !self.shadowed(name) =>
+            {
+                Some(("Missing".to_string(), vec![]))
+            }
+            ExprKind::Call { name, args }
+                if (name == "Some" || name == "Ok" || name == "Err" || name == "Present")
                     && self.resolve_fun(name).is_none() =>
             {
                 Some((name.clone(), args.clone()))
@@ -2698,15 +2735,20 @@ impl Cx {
     ) -> Ty {
         // Validate arity first.
         let arity_ok = match name {
-            "None" => {
+            "None" | "Missing" => {
                 if !args.is_empty() {
-                    self.err("E0201", span, "`None` takes no arguments", None);
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`{}` takes no arguments", name),
+                        None,
+                    );
                     false
                 } else {
                     true
                 }
             }
-            "Some" | "Ok" | "Err" => {
+            "Some" | "Ok" | "Err" | "Present" => {
                 if args.len() != 1 {
                     self.err(
                         "E0201",
@@ -2754,10 +2796,40 @@ impl Cx {
                     Ty::Unit
                 }
             },
-            "Some" => {
+            "Missing" => match expected {
+                Some(Ty::Generic { base, args }) if base == "Missing" && args.len() == 1 => {
+                    Ty::Generic {
+                        base: base.clone(),
+                        args: args.clone(),
+                    }
+                }
+                Some(other) => {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "`Missing` needs a `Missing<T>` context, found {}",
+                            other.name()
+                        ),
+                        None,
+                    );
+                    Ty::Unit
+                }
+                None => {
+                    self.err(
+                        "E0201",
+                        span,
+                        "`Missing` needs an expected `Missing<T>` type; annotate the binding",
+                        Some("e.g. `val x: Missing<Float64> = Missing`".into()),
+                    );
+                    Ty::Unit
+                }
+            },
+            "Some" | "Present" => {
+                let want = if name == "Some" { "Option" } else { "Missing" };
                 let at = self.check_expr(&args[0]);
                 match expected {
-                    Some(Ty::Generic { base, args: exp }) if base == "Option" && exp.len() == 1 => {
+                    Some(Ty::Generic { base, args: exp }) if base == want && exp.len() == 1 => {
                         if exp[0] != at {
                             self.err(
                                 "E0201",
@@ -2776,7 +2848,9 @@ impl Cx {
                             "E0201",
                             span,
                             format!(
-                                "`Some(..)` needs an `Option<T>` context, found {}",
+                                "`{}(..)` needs a `{}<T>` context, found {}",
+                                name,
+                                want,
                                 other.name()
                             ),
                             None,
@@ -2785,11 +2859,11 @@ impl Cx {
                     }
                     None => {
                         // Record the instantiation for the inferred payload.
-                        let key = Self::inst_key("Option", std::slice::from_ref(&at));
+                        let key = Self::inst_key(want, std::slice::from_ref(&at));
                         self.generic_insts
-                            .insert(key, ("Option".to_string(), vec![at.clone()]));
+                            .insert(key, (want.to_string(), vec![at.clone()]));
                         Ty::Generic {
-                            base: "Option".to_string(),
+                            base: want.to_string(),
                             args: vec![at],
                         }
                     }
@@ -2861,6 +2935,8 @@ impl Cx {
             ("Option", "None") => Some((0, false)),
             ("Result", "Ok") => Some((1, false)),
             ("Result", "Err") => Some((1, false)),
+            ("Missing", "Present") => Some((1, false)),
+            ("Missing", "Missing") => Some((0, false)),
             _ => None,
         };
         let (arity, _) = match shape {
@@ -2892,14 +2968,15 @@ impl Cx {
         let mut targs: Vec<Ty> = vec![];
         if arity == 1 {
             let at = self.check_expr(&args[0]);
-            // Positional slot this payload fills: Some->0, Ok->0, Err->1.
+            // Positional slot this payload fills: Some/Present->0, Ok->0, Err->1.
             let slot = match (ty, variant) {
                 ("Option", "Some") => 0,
+                ("Missing", "Present") => 0,
                 ("Result", "Ok") => 0,
                 ("Result", "Err") => 1,
                 _ => 0,
             };
-            let width = if ty == "Option" { 1 } else { 2 };
+            let width = if ty == "Result" { 2 } else { 1 };
             targs = vec![Ty::Unit; width];
             // If the expected type knows this slot, validate against it.
             if let Some(exp) = exp_args {
@@ -2927,19 +3004,23 @@ impl Cx {
                     );
                     return Ty::Unit;
                 }
-                if ty == "Option" && variant == "None" {
+                if ty == "Option" && variant == "None" || ty == "Missing" && variant == "Missing" {
                     unreachable!("arity-0 handled below");
                 }
             }
         } else {
-            // Arity 0 (`None`): payload unknowable without context.
+            // Arity 0 (`None`, `Missing::Missing`): payload unknowable
+            // without context.
             match exp_args {
                 Some(exp) => targs = exp,
                 None => {
                     self.err(
                         "E0201",
                         span,
-                        "`Option::None` needs an expected `Option<T>` type; annotate the binding",
+                        format!(
+                            "`{}::{}` needs an expected type; annotate the binding",
+                            ty, variant
+                        ),
                         None,
                     );
                     return Ty::Unit;
@@ -3097,9 +3178,9 @@ impl Cx {
                 sub,
             } => {
                 // Resolve the enum: qualified must match, bare resolves via scrutinee.
-                // `Option`/`Result` (builtin generics) resolve structurally.
+                // `Option`/`Result`/`Missing` (builtin generics) resolve structurally.
                 let ename = match ty {
-                    Some(t) if t == "Option" || t == "Result" => t.clone(),
+                    Some(t) if t == "Option" || t == "Result" || t == "Missing" => t.clone(),
                     Some(t) => {
                         if let Some(q) = self.resolve_type(t).filter(|q| self.enums.contains_key(q))
                         {
@@ -3116,7 +3197,9 @@ impl Cx {
                     }
                     None => match scrut_ty {
                         Ty::Enum(n) => n.clone(),
-                        Ty::Generic { base, .. } if base == "Option" || base == "Result" => {
+                        Ty::Generic { base, .. }
+                            if base == "Option" || base == "Result" || base == "Missing" =>
+                        {
                             base.clone()
                         }
                         _ => {
@@ -3154,6 +3237,12 @@ impl Cx {
                                 vec![args[0].clone()]
                             }
                             ("Option", "None", Ty::Generic { args, .. }) if args.len() == 1 => {
+                                vec![]
+                            }
+                            ("Missing", "Present", Ty::Generic { args, .. }) if args.len() == 1 => {
+                                vec![args[0].clone()]
+                            }
+                            ("Missing", "Missing", Ty::Generic { args, .. }) if args.len() == 1 => {
                                 vec![]
                             }
                             ("Result", "Ok", Ty::Generic { args, .. }) if args.len() == 2 => {
@@ -3412,9 +3501,13 @@ impl Cx {
                 }
                 missing
             }
-            Ty::Generic { base, .. } if base == "Option" || base == "Result" => {
+            Ty::Generic { base, .. }
+                if base == "Option" || base == "Result" || base == "Missing" =>
+            {
                 let variants: Vec<(&str, usize)> = if base == "Option" {
                     vec![("Some", 1), ("None", 0)]
+                } else if base == "Missing" {
+                    vec![("Present", 1), ("Missing", 0)]
                 } else {
                     vec![("Ok", 1), ("Err", 1)]
                 };
@@ -3623,7 +3716,14 @@ impl Cx {
                     self.err("E0201", span, "`push` takes exactly 1 argument", None);
                     return Ty::Unit;
                 }
-                let at = self.check_expr(&args[0]);
+                // Constructors (`None`, `Missing`) check against the
+                // element type, like annotated call arguments.
+                let at = match self.ctor_use(&args[0]) {
+                    Some((cn, cargs)) => {
+                        self.check_ctor_call(args[0].id, args[0].span, &cn, &cargs, Some(elem))
+                    }
+                    None => self.check_expr(&args[0]),
+                };
                 if at != *elem {
                     self.err(
                         "E0201",
@@ -3966,12 +4066,15 @@ impl Cx {
     }
 
     /// Whether a value can be `println`-ed: primitives plus `Vec` /
-    /// `Option` / `Result` nesting over printable types (structs, enums,
-    /// and references stay E0201 until stdlib `Display` in 0.2.0).
+    /// `Option` / `Result` / `Missing` nesting over printable types
+    /// (structs, enums, and references stay E0201 until stdlib `Display`
+    /// in 0.2.0).
     fn printable(ty: &Ty) -> bool {
         match ty {
             Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str => true,
-            Ty::Generic { base, args } if base == "Vec" || base == "Option" => {
+            Ty::Generic { base, args }
+                if base == "Vec" || base == "Option" || base == "Missing" =>
+            {
                 args.len() == 1 && Self::printable(&args[0])
             }
             Ty::Generic { base, args } if base == "Result" => {
@@ -3985,7 +4088,9 @@ impl Cx {
     /// emits `vfmt_`/`vprint_` helpers exactly for these (nested included).
     fn record_print_insts(ty: &Ty, out: &mut std::collections::HashSet<String>) {
         match ty {
-            Ty::Generic { base, args } if base == "Vec" || base == "Option" || base == "Result" => {
+            Ty::Generic { base, args }
+                if base == "Vec" || base == "Option" || base == "Result" || base == "Missing" =>
+            {
                 out.insert(Self::inst_key(base, args));
                 for a in args {
                     Self::record_print_insts(a, out);
@@ -4018,7 +4123,7 @@ impl Cx {
                     "E0201",
                     span,
                     format!(
-                        "`{}` supports Int32/Int64/Float64/Bool/String, Vec<T>, Option<T>, Result<T, E> (of printable types); found {}",
+                        "`{}` supports Int32/Int64/Float64/Bool/String, Vec<T>, Option<T>, Result<T, E>, Missing<T> (of printable types); found {}",
                         name,
                         t.name()
                     ),
@@ -4063,16 +4168,16 @@ impl Cx {
             || name == "json_rows"
         {
             return self.check_io_builtin(span, name, args);
-        } else if (name == "Some" || name == "Ok" || name == "Err")
+        } else if (name == "Some" || name == "Ok" || name == "Err" || name == "Present")
             && self.resolve_fun(name).is_none()
         {
             return self.check_ctor_call(id, span, name, args, None);
         }
-        if name == "None" && self.resolve_fun(name).is_none() {
+        if (name == "None" || name == "Missing") && self.resolve_fun(name).is_none() {
             self.err(
                 "E0201",
                 span,
-                "`None` takes no parentheses; write `None`",
+                format!("`{}` takes no parentheses; write `{}`", name, name),
                 None,
             );
             return Ty::Unit;
@@ -4221,6 +4326,18 @@ impl Cx {
                 if lt == rt
                     && matches!(lt, Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str)
                 {
+                    Ty::Bool
+                } else if matches!(&lt, Ty::Generic { base, args } if base == "Missing" && args.len() == 1)
+                    && lt == rt
+                    && matches!(
+                        &lt,
+                        Ty::Generic { args, .. }
+                            if matches!(&args[0], Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str)
+                    )
+                {
+                    // `Missing == Missing` is true (unlike NaN); two
+                    // `Present` values compare payloads with `==`, so NaN
+                    // payloads stay unequal. Tags decide first.
                     Ty::Bool
                 } else {
                     self.err(

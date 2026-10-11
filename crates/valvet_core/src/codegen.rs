@@ -756,7 +756,7 @@ impl<'a> Gen<'a> {
     fn resolve_pat_ty(&self, q: &Option<String>) -> Result<Option<String>, Ice> {
         match q {
             None => Ok(None),
-            Some(t) if t == "Option" || t == "Result" => Ok(Some(t.clone())),
+            Some(t) if t == "Option" || t == "Result" || t == "Missing" => Ok(Some(t.clone())),
             Some(t) => Ok(Some(
                 self.resolve_type(t)
                     .ok_or_else(|| Ice(format!("unknown enum {}", t)))?,
@@ -1124,11 +1124,11 @@ impl<'a> Gen<'a> {
         }
         if let ExprKind::Var(name) = &e.kind {
             let cname = mangle(name);
-            // Bare `None` (unshadowed — sema guarantees) is a constructor.
+            // Bare `None`/`Missing` (unshadowed — sema guarantees) is a constructor.
             // Handled here too because this fast path bypasses emit_expr.
-            if name == "None" && !self.owned.contains_key(&cname) {
+            if (name == "None" || name == "Missing") && !self.owned.contains_key(&cname) {
                 if let Ty::Generic { base, args } = self.ty_of(e.id) {
-                    if base == "Option" {
+                    if base == "Option" || base == "Missing" {
                         return Ok(format!("({}){{ .tag = 1 }}", ctype_inst(&base, &args)));
                     }
                 }
@@ -2170,6 +2170,14 @@ impl<'a> Gen<'a> {
                     some
                 ));
             }
+            ("Missing", [t]) => {
+                let present = self.fmt_call(t, &format!("v.u.{}.{}", cmember(0), cfield("_0")))?;
+                body.push_str("if (v.tag == 1) { printf(\"NA\"); }\n");
+                body.push_str(&format!(
+                    "else {{ printf(\"Present(\"); {}; printf(\")\"); }}\n",
+                    present
+                ));
+            }
             ("Result", [t, e]) => {
                 let ok = self.fmt_call(t, &format!("v.u.{}.{}", cmember(0), cfield("_0")))?;
                 let err = self.fmt_call(e, &format!("v.u.{}.{}", cmember(1), cfield("_0")))?;
@@ -2204,7 +2212,7 @@ impl<'a> Gen<'a> {
             Ty::Bool => Ok(format!("vfmt_bool({})", path)),
             Ty::Str => Ok(format!("vfmt_str({})", path)),
             Ty::Generic { base, args }
-                if (base == "Vec" || base == "Option") && args.len() == 1 =>
+                if (base == "Vec" || base == "Option" || base == "Missing") && args.len() == 1 =>
             {
                 Ok(format!(
                     "vfmt_{}({})",
@@ -2267,6 +2275,10 @@ impl<'a> Gen<'a> {
                 ("Some".to_string(), vec![t.clone()]),
                 ("None".to_string(), vec![]),
             ],
+            ("Missing", [t]) => vec![
+                ("Present".to_string(), vec![t.clone()]),
+                ("Missing".to_string(), vec![]),
+            ],
             ("Result", [t, e]) => vec![
                 ("Ok".to_string(), vec![t.clone()]),
                 ("Err".to_string(), vec![e.clone()]),
@@ -2283,9 +2295,10 @@ impl<'a> Gen<'a> {
         variant: &str,
         scrut_ty: &Ty,
     ) -> Result<(String, usize, Vec<Ty>), Ice> {
-        // Qualified `Option::Some` / `Result::Ok` (base name only).
+        // Qualified `Option::Some` / `Result::Ok` / `Missing::Present`
+        // (base name only).
         if let Some(t) = ty_opt {
-            if t == "Option" || t == "Result" {
+            if t == "Option" || t == "Result" || t == "Missing" {
                 match scrut_ty {
                     Ty::Generic { base, args } if base == t => {
                         let vs = self.generic_variants(base, args);
@@ -2328,7 +2341,9 @@ impl<'a> Gen<'a> {
                     .map(|(i, (_, p))| (ctype_name(n), i, p.clone()))
                     .ok_or_else(|| Ice("unknown variant".into()))
             }
-            Ty::Generic { base, args } if base == "Option" || base == "Result" => {
+            Ty::Generic { base, args }
+                if base == "Option" || base == "Result" || base == "Missing" =>
+            {
                 let vs = self.generic_variants(base, args);
                 vs.iter()
                     .enumerate()
@@ -2930,13 +2945,15 @@ impl<'a> Gen<'a> {
                             .push_str(&format!("int64_t {}_len = {}.len;\n", idx, snap));
                         self.out
                             .push_str(&format!("for (; {} < {}_len; ++{}) {{\n", idx, idx, idx));
-                        // Per-iteration owned binding (clone out of snapshot).
-                        self.out.push_str(&format!(
-                            "{} {} = {};\n",
-                            elem_ct,
-                            cvar,
+                        // Per-iteration owned binding (clone out of snapshot;
+                        // `Copy` elements copy plainly — no helper exists).
+                        let elem_init = if self.type_needs_drop(&elem_ty) {
                             self.clone_call(&elem_ty, &format!("{}.data[{}]", snap, idx))
-                        ));
+                        } else {
+                            format!("{}.data[{}]", snap, idx)
+                        };
+                        self.out
+                            .push_str(&format!("{} {} = {};\n", elem_ct, cvar, elem_init));
                         self.loop_stack.push(LoopInfo {
                             body_depth: self.scopes.len(),
                             tmp_depth: self.tmp_frames.len(),
@@ -3037,10 +3054,12 @@ impl<'a> Gen<'a> {
                 Ok(())
             }
             Stmt::Return { value, .. } => {
-                // Free every live statement temp on the return path, but
-                // keep the frames registered (see `destroy_all_temps`):
-                // transferred values were already nulled, so freeing the
-                // rest is safe.
+                // Write queued move-poisons FIRST so the destroys below
+                // skip transferred slots; then free every live statement
+                // temp on the return path, keeping frames registered (see
+                // `destroy_all_temps`): enclosing owners still pop (and
+                // destroy) on fallthrough paths.
+                self.flush_nulls();
                 self.destroy_all_temps();
                 self.push_frame();
                 let saved = self.cur_move;
@@ -3075,10 +3094,16 @@ impl<'a> Gen<'a> {
                         } else {
                             self.cur_move = false;
                             let e = self.emit_expr(v)?;
+                            // Materialize before frees: the expression may
+                            // read owned locals (index, field, call), which
+                            // frees would destroy first (use-after-free).
+                            let ret = self.fresh_tmp();
+                            self.out
+                                .push_str(&format!("{} {} = {};\n", self.cty_val(&vt), ret, e));
                             self.flush_nulls();
                             self.pop_frame();
                             self.emit_all_frees();
-                            self.out.push_str(&format!("return {};\n", e));
+                            self.out.push_str(&format!("return {};\n", ret));
                         }
                     }
                 }
@@ -3109,11 +3134,11 @@ impl<'a> Gen<'a> {
             ExprKind::Str(s) => format!("vstr_from_c(\"{}\")", c_escape(s)),
             ExprKind::Var(name) => {
                 let cname = mangle(name);
-                // Bare `None` (unshadowed — sema guarantees) is a constructor,
-                // not a variable reference.
-                if name == "None" && !self.owned.contains_key(&cname) {
+                // Bare `None`/`Missing` (unshadowed — sema guarantees) is a
+                // constructor, not a variable reference.
+                if (name == "None" || name == "Missing") && !self.owned.contains_key(&cname) {
                     if let Ty::Generic { base, args } = self.ty_of(e.id) {
-                        if base == "Option" {
+                        if base == "Option" || base == "Missing" {
                             return Ok(format!("({}){{ .tag = 1 }}", ctype_inst(&base, &args)));
                         }
                     }
@@ -3211,7 +3236,8 @@ impl<'a> Gen<'a> {
                         // Composites (sema validated printability + recorded
                         // the instantiation for helper generation).
                         Ty::Generic { base, args }
-                            if (base == "Vec" || base == "Option") && args.len() == 1 =>
+                            if (base == "Vec" || base == "Option" || base == "Missing")
+                                && args.len() == 1 =>
                         {
                             format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
                         }
@@ -3388,6 +3414,35 @@ impl<'a> Gen<'a> {
                         BinOp::Eq => format!("vstr_eq({}, {})", l, r),
                         BinOp::Ne => format!("(!vstr_eq({}, {}))", l, r),
                         _ => return Err(Ice("invalid string operator".into())),
+                    }
+                } else if matches!(op, BinOp::Eq | BinOp::Ne)
+                    && matches!(&lt, Ty::Generic { base, args } if base == "Missing" && args.len() == 1)
+                {
+                    // `Missing == Missing` is true (unlike NaN); two
+                    // `Present` values compare payloads with `==`, so NaN
+                    // payloads stay unequal. Tags decide first.
+                    self.cur_move = false;
+                    let l = self.mat_str(lhs)?;
+                    let r = self.mat_str(rhs)?;
+                    self.cur_move = saved;
+                    let t = match &lt {
+                        Ty::Generic { args, .. } => args[0].clone(),
+                        _ => return Err(Ice("missing payload".into())),
+                    };
+                    let lp = format!("{}.u.v0.v___0", l);
+                    let rp = format!("{}.u.v0.v___0", r);
+                    let cmp = match t {
+                        Ty::Str => format!("vstr_eq({}, {})", lp, rp),
+                        _ => format!("({} == {})", lp, rp),
+                    };
+                    let eq = format!(
+                        "({}.tag != {}.tag ? 0 : (({}.tag == 1) ? 1 : ({})))",
+                        l, r, l, cmp
+                    );
+                    if matches!(op, BinOp::Ne) {
+                        format!("(!({}))", eq)
+                    } else {
+                        eq
                     }
                 } else {
                     let l = self.emit_expr(lhs)?;
@@ -3655,11 +3710,12 @@ impl<'a> Gen<'a> {
             ExprKind::Variant {
                 ty, variant, args, ..
             } => {
-                // Qualified declared enums and builtin `Option::`/`Result::`
-                // both resolve here (sema validated the spelling). User-written
-                // enum names resolve through the current module + imports.
+                // Qualified declared enums and builtin
+                // `Option::`/`Result::`/`Missing::` both resolve here (sema
+                // validated the spelling). User-written enum names resolve
+                // through the current module + imports.
                 let scrut = self.ty_of(e.id);
-                let qty = if ty == "Option" || ty == "Result" {
+                let qty = if ty == "Option" || ty == "Result" || ty == "Missing" {
                     ty.clone()
                 } else {
                     self.resolve_type(ty)
