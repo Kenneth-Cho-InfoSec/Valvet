@@ -1997,18 +1997,35 @@ impl<'a> Gen<'a> {
                             }
                         }
                         _ => {
-                            self.cur_move = false;
-                            let rhs = self.emit_expr(value)?;
-                            let cop = match op {
-                                AssignOp::Add => "+=",
-                                AssignOp::Sub => "-=",
-                                AssignOp::Mul => "*=",
-                                AssignOp::Div => "/=",
-                                _ => "%=",
-                            };
-                            self.out.push_str(&format!("{} {} {};\n", cname, cop, rhs));
-                            self.flush_nulls();
-                            self.pop_frame();
+                            if *op == AssignOp::Add && vt == Ty::Str {
+                                // `s += e` on strings desugars to `s = s + e`:
+                                // concat copies both sides, so hold the fresh
+                                // value, destroy the old, then install.
+                                self.cur_move = false;
+                                let r = self.mat_str(value)?;
+                                let hold = self.fresh_tmp();
+                                self.out.push_str(&format!(
+                                    "VStr {} = vstr_concat({}, {});\n",
+                                    hold, cname, r
+                                ));
+                                self.flush_nulls();
+                                self.pop_frame();
+                                self.emit_destroy(&cname, &vt);
+                                self.out.push_str(&format!("{} = {};\n", cname, hold));
+                            } else {
+                                self.cur_move = false;
+                                let rhs = self.emit_expr(value)?;
+                                let cop = match op {
+                                    AssignOp::Add => "+=",
+                                    AssignOp::Sub => "-=",
+                                    AssignOp::Mul => "*=",
+                                    AssignOp::Div => "/=",
+                                    _ => "%=",
+                                };
+                                self.out.push_str(&format!("{} {} {};\n", cname, cop, rhs));
+                                self.flush_nulls();
+                                self.pop_frame();
+                            }
                         }
                     }
                     self.cur_move = saved;
@@ -2584,6 +2601,22 @@ impl<'a> Gen<'a> {
                     self.out.push_str("}\n");
                     self.cur_move = saved;
                     res
+                } else if tt == Ty::Unit {
+                    // Statement-position `if`: no result slot (a `void`
+                    // tail has no value to store). Emit both branches as
+                    // plain blocks and yield a dummy inline value.
+                    self.out.push_str(&format!("if ({}) {{\n", c));
+                    let fn_ret = self.fn_ret.clone();
+                    self.emit_block(then_b, &fn_ret, false)?;
+                    self.out.push('}');
+                    if let Some(b) = else_b {
+                        self.out.push_str(" else {\n");
+                        self.emit_block(b, &fn_ret, false)?;
+                        self.out.push('}');
+                    }
+                    self.out.push('\n');
+                    self.cur_move = saved;
+                    "0".to_string()
                 } else {
                     // Non-string value-if: lower via a temp variable,
                     // registered so pops/transfers track it.
@@ -2608,10 +2641,14 @@ impl<'a> Gen<'a> {
             ExprKind::Match { scrutinee, arms } => {
                 let tt = self.ty_of(e.id);
                 let mv = self.cur_move;
+                // Unit-typed matches (statement tails) take no result slot:
+                // a `void` tail has no value to store. Emit arms as plain
+                // blocks, exactly like a statement match.
+                let res_ty = if tt == Ty::Unit { None } else { Some(&tt) };
                 // A borrowed owned result is cloned into res by the arm
                 // logic; the res temp itself lives in our frame and is
                 // freed/transferred by the caller, exactly like value-`if`.
-                self.emit_match(scrutinee, arms, Some(&tt), mv, &self.fn_ret.clone())?
+                self.emit_match(scrutinee, arms, res_ty, mv, &self.fn_ret.clone())?
             }
             ExprKind::Loop { body } => {
                 let tt = self.ty_of(e.id);
