@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Valvet Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=11">
+</head>
+<body>
+<nav class="top"><div class="wrap">
+  <a class="brand" href="index.html"><img src="assets/logo.png" alt="Valvet logo">The Valvet Programming Language</a>
+  <span class="spacer"></span>
+  <a class="link" href="index.html">Home</a>
+  <a class="link active" href="docs.html">Docs</a>
+  <a class="link" href="examples.html">Examples</a>
+  <a class="link" href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
+</div></nav>
+
+<div class="wrap">
+<section class="block">
+<h2>Documentation</h2>
+<p>
+<a href="#start">Start</a> &middot;
+<a href="#lex">Lexical</a> &middot;
+<a href="#types">Types</a> &middot;
+<a href="#vars">Variables</a> &middot;
+<a href="#ops">Operators</a> &middot;
+<a href="#flow">Control flow</a> &middot;
+<a href="#structs">Structs and enums</a> &middot;
+<a href="#match">Matching</a> &middot;
+<a href="#vec">Vectors</a> &middot;
+<a href="#own">Ownership</a> &middot;
+<a href="#refs">References</a> &middot;
+<a href="#memory">Memory</a> &middot;
+<a href="#modules">Modules</a> &middot;
+<a href="#pipeline">Pipeline</a> &middot;
+<a href="#testing">Testing</a> &middot;
+<a href="#cli">CLI</a> &middot;
+<a href="#errors">Errors</a> &middot;
+<a href="#scope">Scope</a>
+</p>
+
+<h3 id="start">Getting started</h3>
+<p>Install stable Rust and a C compiler, clone the repo, and build:</p>
+<div class="code"><div class="chead"><span>Bash</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><div class="install">cargo build --release<br>./target/release/valvet run hello.valvet</div></div>
+<p>Two toolchains cooperate here, and each has one job. Rust builds the <code class="inline">valvet</code> compiler itself: parsing, type checking, borrow checking, and C lowering all run as safe Rust code. The C compiler handles only the last mile, turning generated C11 into a native binary. A missing C compiler therefore fails only <code class="inline">build</code> and <code class="inline">run</code>; <code class="inline">check</code> and the whole test suite frontend keep working. For day-to-day work, debug builds compile faster while release builds produce the binaries you benchmark.</p>
+<p>Every Valvet program starts at <code class="inline">fun main()</code>, which takes no parameters:</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    println("hello, valvet")
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">hello, valvet</pre></div>
+
+<h3 id="lex">Lexical structure</h3>
+<p>Sources are UTF-8 with LF or CRLF endings. Identifiers are ASCII and case sensitive; prefix with <code class="inline">r#</code> to use a keyword as a name. Integer literals accept decimal, hex (<code class="inline">0x2A</code>), octal, and binary (<code class="inline">0b101010</code>), plus <code class="inline">_</code> separators. Floats always carry a decimal point or exponent. Strings support escapes such as <code class="inline">\"</code>, <code class="inline">\\</code>, <code class="inline">\n</code>, and <code class="inline">\t</code>.</p>
+<p>Comments come in two forms: <code class="inline">//</code> to end of line, and nestable block comments <code class="inline">/* ... */</code>. Nesting means an inner <code class="inline">/*</code> must be closed before the outer one ends, which keeps large commented-out regions safe to delimit. An unterminated block comment is a compile error instead of silently swallowing the rest of the file. There are no doc-comment tokens: <code class="inline">///</code> is an ordinary line comment.</p>
+<p>Statements end at newlines, and a semicolon separates two statements on one line. Inside parentheses, brackets, and braces, a newline never ends a statement, so long calls and literals break freely across lines. A trailing operator also continues the statement onto the next line. The one hard rule: a bare <code class="inline">;</code> turns a trailing expression into a statement and discards its value, which is exactly the tool the FizzBuzz example uses to keep prints in statement position inside branches.</p>
+<p>Numbers are lexed generously and typed strictly. Underscores may separate any digits (<code class="inline">1_000_000</code>), and an out-of-range integer literal is E0010 rather than a silent wrap. Adjacent suffixes such as <code class="inline">42i64</code> lex successfully but do not change typing: the type always follows the value, as the Types section explains. Multiline strings use triple quotes and keep newlines verbatim, which suits embedded text blocks. Character literals are lexed but explicitly unsupported in 0.1.0 (E0800): there is no <code class="inline">Char</code> type yet, so the compiler tells you so instead of accepting a value it cannot type.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    val t = """line one
+line two"""
+    println(t)
+    println(42i64) // suffix accepted, type follows value
+    println(70000)
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">line one
+line two
+42
+70000</pre></div>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    // line comment runs to end of line
+    /* block comments nest /* like this */ still comment */
+    println(0x2A)
+    println(1_000)
+    println(0b101010)
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">42
+1000
+42</pre></div>
+
+<h3 id="types">Values and types</h3>
+<table class="cli">
+<tr><th>Type</th><th>Literals</th><th>Notes</th></tr>
+<tr><td><code class="inline">Int32</code>, <code class="inline">Int64</code></td><td><code class="inline">42</code>, <code class="inline">70000</code></td><td>Unannotated integers default to <code class="inline">Int32</code></td></tr>
+<tr><td><code class="inline">Float64</code></td><td><code class="inline">2.5</code>, <code class="inline">1.0</code></td><td>Always written with a decimal point</td></tr>
+<tr><td><code class="inline">Bool</code></td><td><code class="inline">true</code>, <code class="inline">false</code></td><td>Conditions must be <code class="inline">Bool</code>, no truthiness</td></tr>
+<tr><td><code class="inline">String</code></td><td><code class="inline">"hi"</code></td><td>Owned; supports <code class="inline">+</code> and <code class="inline">==</code></td></tr>
+<tr><td><code class="inline">Option&lt;T&gt;</code>, <code class="inline">Result&lt;T, E&gt;</code></td><td><code class="inline">Some(7)</code>, <code class="inline">Ok(1)</code></td><td>Bare constructors need annotation context</td></tr>
+<tr><td><code class="inline">Vec&lt;T&gt;</code></td><td><code class="inline">vec![1, 2, 3]</code></td><td>Homogeneous; empty needs annotation</td></tr>
+</table>
+<p>Integers come in two widths. <code class="inline">Int32</code> spans -2147483648 to 2147483647 and <code class="inline">Int64</code> covers the 64-bit range. Unannotated literals default by value: anything that fits in <code class="inline">Int32</code> is <code class="inline">Int32</code>, anything larger is <code class="inline">Int64</code>. This keeps small programs on 32-bit arithmetic while letting big constants just work. <code class="inline">Float64</code> is an IEEE double, always written with a decimal point or exponent so it never parses as an integer. <code class="inline">Bool</code> has exactly two values and no truthiness: conditions must be <code class="inline">Bool</code>, full stop.</p>
+<p><code class="inline">String</code> is an owned, growable byte string with content equality (<code class="inline">==</code> compares contents, never identity) and concatenation with <code class="inline">+</code>. It moves rather than copies, like vectors. There is no character type and no string indexing or slicing in 0.1.0. <code class="inline">()</code>, the unit value, is the type of blocks with no trailing expression and of statements used for effect; a <code class="inline">main</code> with no return annotation returns it.</p>
+<p><code class="inline">Option&lt;T&gt;</code> and <code class="inline">Result&lt;T, E&gt;</code> are builtin generic enums that live in every program without imports. Their constructors (<code class="inline">Some</code>, <code class="inline">None</code>, <code class="inline">Ok</code>, <code class="inline">Err</code>) can be used bare whenever the expected type is known from context, as in <code class="inline">val o: Option&lt;Int32&gt; = Some(7)</code>. Without that context the compiler asks for an annotation instead of guessing. They are also the only generic types in 0.1.0 alongside <code class="inline">Vec&lt;T&gt;</code>: user-defined generics do not exist yet, which keeps type checking total and error messages short.</p>
+<p>Convert between numeric types with <code class="inline">as</code>, as in <code class="inline">total / (v.len() as Float64)</code>. Every conversion is infallible and never traps. Integer to integer wraps by truncating high bits. Float to integer truncates toward zero and saturates: NaN becomes 0 and out-of-range values clamp to the target minimum or maximum. Integer to float rounds to nearest, which can lose precision on very large values. There are no implicit conversions: mixing types without <code class="inline">as</code> is E0201.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    println(7.9 as Int32) // truncate toward zero
+    println((0.0 / 0.0) as Int32) // NaN saturates to 0
+    println(42 as Float64 + 0.5) // int to float rounds
+    println(100000 as Int64) // widening is exact
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">7
+0
+42.5
+100000</pre></div>
+
+<h3 id="vars">Variables</h3>
+<p><code class="inline">val</code> bindings never change; <code class="inline">var</code> bindings do. Most bindings need no annotation: the compiler infers the type from the initializer, and parameters plus return types (which are always annotated) propagate inward. Rebinding the same name in the same scope is rejected (E0401); shadowing is not a feature to lean on. To change a value, declare it <code class="inline">var</code> once and assign: each assignment frees the old value before installing the new one, so there is never a leak window and never a double free.</p>
+<p>Mutation has a second gate besides <code class="inline">var</code>: the place being written must be exclusively owned. Assigning through a shared reference or into a <code class="inline">val</code> struct field is E0205, with a hint pointing at <code class="inline">var</code> and <code class="inline">&amp;mut</code>. Compound assignment (<code class="inline">+= -= *= /= %=</code>) works on numeric bindings and desugars to read, operate, and write back through the same exclusive path. Note one sharp edge: compound assignment on <code class="inline">String</code> is not supported by the backend, so write <code class="inline">s = s + "cd"</code> in full.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    var y = 1
+    y *= 6 // 6
+    y -= 2 // 4
+    y /= 2 // 2
+    y %= 2 // 0
+    println(y)
+    var s = "ab"
+    s = s + "cd" // full form for strings
+    println(s)
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">0
+abcd</pre></div>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    val name = "valvet"
+    var count = 0
+    count += 41
+    println(name)
+    println(count)
+    println(count as Float64 / 2.0)
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">valvet
+41
+20.5</pre></div>
+
+<h3>Functions</h3>
+<p>Parameters and returns are always annotated. A trailing expression is the return value; <code class="inline">return</code> exits early.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun fib(n: Int32): Int32 {
+    if (n &lt; 2) { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+fun main() {
+    println(fib(10))
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">55</pre></div>
+
+<h3 id="ops">Operators and precedence</h3>
+<p>Assignment sits at the very bottom of the table and groups right, so <code class="inline">a = b = 1</code> parses as written. Everything else groups left except comparisons, which never chain: <code class="inline">a &lt; b &lt; c</code> is rejected rather than parsed as a confusing surprise. Mixed-type arithmetic does not exist: both sides must already share one numeric type, and the compiler names the offending side with E0201 instead of inserting a conversion. Ranges deserve special mention: <code class="inline">0..n</code> excludes its end while <code class="inline">1..=5</code> includes it, and both are values you can hand directly to <code class="inline">for</code>.</p>
+<p>From tightest to loosest: calls, field access, and indexing; unary minus, logical not, dereference, and borrowing; <code class="inline">as</code> casts; <code class="inline">* / %</code>; <code class="inline">+ -</code> (with <code class="inline">+</code> also concatenating strings); ranges <code class="inline">..</code> and <code class="inline">..=</code>; shifts; bitwise <code class="inline">&amp; ^ |</code>; comparisons, which never chain (<code class="inline">a &lt; b &lt; c</code> is rejected); short-circuit <code class="inline">&amp;&amp;</code> then <code class="inline">||</code>; assignment last. Integer division truncates toward zero and panics on division by zero; float division follows IEEE, so <code class="inline">0.0 / 0.0</code> is NaN rather than an error.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    println(2 + 3 * 4) // * binds tighter: 14
+    println((2 + 3) * 4) // parens override: 20
+    println(10 % 3) // remainder: 1
+    println(true &amp;&amp; false || true) // &amp;&amp; first: true
+    println(0 - 3) // unary minus: -3
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">14
+20
+1
+true
+-3</pre></div>
+
+<h3 id="flow">Control flow</h3>
+<p><code class="inline">if</code> is an expression when both branches yield values, and both branches must agree on one type. An <code class="inline">if</code> without <code class="inline">else</code> used as a value is E0201: there is no unit to fall back on silently. Conditions are always <code class="inline">Bool</code>; assignment inside a condition is rejected rather than warned about. <code class="inline">for</code> iterates ranges and vectors alike. Iterating a vector borrows it, so the vector stays fully usable after the loop, and the loop variable takes each element in turn. <code class="inline">while</code> repeats on a <code class="inline">Bool</code> condition. <code class="inline">loop</code> repeats until <code class="inline">break</code>, which can carry a value out and turn the whole loop into an expression. A <code class="inline">break</code> or <code class="inline">continue</code> outside any loop is E0005. <code class="inline">return</code> exits the function immediately, running every pending free on its way out.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    val v = vec![10, 20, 30]
+    var total = 0
+    for (x in v) { // borrows v; v stays usable
+        total += x
+    }
+    println(total)
+    println(v.len()) // still here: 3
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">60
+3</pre></div>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    var total = 0
+    for (i in 1..=5) {
+        total += i
+    }
+    println(total)
+    var i = 3
+    while (i &gt; 0) {
+        println(i)
+        i -= 1
+    }
+    var k = 0
+    val v = loop {
+        k += 1
+        if (k &gt;= 5) {
+            break k * 10
+        }
+    }
+    println(v)
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">15
+3
+2
+1
+50</pre></div>
+<p>Style note: a branch that ends in a <code class="inline">println</code> call needs a trailing <code class="inline">;</code> so the call stays a statement. See the FizzBuzz <a href="examples.html">example</a>.</p>
+
+<h3 id="structs">Structs and enums</h3>
+<p>Named-field, tuple, and unit structs; enums with payload variants. Construction names every field or payload in order, and field access uses the same dot syntax for reads and writes. Writing a field needs a <code class="inline">var</code> root: the struct value itself must be mutable and exclusively owned, otherwise the assignment is E0205. Structs, enums, and functions share one qualified namespace per module, so a struct and a function may not claim the same name in one module. Recursive types (a struct containing itself by value) are rejected, since the C layout would be infinitely large. There are no user-written methods or implementation blocks in 0.1.0: the only methods that exist are the builtin <code class="inline">Vec</code> kernels, which keeps method resolution trivial and total.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>struct Cell { v: Int32 }
+
+fun main() {
+    var c = Cell { v: 1 } // var root: fields writable
+    c.v = 41 // exclusive write through owned value
+    println(c.v + 1)
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">42</pre></div>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>struct Point { x: Float64, y: Float64 }
+
+enum Shape { Circle(Float64), Rect(Float64, Float64), Point }
+
+fun area(s: Shape): Float64 {
+    match (s) {
+        Shape::Circle(r) -&gt; 3.141592653589793 * r * r,
+        Shape::Rect(w, h) -&gt; w * h,
+        Shape::Point -&gt; 0.0,
+    }
+}
+
+fun main() {
+    val p = Point { x: 1.5, y: 2.5 }
+    println(p.x + p.y)
+    println(area(Shape::Circle(1.0)))
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">4
+3.1415926535897931</pre></div>
+<p>Structs also come in tuple and unit forms. A tuple struct wraps values without field names and reads them back with numeric access (<code class="inline">.0</code>, <code class="inline">.1</code>). Fields are private to their module unless marked <code class="inline">pub</code>.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>struct Meters(Float64);
+
+fun main() {
+    val m = Meters(1.5) // wrap
+    println(m.0) // read field 0
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">1.5</pre></div>
+<p><code class="inline">Option</code> and <code class="inline">Result</code> participate in the same <code class="inline">match</code>, and <code class="inline">?</code> propagates errors out of functions that return them.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun half(n: Int32): Result&lt;Int32, String&gt; {
+    if (n == 0) {
+        return Err("zero");
+    }
+    return Ok(n / 2);
+}
+
+fun main(): Result&lt;Int32, String&gt; {
+    val h = half(84)?;
+    println(h);
+    return Ok(h + 1);
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">42</pre></div>
+
+<h3 id="match">Pattern matching</h3>
+<p>Arms are checked for exhaustiveness: miss a variant and the program does not compile. Patterns include literals, enum variants with bindings, struct patterns that bind by field name (or rename with <code class="inline">x: 0</code>), and the wildcard <code class="inline">_</code>. A guard (<code class="inline">if</code> after the pattern) refines an arm further, and arms are tried top to bottom. For the common single-variant test, <code class="inline">if let</code> skips the full <code class="inline">match</code>.</p>
+<p>The checker distinguishes value matches from statement matches. A <code class="inline">match</code> used as a value must cover every case and every arm must yield the same type; a statement match only requires unit arms. Coverage is precise rather than textual: <code class="inline">Bool</code> needs both <code class="inline">true</code> and <code class="inline">false</code>, <code class="inline">Option</code> needs <code class="inline">Some(_)</code> plus <code class="inline">None</code>, and an enum needs every variant at the right arity. Guards never count toward coverage, so a guarded arm plus a wildcard still needs the wildcard. A constructor with a literal inside, like <code class="inline">Some(0)</code>, covers only that literal, not the whole variant. When coverage fails, the diagnostic lists what is missing and suggests adding a <code class="inline">_</code> arm.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun name(n: Int32): String {
+    match (n) {
+        0 -&gt; "zero", // literal pattern
+        1 -&gt; "one",
+        _ -&gt; "many", // wildcard covers the rest
+    }
+}
+
+fun main() {
+    println(name(0))
+    println(name(7))
+    println(match (true) { true -&gt; 1, false -&gt; 0, }) // Bool: both sides present
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">zero
+many
+1</pre></div>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>struct Point { x: Int32, y: Int32 }
+
+fun quad(p: Point): String {
+    match (p) {
+        Point { x, y } if x &gt; 0 &amp;&amp; y &gt; 0 -&gt; "q1", // guard refines the arm
+        _ -&gt; "other", // wildcard catches the rest
+    }
+}
+
+fun main() {
+    println(quad(Point { x: 3, y: 4 }))
+    println(quad(Point { x: 0 - 1, y: 5 }))
+    val o: Option&lt;Int32&gt; = Some(7)
+    if let Some(v) = o { // single-variant shortcut
+        println(v)
+    } else {
+        println(0)
+    }
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">q1
+other
+7</pre></div>
+
+<h3 id="vec">Vectors</h3>
+<p><code class="inline">Vec&lt;T&gt;</code> owns a heap buffer, so it moves rather than copies; <code class="inline">.clone()</code> duplicates explicitly. Indexing with <code class="inline">.get(i)</code> yields an <code class="inline">Option</code> copy, never an alias. There is no subscript operator in 0.1.0: every read goes through <code class="inline">get</code>, which returns <code class="inline">None</code> out of bounds instead of ever trapping. An empty literal needs an annotation (<code class="inline">val v: Vec&lt;Int32&gt; = vec![]</code>) since there is nothing to infer the element type from. <code class="inline">vec![...]</code> is the single builtin macro in the language; general macros do not exist yet.</p>
+<p>Method receivers always borrow: calling a kernel never consumes the vector, whatever the method returns. <code class="inline">push</code> is the one method that moves its argument into the buffer, transferring the element. <code class="inline">get</code> clones the element on the way out, so the copy you hold is fully independent of the buffer. <code class="inline">pop</code> moves the last element out as an <code class="inline">Option</code>, yielding <code class="inline">None</code> when empty. Arithmetic kernels (<code class="inline">add</code>, <code class="inline">mul</code>, <code class="inline">dot</code>) check shapes at runtime and report mismatch as <code class="inline">Result</code> carrying the expected and found lengths, so the caller learns both numbers. <code class="inline">dot</code> exists only for <code class="inline">Float64</code> vectors; <code class="inline">add_scalar</code> broadcasts one constant across numeric vectors.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    val a = vec![1.0, 2.0, 3.0]
+    val b = vec![4.0, 5.0, 6.0]
+    val d = match (a.dot(b)) { Ok(v) -&gt; v, Err(e) -&gt; -1.0, }
+    println(d)
+    println(a.len())
+    println(b.get(0))
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">32
+3
+Some(4)</pre></div>
+<table class="cli">
+<tr><th>Method</th><th>Effect</th></tr>
+<tr><td><code class="inline">len</code></td><td>Element count as <code class="inline">Int64</code></td></tr>
+<tr><td><code class="inline">push</code>, <code class="inline">pop</code>, <code class="inline">get</code></td><td>Grow, shrink (as <code class="inline">Option</code>), safe read</td></tr>
+<tr><td><code class="inline">clone</code></td><td>Deep duplicate</td></tr>
+<tr><td><code class="inline">cast</code>, <code class="inline">add_scalar</code></td><td>Element-wise convert, add constant</td></tr>
+<tr><td><code class="inline">add</code>, <code class="inline">mul</code>, <code class="inline">dot</code></td><td>Vector arithmetic; <code class="inline">dot</code> reports shape errors as <code class="inline">Result</code></td></tr>
+</table>
+
+<h3 id="own">Ownership</h3>
+<p>Scalars (<code class="inline">Bool</code>, integers, <code class="inline">Float64</code>) copy on assignment; <code class="inline">String</code> does not. Shared references (<code class="inline">&amp;T</code>) copy too, while exclusive references (<code class="inline">&amp;mut T</code>) move. A struct or enum whose every field is <code class="inline">Copy</code> is itself <code class="inline">Copy</code>, so small value types stay cheap without annotation. Everything else has exactly one owner: assigning a <code class="inline">Vec</code>, <code class="inline">String</code>, struct, or enum moves it, and the old binding is gone. Moves happen at more places than assignment: function arguments move (except into <code class="inline">print</code> and <code class="inline">println</code>, which borrow), return values and tail expressions move out, and <code class="inline">push</code> moves its element into the buffer. String concatenation and comparison, by contrast, only borrow: <code class="inline">+</code> and <code class="inline">==</code> never take ownership of either side. Reading a moved value is E0301 at compile time, as is moving a field and then using the whole value. Moves also refuse to run through live borrows: moving a value while it is borrowed is E0301 with the loan named. Branch merging stays conservative, so a value moved on any path counts as moved after the join. Sharing is explicit: <code class="inline">.clone()</code> deep-duplicates, and there is no silent aliasing anywhere in the language. This is the core design bet borrowed from systems languages: memory safety by construction, with no collector and no reference counting in safe code.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    val a = vec![1, 2, 3]
+    val b = a // move: a is gone here
+    println(b.len())
+    val c = b.clone() // explicit deep duplicate
+    println(c.len())
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">3
+3</pre></div>
+
+<h3 id="refs">References</h3>
+<p>Borrow with <code class="inline">&amp;</code> (shared) or <code class="inline">&amp;mut</code> (exclusive, needs a <code class="inline">var</code> root). A borrow ends at its last use, so the owner is usable again right after. Dereference with <code class="inline">*</code>.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    var y = 20
+    val m = &amp;mut y
+    *m = *m + 5
+    println(y)
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">25</pre></div>
+<p>Borrowing is non-lexical: a borrow ends at its last use, so the owner becomes usable again on the very next line. Shared borrows (<code class="inline">&amp;</code>) allow many readers; a mutable borrow (<code class="inline">&amp;mut</code>) is exclusive and needs a <code class="inline">var</code> root. Borrows are field-precise: borrowing one field does not lock the others.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    var x = 1
+    val r = &amp;x // shared borrow starts
+    println(*r) // last use: borrow ends here
+    x = 2 // owner usable again
+    println(x)
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">1
+2</pre></div>
+<p>Lifetimes elide in the common single-input case; ambiguous signatures take explicit <code class="inline">&amp;'a T</code> annotations that tie each output reference to its input. Returning a reference to a local is E0303, as is borrowing a temporary past its statement: the compiler proves no dangling reference escapes, and the diagnostic names the offending lifetime. The exact elision rule: when the output contains an elided borrow, exactly one borrow across the inputs may be elided or named, and the output ties to it. Zero input borrows, or two or more candidate borrows, demand explicit names on the output. Every declared lifetime must appear in the inputs, and references may only appear at the top level of a signature: nested references and references inside generic arguments are rejected. Taking <code class="inline">&amp;mut</code> of an immutable binding is E0205, which points back at declaring a <code class="inline">var</code> root.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun first(a: &amp;'a Int32, b: &amp;'b Int32): &amp;'a Int32 {
+    a // tied to the first input by 'a
+}
+
+fun main() {
+    var x = 1
+    var y = 2
+    println(*first(&amp;x, &amp;y))
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">1</pre></div>
+
+<h3 id="memory">Memory model</h3>
+<p>There is no garbage collector. Scalars copy; everything else has exactly one owner and is freed deterministically when its scope exits, on every path including early <code class="inline">return</code>. Reassigning a <code class="inline">var</code> frees the old value first, so there is no leak window. Moves out of live borrows, uses of moved values, and dangling returns are compile errors long before any of this machinery matters. Locals free in reverse construction order, temporaries free at the end of their statement, and loop exits are covered too: <code class="inline">break</code> and <code class="inline">continue</code> run the frees for everything they leave behind. A moved-from slot is poisoned to null at the C level, so a defect would crash loudly instead of freeing twice; the generated code is verified ASan/UBSan-clean. The price of the model is explicitness: cloning, bounds checks, and error paths all appear in the source, which is what makes performance predictable. Programs that need shared ownership must say so with explicit types; the language never invents aliasing behind your back.</p>
+
+<h3 id="modules">Modules</h3>
+<p>The project root is the entry file's directory. Each non-entry file declares its module with dots (<code class="inline">module math;</code>), while every path and import uses <code class="inline">::</code>. A dotted import is its own error (E0602) with an autofix suggestion, so the two separators are never confused: dots declare, colons travel. The entry file needs no module declaration, but it must define <code class="inline">fun main()</code>; without one the compiler stops with E0603.</p>
+<p>Structs, enums, and functions share one qualified namespace per module, keyed as <code class="inline">module::name</code>, so cross-kind collisions are impossible to miss. Everything is private by default and cross-module access needs <code class="inline">pub</code> on the item itself; there is no field-level visibility, only item-level. Touching a private item is E0401, as is redefining an imported name locally or importing a name that does not exist. Imports rename with <code class="inline">as</code> and group with braces (<code class="inline">import shapes::{Point as Pt, origin};</code>). Cycles are rejected (E0601) with the load stack shown; diamonds, where two modules import one shared module, load once and are fine. A missing file is E0701. Units are parsed separately so errors attribute per file, then checked jointly with one environment per module.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>// main.valvet
+import math::double as db; // rename on import
+fun main() {
+    println(db(20))
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">40</pre></div>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>
+// math.valvet
+module math;
+
+pub fun double(n: Int32): Int32 {
+    n * 2
+}</pre></div>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>// main.valvet
+import math::double;
+fun main() {
+    println(double(21))
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">42</pre></div>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>
+// math.valvet
+module math;
+
+pub fun double(n: Int32): Int32 {
+    n * 2
+}</pre></div>
+</section>
+
+<section class="block">
+<h2 id="pipeline">Build pipeline</h2>
+<p>One Valvet program becomes one C translation unit. The frontend (lex, parse, type check, borrow check) runs first; only checked code lowers to readable C11 with deterministic frees, which a plain C compiler then links into a dependency-free binary. There is no separate compilation and no runtime library to deploy: the prelude (strings, vectors, printing, numeric helpers) is emitted into the same file. <code class="inline">check</code> stops before linking, so it needs only Rust. <code class="inline">build</code> and <code class="inline">run</code> need a C compiler, found in order as <code class="inline">VALVET_CC</code>, then a user-local install, then <code class="inline">gcc</code> or <code class="inline">cc</code> on PATH. Compilation uses <code class="inline">-std=c11 -O2</code> with no hidden flags. Generated artifacts land in <code class="inline">target/valvet/</code> next to the project, never inside the source tree.</p>
+<p>Inside the translation unit, layout is deliberate. Algebraic types are ordered topologically so every definition precedes its uses, then forward declarations cover every function except <code class="inline">main</code>, which fixes forward calls in any order. Drop, clone, vector-kernel, and print helpers are emitted only for the type instantiations the program actually uses, keeping binaries lean. Names are sanitized into an unambiguous C namespace: entry items keep plain names while cross-module items become <code class="inline">v_module___name</code>, so no Valvet program can collide with C keywords or with itself. Because the C is readable, a miscompilation can be inspected directly: the generated file sits next to the binary that came from it.</p>
+<h2 id="testing">Testing</h2>
+<p><code class="inline">valvet test</code> runs the fixture suite: every <code class="inline">.valvet</code> file under the suite directory builds and executes, with <code class="inline">.stdout</code> and <code class="inline">.exit</code> sidecars pinning expected output and status. Compile-fail fixtures pin the expected error code in a <code class="inline">.error</code> sidecar instead. Fixtures are organized by kind: pass, fail, runtime behavior, conformance, regression, ownership, lexer, parser, diagnostics, and multi-file projects with their own directories. Release runs repeat the whole suite with optimizations on, so codegen differences between profiles cannot hide. The gates are strict: 100 unit tests, 93 out of 93 fixtures green in both debug and release, formatter and linter clean, and sanitizer-clean generated code. Adding a test means adding files: one <code class="inline">.valvet</code> plus its sidecars, no registration step.</p>
+</section>
+
+<section class="block">
+<h2 id="cli">CLI</h2>
+<table class="cli">
+<tr><th>Command</th><th>Effect</th></tr>
+<tr><td><code class="inline">valvet check &lt;file&gt;</code></td><td>Parse and analyse, no linking</td></tr>
+<tr><td><code class="inline">valvet build &lt;file&gt;</code></td><td>Compile to <code class="inline">target/valvet/&lt;name&gt;</code></td></tr>
+<tr><td><code class="inline">valvet run &lt;file&gt;</code></td><td>Build, execute, exit with program status</td></tr>
+<tr><td><code class="inline">valvet test [dir]</code></td><td>Run the fixture suite</td></tr>
+<tr><td><code class="inline">valvet new &lt;name&gt;</code></td><td>Scaffold a single-dir project</td></tr>
+</table>
+<p><code class="inline">check</code> parses and analyses without linking, which makes it the fastest feedback loop and the one to run on every save. <code class="inline">build</code> compiles and links to <code class="inline">target/valvet/&lt;name&gt;</code> and prints the artifact path. <code class="inline">run</code> builds, executes, and exits with the program status, so a <code class="inline">main</code> returning <code class="inline">Ok(7)</code> yields exit 7. <code class="inline">test</code> runs the fixture suite in an optional directory (defaulting to the repo suite). <code class="inline">new</code> scaffolds a single-directory project with an entry file and a hint toward multi-file layout. Warnings never fail a build: they render to stderr with the same file and position format as errors while compilation succeeds. Exit codes: 0 success, 1 compilation failure, 2 usage error.</p>
+<h3 id="errors">Errors</h3>
+<p>Errors never panic the compiler. They carry file, position, code, and help:</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>error[E0205]: cannot assign through this place (immutable binding or shared reference) --&gt; prog.valvet:3:5
+  help: use `var` bindings and `&amp;mut` for mutation</pre></div>
+<p>A <code class="inline">main</code> that can fail declares it: <code class="inline">fun main(): Result&lt;Int32, String&gt;</code> may use <code class="inline">?</code> directly, and the process exits with the <code class="inline">Ok</code> value as its status. The program below prints <code class="inline">hi</code> and exits 7.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main(): Result&lt;Int32, String&gt; {
+    println("hi");
+    return Ok(7);
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">hi</pre></div>
+<table class="cli">
+<tr><th>Code</th><th>Meaning</th><th>Typical fix</th></tr>
+<tr><td><code class="inline">E0001</code></td><td>Invalid character in source</td><td>Remove or replace the character</td></tr>
+<tr><td><code class="inline">E0003</code></td><td>Unterminated literal or block comment</td><td>Close the string, char, or comment</td></tr>
+<tr><td><code class="inline">E0005</code></td><td>Control-flow misuse (<code class="inline">break</code> outside a loop)</td><td>Move the statement inside the loop</td></tr>
+<tr><td><code class="inline">E0010</code></td><td>Malformed literal (bad separator, suffix, exponent)</td><td>Rewrite the literal</td></tr>
+<tr><td><code class="inline">E0201</code></td><td>Type mismatch, including missing <code class="inline">as</code></td><td>Convert explicitly or fix the annotation</td></tr>
+<tr><td><code class="inline">E0204</code></td><td>Value <code class="inline">match</code> is non-exhaustive</td><td>Add the missing arms or <code class="inline">_</code></td></tr>
+<tr><td><code class="inline">E0205</code></td><td>Write through immutable place</td><td>Use <code class="inline">var</code> bindings and <code class="inline">&amp;mut</code></td></tr>
+<tr><td><code class="inline">E0301</code></td><td>Use of moved value, or move while borrowed</td><td>Clone explicitly or reorder the uses</td></tr>
+<tr><td><code class="inline">E0302</code></td><td>Conflicting borrows, or assign while borrowed</td><td>End the borrow before writing</td></tr>
+<tr><td><code class="inline">E0303</code></td><td>Dangling reference or ambiguous lifetime</td><td>Name the output lifetime explicitly</td></tr>
+<tr><td><code class="inline">E0401</code></td><td>Unknown name, duplicate, or private access</td><td>Check spelling, imports, and <code class="inline">pub</code></td></tr>
+<tr><td><code class="inline">E0601</code></td><td>Import cycle</td><td>Break the cycle between modules</td></tr>
+<tr><td><code class="inline">E0602</code></td><td>Dotted import path</td><td>Use <code class="inline">::</code> separators</td></tr>
+<tr><td><code class="inline">E0603</code></td><td>Missing <code class="inline">fun main()</code></td><td>Add the entry point</td></tr>
+<tr><td><code class="inline">E0701</code></td><td>Unresolved module file</td><td>Create the file or fix the path</td></tr>
+<tr><td><code class="inline">E0702</code></td><td><code class="inline">?</code> outside a <code class="inline">Result</code>/<code class="inline">Option</code> function</td><td>Return <code class="inline">Result</code> or <code class="inline">match</code> instead</td></tr>
+<tr><td><code class="inline">E0800</code></td><td>Valid syntax, unsupported in 0.1.0</td><td>Follow the suggested alternative</td></tr>
+<tr><td><code class="inline">W1002</code></td><td>Deprecated <code class="inline">print</code> (warning only)</td><td>Use <code class="inline">println</code></td></tr>
+</table>
+<p>The table covers every code the compiler emits. Warnings like <code class="inline">W1002</code> never fail a build; every <code class="inline">E</code> code does.</p>
+</section>
+
+<section class="block">
+<h2 id="scope">Scope</h2>
+<ul class="tight">
+<li>Single C translation unit per program; local machine target.</li>
+<li>No file I/O, closures, traits, or generics beyond the builtins yet. Frames, CSV/JSON, and stats land in 0.2.0.</li>
+<li>Full test gates: 100 unit tests, 93/93 fixtures in debug and release, ASan/UBSan-clean output.</li>
+<li>Roadmap: 0.2.0 builds the analytical foundation on this core in staged phases, from math kernels through data frames, CSV and JSON, statistics, and plotting to an interactive REPL, reusing the same ownership and error model throughout. Nothing in 0.1.0 needs relearning: frames will be owned values with borrowed views, missing data will be explicit, and every fallible operation will return <code class="inline">Result</code>.</li>
+<li>Deliberately absent: file I/O, closures, traits, user generics, methods beyond the builtins, indexing syntax, and concurrency primitives. Each is a tracked future phase, not an oversight, and E0800 marks the boundary at compile time.</li>
+</ul>
+</section>
+</div>
+
+<footer><div class="wrap">
+  Copyright 2026 Kenneth Cho. All rights reserved. Source: <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>.
+</div></footer>
+<script>
+document.querySelectorAll('.code').forEach(function (box) {
+  var btn = box.querySelector('.copy');
+  btn.addEventListener('click', function () {
+    var el = box.querySelector('pre, .install');
+    var txt = el ? el.innerText : '';
+    function done() { btn.classList.add('ok'); setTimeout(function () { btn.classList.remove('ok'); }, 1200); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(done, done);
+    } else {
+      var t = document.createElement('textarea');
+      t.value = txt; document.body.appendChild(t); t.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      t.remove(); done();
+    }
+  });
+});
+</script>
+</body>
+</html>

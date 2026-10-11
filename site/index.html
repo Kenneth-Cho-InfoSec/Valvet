@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Valvet: a small, safe, compiled language for data work</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=11">
+</head>
+<body>
+<nav class="top"><div class="wrap">
+  <a class="brand" href="index.html"><img src="assets/logo.png" alt="Valvet logo">The Valvet Programming Language</a>
+  <span class="spacer"></span>
+  <a class="link active" href="index.html">Home</a>
+  <a class="link" href="docs.html">Docs</a>
+  <a class="link" href="examples.html">Examples</a>
+  <a class="link" href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <img class="logo" src="assets/logo.png" alt="Valvet logo">
+  <h1>Valvet</h1>
+  <p class="tag">A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.</p>
+  <a class="btn" href="docs.html">Get Started</a>
+  <a class="btn ghost" href="#install">Install</a>
+</div></header>
+
+<section class="block"><div class="wrap">
+<h2>Why Valvet</h2>
+<div class="grid3">
+  <div class="card"><h3>Safe</h3><p>Borrow-checked references, tracked ownership, and errors that never panic the compiler. Each diagnostic carries file, position, code, and help. Memory bugs that slip through testing in scripting languages are compile errors here.</p></div>
+  <div class="card"><h3>Fast</h3><p>Compiles through C11 to native binaries. Tight loops over vectors run at C speed with no interpreter and no collector pauses. A 3000-sweep model fit over real data finishes in a tenth of a second.</p></div>
+  <div class="card"><h3>Small</h3><p>One coherent core: vectors, structs, enums, pattern matching, modules. Programs read like the analysis they express, and there is little syntax to learn before you are productive.</p></div>
+</div>
+</div></section>
+
+<section class="block alt"><div class="wrap">
+<h2>Thirty seconds</h2>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun mean(v: Vec&lt;Float64&gt;): Float64 {
+    var total = 0.0
+    for (x in v) {
+        total += x
+    }
+    total / (v.len() as Float64)
+}
+
+fun main() {
+    println(mean(vec![2.0, 4.0, 6.0, 8.0]))
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">5</pre></div>
+</div></section>
+
+<section class="block"><div class="wrap">
+<h2>How programs run</h2>
+<div class="grid4">
+  <div class="card"><h3>1. Parse</h3><p>Source becomes an annotated syntax tree with exact spans.</p></div>
+  <div class="card"><h3>2. Check</h3><p>Types resolve, then the borrow checker approves every reference.</p></div>
+  <div class="card"><h3>3. Lower</h3><p>Checked code lowers to readable C11 with deterministic frees.</p></div>
+  <div class="card"><h3>4. Link</h3><p>A plain C compiler produces a dependency-free native binary.</p></div>
+</div>
+</div></section>
+
+<section class="block alt"><div class="wrap">
+<h2>Proven on real analyses</h2>
+<div class="cards4">
+  <div class="card"><div class="num">16 / 16</div><p>Ordinary least squares statistics on R's <code class="inline">cars</code> dataset match a reference implementation to float rounding.</p></div>
+  <div class="card"><div class="num">15.04 / -0.232</div><p>Logistic regression on the Challenger O-ring data reproduces the published coefficients and risk curve.</p></div>
+  <div class="card"><div class="num">Bit-identical</div><p>PageRank power iteration matches its reference digit for digit; ranks sum to N as the paper claims.</p></div>
+  <div class="card"><div class="num">acc 1.0</div><p>Perceptron training converges exactly as theory predicts on separable data.</p></div>
+</div>
+</div></section>
+
+<section class="block" id="install"><div class="wrap">
+<h2>Install</h2>
+<p>Prerequisites: stable Rust and a C compiler. Then:</p>
+<div class="code"><div class="chead"><span>Bash</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><div class="install"><span class="c"># clone the repo, then</span><br>cargo build --release<br>./target/release/valvet run hello.valvet</div></div>
+<p>Commands: <code class="inline">check</code>, <code class="inline">build</code>, <code class="inline">run</code>, <code class="inline">test</code>, <code class="inline">new</code>. See the <a href="docs.html">docs</a> for the tour.</p>
+</div></section>
+
+<footer><div class="wrap">
+  Copyright 2026 Kenneth Cho. All rights reserved. Source: <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>.
+</div></footer>
+<script>
+document.querySelectorAll('.code').forEach(function (box) {
+  var btn = box.querySelector('.copy');
+  btn.addEventListener('click', function () {
+    var el = box.querySelector('pre, .install');
+    var txt = el ? el.innerText : '';
+    function done() { btn.classList.add('ok'); setTimeout(function () { btn.classList.remove('ok'); }, 1200); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(done, done);
+    } else {
+      var t = document.createElement('textarea');
+      t.value = txt; document.body.appendChild(t); t.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      t.remove(); done();
+    }
+  });
+});
+</script>
+</body>
+</html>

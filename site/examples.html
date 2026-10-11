@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Valvet Examples</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=11">
+</head>
+<body>
+<nav class="top"><div class="wrap">
+  <a class="brand" href="index.html"><img src="assets/logo.png" alt="Valvet logo">The Valvet Programming Language</a>
+  <span class="spacer"></span>
+  <a class="link" href="index.html">Home</a>
+  <a class="link" href="docs.html">Docs</a>
+  <a class="link active" href="examples.html">Examples</a>
+  <a class="link" href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
+</div></nav>
+
+<div class="wrap">
+<section class="block">
+<h2>Examples</h2>
+<p>Every sample below runs as shown with <code class="inline">valvet run</code>.</p>
+<h3>Hello</h3>
+<p>A complete Valvet program needs only an entry point and an output call. There is no preamble, no imports, no runtime to initialize. The compiler turns this into a dependency-free native binary.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() { <span class="cm">// entry point, runs first</span>
+    println("hello, valvet") <span class="cm">// print text plus newline</span>
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">hello, valvet</pre></div>
+<h3>Fibonacci and pattern matching</h3>
+<p>Recursion works as expected, and <code class="inline">match</code> on <code class="inline">Option</code> forces both cases onto the page. Forget an arm or mix up the types and the compiler rejects the program before it ever runs. That guarantee is what makes refactoring fearless: add a variant anywhere and every match in the codebase must answer for it.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun fib(n: Int32): Int32 { <span class="cm">// recursive Fibonacci, Int32 in and out</span>
+    if (n &lt; 2) { n } else { fib(n - 1) + fib(n - 2) } <span class="cm">// base case returns n, else sum the two recursions</span>
+}
+
+fun main() {
+    println(fib(10)) <span class="cm">// prints 55</span>
+    val o: Option&lt;Int32&gt; = Some(7) <span class="cm">// optional int holding 7</span>
+    println(match (o) { Some(x) -&gt; x * 2, None -&gt; 0, }) <span class="cm">// unwrap and double, or 0 when empty</span>
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">55
+14</pre></div>
+<h3>Mean of a vector</h3>
+<p>The whole data routine in nine lines: a growable heap vector, a snapshot loop that cannot alias the buffer, and an explicit <code class="inline">as</code> conversion at the division. Nothing is hidden. The loop runs at C speed and the vector frees itself when <code class="inline">main</code> exits.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun mean(v: Vec&lt;Float64&gt;): Float64 { <span class="cm">// average of a float vector</span>
+    var total = 0.0 <span class="cm">// running sum, mutable</span>
+    for (x in v) { <span class="cm">// snapshot each element</span>
+        total += x <span class="cm">// add it to the sum</span>
+    }
+    total / (v.len() as Float64) <span class="cm">// divide by length as float</span>
+}
+
+fun main() {
+    println(mean(vec![2.0, 4.0, 6.0, 8.0])) <span class="cm">// prints 5</span>
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">5</pre></div>
+<h3>FizzBuzz</h3>
+<p>Control flow that reads top to bottom: <code class="inline">if</code> is an expression, so each branch produces the word directly instead of assigning through flags. Ranges include or exclude their end on demand (<code class="inline">1..=15</code>). The trailing semicolons keep printing calls in statement position inside branches.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    for (i in 1..=15) { <span class="cm">// inclusive range 1 to 15</span>
+        val w = if (i % 15 == 0) { <span class="cm">// divisible by 3 and 5</span>
+            "FizzBuzz"
+        } else {
+            if (i % 3 == 0) { <span class="cm">// divisible by 3 only</span>
+                "Fizz"
+            } else {
+                if (i % 5 == 0) { "Buzz" } else { "other" } <span class="cm">// 5-only, else plain number</span>
+            }
+        }
+        if (w == "other") { <span class="cm">// no word matched</span>
+            println(i); <span class="cm">// print the number itself</span>
+        } else {
+            println(w); <span class="cm">// print the word</span>
+        }
+    }
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">1
+2
+Fizz
+4
+Buzz
+Fizz
+7
+8
+Fizz
+Buzz
+11
+Fizz
+13
+14
+FizzBuzz</pre></div>
+<p>Calls that return nothing stay statements with a trailing <code class="inline">;</code> inside branches.</p>
+<h3>Newton square root</h3>
+<p>Twenty iterations of Newton updates with mutable state, converging to full Float64 precision. This is the same routine real Valvet analyses use wherever a square root is needed, since the core language ships lean and numerical recipes live in plain user code.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun sqrt_newton(x: Float64): Float64 { <span class="cm">// Newton method square root</span>
+    var guess = x <span class="cm">// start from x itself</span>
+    var i = 0 <span class="cm">// iteration counter</span>
+    while (i &lt; 20) { <span class="cm">// fixed 20 refinement steps</span>
+        guess = (guess + x / guess) / 2.0 <span class="cm">// Newton update</span>
+        i += 1 <span class="cm">// next iteration</span>
+    }
+    guess <span class="cm">// trailing expression is the return value</span>
+}
+
+fun main() {
+    println(sqrt_newton(2.0)) <span class="cm">// prints sqrt(2)</span>
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">1.4142135623730949</pre></div>
+<h3>Vector dot product</h3>
+<p>Kernels report failure as data, not exceptions: mismatched shapes come back as <code class="inline">Err</code> and the caller handles it in the same <code class="inline">match</code> it already uses everywhere else. Indexing with <code class="inline">get</code> is equally total, yielding <code class="inline">Some</code> or <code class="inline">None</code> instead of ever trapping.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    val a = vec![1.0, 2.0, 3.0] <span class="cm">// first vector, immutable</span>
+    val b = vec![4.0, 5.0, 6.0] <span class="cm">// second vector</span>
+    val d = match (a.dot(b)) { Ok(v) -&gt; v, Err(e) -&gt; -1.0, } <span class="cm">// dot returns Result, unwrap or -1 on shape error</span>
+    println(d) <span class="cm">// prints 32</span>
+    println(a.len()) <span class="cm">// element count as Int64</span>
+    println(b.get(0)) <span class="cm">// safe read gives Some(4)</span>
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">32
+3
+Some(4)</pre></div>
+<p><code class="inline">dot</code> reports shape mismatches as <code class="inline">Result</code>, so callers handle both cases.</p>
+<h3>Shapes and areas</h3>
+<p>An enum carries different payloads per variant, and one <code class="inline">match</code> dispatches on all of them with each payload already unwrapped and typed. This is the pattern behind every heterogeneous result in larger programs: one type, all cases visible, zero runtime type tests.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>enum Shape { Circle(Float64), Rect(Float64, Float64), Point } <span class="cm">// one type, three variants with payloads</span>
+
+fun area(s: Shape): Float64 { <span class="cm">// dispatch on variant</span>
+    match (s) {
+        Shape::Circle(r) -&gt; 3.141592653589793 * r * r, <span class="cm">// pi r squared</span>
+        Shape::Rect(w, h) -&gt; w * h, <span class="cm">// width times height</span>
+        Shape::Point -&gt; 0.0, <span class="cm">// a point has no area</span>
+    }
+}
+
+fun main() {
+    println(area(Shape::Circle(1.0))) <span class="cm">// prints pi</span>
+    println(area(Shape::Rect(3.0, 4.0))) <span class="cm">// prints 12</span>
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">3.1415926535897931
+12</pre></div>
+<h3>Loop with a break value</h3>
+<p>A <code class="inline">loop</code> is an expression when it breaks with a value, so search-style code needs no result flag and no sentinel. The value flows straight into its binding with its type checked.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    var i = 0 <span class="cm">// loop counter, mutable</span>
+    val v = loop { <span class="cm">// loop is an expression when it breaks with a value</span>
+        i += 1 <span class="cm">// count up</span>
+        if (i &gt;= 5) { <span class="cm">// stop condition</span>
+            break i * 10 <span class="cm">// exit loop, value 50 flows into v</span>
+        }
+    }
+    println(v) <span class="cm">// prints 50</span>
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">50</pre></div>
+<h3>Strings</h3>
+<p>Strings are owned values with content equality and concatenation, freed deterministically like everything else. There is no null string and no separate string-builder type for the common cases.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    val who = "valvet" <span class="cm">// owned immutable string</span>
+    println("hello, " + who) <span class="cm">// concatenation with +</span>
+    println(who == "valvet") <span class="cm">// content equality, prints true</span>
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">hello, valvet
+true</pre></div>
+<h3>Least-squares slope</h3>
+<p>The real thing in miniature: paired-column sums, the closed-form normal equations, and missing-safe indexing, using exactly the constructs the full 50-row ordinary least squares analysis uses. That analysis reproduces 16 out of 16 reference statistics, which is why this small version is worth trusting at scale.</p>
+<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun main() {
+    val x = vec![1.0, 2.0, 3.0, 4.0] <span class="cm">// predictor column</span>
+    val y = vec![2.0, 4.0, 5.0, 4.0] <span class="cm">// response column</span>
+    val n = x.len() as Int32 <span class="cm">// length as Int32 for the range</span>
+    val nf = n as Float64 <span class="cm">// length as Float64 for the math</span>
+    var sx = 0.0 <span class="cm">// sum of x</span>
+    var sy = 0.0 <span class="cm">// sum of y</span>
+    var sxx = 0.0 <span class="cm">// sum of x squared</span>
+    var sxy = 0.0 <span class="cm">// sum of x times y</span>
+    for (i in 0..n) { <span class="cm">// index over every row</span>
+        val a = match (x.get(i)) { Some(v) -&gt; v, None -&gt; 0.0, } <span class="cm">// safe read, default 0</span>
+        val b = match (y.get(i)) { Some(v) -&gt; v, None -&gt; 0.0, } <span class="cm">// safe read, default 0</span>
+        sx += a <span class="cm">// accumulate sums</span>
+        sy += b
+        sxx += a * a
+        sxy += a * b
+    }
+    println((nf * sxy - sx * sy) / (nf * sxx - sx * sx)) <span class="cm">// closed-form slope, prints 0.7</span>
+}</pre></div>
+<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">0.69999999999999996</pre></div>
+<p>Valvet prints full float precision: that is 0.7 in Float64.</p>
+</section>
+</div>
+
+<footer><div class="wrap">
+  Copyright 2026 Kenneth Cho. All rights reserved. Source: <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>.
+</div></footer>
+<script>
+document.querySelectorAll('.code').forEach(function (box) {
+  var btn = box.querySelector('.copy');
+  btn.addEventListener('click', function () {
+    var el = box.querySelector('pre, .install');
+    var txt = el ? el.innerText : '';
+    function done() { btn.classList.add('ok'); setTimeout(function () { btn.classList.remove('ok'); }, 1200); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(done, done);
+    } else {
+      var t = document.createElement('textarea');
+      t.value = txt; document.body.appendChild(t); t.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      t.remove(); done();
+    }
+  });
+});
+</script>
+</body>
+</html>
