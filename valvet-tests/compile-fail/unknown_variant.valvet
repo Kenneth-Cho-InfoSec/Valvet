@@ -1,0 +1,8 @@
+enum Shape {
+    Circle(Float64)
+}
+
+fun main() {
+    val s = Shape::Square(1.0)
+    println(1)
+}

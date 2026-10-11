@@ -1,0 +1,12 @@
+fun get(): Result<Int32, String> {
+    return Ok(1);
+}
+
+fun use_it(): Result<Int32, Int32> {
+    val x = get()?;
+    return Ok(x);
+}
+
+fun main() {
+    println(0)
+}

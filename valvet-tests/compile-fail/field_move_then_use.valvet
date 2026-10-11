@@ -1,0 +1,10 @@
+struct User {
+    name: String,
+    age: Int32
+}
+
+fun main() {
+    val u = User { name: "ada", age: 1 }
+    val n = u.name
+    println(u.age)
+}

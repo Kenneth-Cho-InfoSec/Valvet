@@ -1,0 +1,7 @@
+module b;
+
+import shared::who as who2;
+
+pub fun run_b(): Int32 {
+    who2() + 10
+}

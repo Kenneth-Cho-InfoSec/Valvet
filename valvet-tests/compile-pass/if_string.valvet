@@ -1,0 +1,10 @@
+fun pick(b: Bool): String {
+    if (b) { "yes" } else { "no" }
+}
+
+fun main() {
+    println(pick(true))
+    val name = "ada"
+    println(if (true) { name } else { "nobody" })
+    println(if (false) { "x" } else { "y" })
+}

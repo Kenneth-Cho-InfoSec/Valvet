@@ -1,0 +1,4 @@
+fun main(): Result<Int32, Int32> {
+    println("hi")
+    return Ok(7)
+}

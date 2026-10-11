@@ -1,0 +1,4 @@
+fun main() {
+    val x: Option<Nope> = None
+    println(0)
+}

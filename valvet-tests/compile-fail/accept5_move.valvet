@@ -1,0 +1,9 @@
+fun consume(s: String) {
+    println(s)
+}
+
+fun main() {
+    val a = "hello"
+    consume(a)
+    println(a)
+}

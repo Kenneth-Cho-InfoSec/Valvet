@@ -1,0 +1,13 @@
+import math::{double, mtag};
+import shapes::{Point, origin, stag, Shade, shade_n};
+
+fun main() {
+    println(double(21))
+    val p = origin()
+    println(p.x)
+    println(p.y)
+    println(mtag())
+    println(stag())
+    val s = Shade::Dark
+    println(shade_n(s))
+}

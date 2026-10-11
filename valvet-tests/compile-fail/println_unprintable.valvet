@@ -1,0 +1,6 @@
+struct Point { x: Int32, y: Int32 }
+
+fun main() {
+    val p = Point { x: 1, y: 2 }
+    println(p)
+}

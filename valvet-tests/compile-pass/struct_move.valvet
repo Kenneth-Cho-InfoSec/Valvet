@@ -1,0 +1,20 @@
+struct User {
+    name: String,
+    age: Int32
+}
+
+fun greet(u: User) {
+    println(u.name)
+}
+
+fun main() {
+    val u = User { name: "ada", age: 36 }
+    greet(u)
+    var v = User { name: "bob", age: 40 }
+    println(v.age)
+    v = User { name: "cy", age: 1 }
+    println(v.name)
+    val w = User { name: "dee", age: 2 }
+    val n = w.name
+    println(n)
+}

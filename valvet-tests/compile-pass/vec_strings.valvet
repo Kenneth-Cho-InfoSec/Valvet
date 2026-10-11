@@ -1,0 +1,19 @@
+fun shout(s: String): String {
+    s + "!"
+}
+
+fun main() {
+    var names = vec!["ada", "bob"]
+    names.push("cy")
+    println(names.len())
+    val first = match (names.get(0)) {
+        Some(s) -> shout(s),
+        None -> "none",
+    }
+    println(first)
+    val missing = match (names.get(99)) {
+        Some(s) -> s,
+        None -> "missing",
+    }
+    println(missing)
+}

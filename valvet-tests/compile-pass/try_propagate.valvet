@@ -1,0 +1,12 @@
+fun half(n: Int32): Result<Int32, String> {
+    if (n == 0) {
+        return Err("zero");
+    }
+    return Ok(n / 2);
+}
+
+fun main(): Result<Int32, String> {
+    val h = half(10)?;
+    println(h)
+    return Ok(0);
+}

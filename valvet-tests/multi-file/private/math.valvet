@@ -1,0 +1,5 @@
+module math;
+
+fun secret(n: Int32): Int32 {
+    n
+}

@@ -1,0 +1,18 @@
+struct Point {
+    x: Int32,
+    y: Int32
+}
+
+fun quad(p: Point): String {
+    match (p) {
+        Point { x, y } if x > 0 && y > 0 -> "q1",
+        Point { x: 0, y: 0 } -> "origin",
+        _ -> "other",
+    }
+}
+
+fun main() {
+    println(quad(Point { x: 3, y: 4 }))
+    println(quad(Point { x: 0, y: 0 }))
+    println(quad(Point { x: 0 - 1, y: 5 }))
+}

@@ -1,0 +1,5 @@
+struct S { v: Vec<S> }
+
+fun main() {
+    println(1)
+}

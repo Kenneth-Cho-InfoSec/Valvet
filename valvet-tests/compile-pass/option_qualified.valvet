@@ -1,0 +1,24 @@
+fun hunt(flag: Bool): Option<String> {
+    if (flag) {
+        return Option::Some("found");
+    }
+    return None;
+}
+
+fun main() {
+    val a = hunt(true)
+    println(match (a) {
+        Some(s) -> s,
+        None -> "missing",
+    })
+    val b: Option<String> = None
+    println(match (b) {
+        Some(s) -> s,
+        None -> "missing",
+    })
+    val r: Result<String, String> = Err("boom")
+    println(match (r) {
+        Ok(v) -> v,
+        Err(e) -> e,
+    })
+}

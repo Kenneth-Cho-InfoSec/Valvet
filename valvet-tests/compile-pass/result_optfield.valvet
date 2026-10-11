@@ -1,0 +1,26 @@
+struct User {
+    name: String,
+    age: Int32
+}
+
+fun parse_age(s: String): Result<Int32, String> {
+    if (s == "old") {
+        return Ok(99)
+    }
+    return Err("bad age")
+}
+
+fun main() {
+    val r = parse_age("old")
+    val v = match (r) {
+        Ok(n) -> n,
+        Err(e) -> 0 - 1,
+    }
+    println(v)
+    val u: Option<User> = Some(User { name: "ada", age: 36 })
+    val a = match (u?.age) {
+        Some(n) -> n,
+        None -> 0,
+    }
+    println(a)
+}

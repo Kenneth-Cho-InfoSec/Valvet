@@ -1,0 +1,13 @@
+enum Opt {
+    Some(Int32),
+    None
+}
+
+fun main() {
+    val o = Opt::Some(41)
+    if let Opt::Some(v) = o {
+        println(v + 1)
+    } else {
+        println(0)
+    }
+}

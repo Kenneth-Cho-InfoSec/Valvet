@@ -1,0 +1,7 @@
+import a::run_a;
+import b::run_b;
+
+fun main() {
+    println(run_a())
+    println(run_b())
+}

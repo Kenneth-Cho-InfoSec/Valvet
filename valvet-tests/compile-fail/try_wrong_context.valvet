@@ -1,0 +1,8 @@
+fun get(): Result<Int32, String> {
+    return Ok(1);
+}
+
+fun main() {
+    val x = get()?;
+    println(x)
+}

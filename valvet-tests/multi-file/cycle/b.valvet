@@ -1,0 +1,7 @@
+module b;
+
+import a::fa;
+
+pub fun fb(): Int32 {
+    fa()
+}

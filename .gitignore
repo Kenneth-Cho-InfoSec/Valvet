@@ -1,0 +1,10 @@
+# Rust build outputs (target/ is ~200M of compiled deps and binaries)
+target/
+
+# Editor / OS noise
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/

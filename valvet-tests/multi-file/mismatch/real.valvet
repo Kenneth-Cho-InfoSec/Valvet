@@ -1,0 +1,5 @@
+module wrong;
+
+pub fun ok(): Int32 {
+    1
+}

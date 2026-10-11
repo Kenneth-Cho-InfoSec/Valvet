@@ -1,0 +1,4 @@
+fun main() {
+    val b = true
+    println(b as Int32)
+}

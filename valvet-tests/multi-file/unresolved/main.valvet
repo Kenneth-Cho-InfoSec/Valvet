@@ -1,0 +1,5 @@
+import nosuch::thing;
+
+fun main() {
+    println(1)
+}

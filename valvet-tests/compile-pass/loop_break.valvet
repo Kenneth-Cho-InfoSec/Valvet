@@ -1,0 +1,21 @@
+fun find(n: Int32): Int32 {
+    var i = 0
+    loop {
+        if (i >= n) {
+            break i
+        }
+        i += 1
+    }
+}
+
+fun main() {
+    println(find(7))
+    var k = 0
+    loop {
+        k += 1
+        if (k >= 3) {
+            break
+        }
+    }
+    println(k)
+}

@@ -1,0 +1,11 @@
+struct Pair { a: Int32, b: Int32 }
+
+fun main() {
+    var p = Pair { a: 1, b: 2 }
+    val ra = &p.a
+    val mb = &mut p.b
+    println(*ra)
+    *mb = 20
+    println(*ra)
+    println(p.b)
+}

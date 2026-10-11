@@ -1,0 +1,24 @@
+fun find(n: Int32): Option<Int32> {
+    if (n > 0) {
+        return Some(n);
+    }
+    return None;
+}
+
+fun use_it(n: Int32): Option<Int32> {
+    val m = find(n)?;
+    return Some(m + 1);
+}
+
+fun main() {
+    val a = match (use_it(10)) {
+        Some(v) -> v,
+        None -> 0 - 1,
+    }
+    println(a)
+    val b = match (use_it(0 - 5)) {
+        Some(v) -> v,
+        None -> 0 - 1,
+    }
+    println(b)
+}

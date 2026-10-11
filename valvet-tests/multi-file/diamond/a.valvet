@@ -1,0 +1,7 @@
+module a;
+
+import shared::who;
+
+pub fun run_a(): Int32 {
+    who() + 1
+}

@@ -1,0 +1,20 @@
+fun mean(v: Vec<Float64>): Float64 {
+    var total = 0.0
+    for (x in v) {
+        total += x
+    }
+    total / (v.len() as Float64)
+}
+
+fun plen(v: &Vec<Float64>): Int64 {
+    (*v).len()
+}
+
+fun main() {
+    val speed = vec![4.0, 7.0, 8.0]
+    // Tail-position read of an owned parameter (use-after-free before fix).
+    println(mean(speed.clone()))
+    // Method call through a borrow (lender's buffer was freed before fix).
+    println(plen(&speed))
+    println(speed.len())
+}

@@ -1,0 +1,5 @@
+fun main(): Result<Int32, String> {
+    val x = 5?;
+    println(x)
+    return Ok(0);
+}

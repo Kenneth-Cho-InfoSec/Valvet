@@ -1,0 +1,6 @@
+struct Holder { v: Vec<Int32> }
+
+fun main() {
+    val h = Holder { v: vec![1, 2] }
+    println(h.v.len())
+}

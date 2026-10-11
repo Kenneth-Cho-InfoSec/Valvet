@@ -1,0 +1,9 @@
+fun main() {
+    val a = vec![1.0, 2.0]
+    val b = vec![1, 2]
+    val m = match (a.mul(b)) {
+        Ok(v) -> v,
+        Err(e) -> a,
+    }
+    println(m.len())
+}

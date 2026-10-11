@@ -1,0 +1,11 @@
+[package]
+name = "valvet_cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "valvet"
+path = "src/main.rs"
+
+[dependencies]
+valvet_core = { path = "../valvet_core" }

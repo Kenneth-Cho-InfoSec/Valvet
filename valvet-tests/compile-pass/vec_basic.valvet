@@ -1,0 +1,15 @@
+fun main() {
+    var v = vec![1.0, 2.0, 3.0]
+    println(v.len())
+    v.push(4.0)
+    println(v.len())
+    for (x in v) {
+        println(x)
+    }
+    val p = match (v.pop()) {
+        Some(x) -> x,
+        None -> 0.0 - 1.0,
+    }
+    println(p)
+    println(v.len())
+}

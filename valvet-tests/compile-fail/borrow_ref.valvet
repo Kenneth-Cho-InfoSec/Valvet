@@ -1,0 +1,5 @@
+fun main() {
+    val x = 1
+    val r = &x
+    println(r)
+}

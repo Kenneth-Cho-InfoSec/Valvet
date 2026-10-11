@@ -1,0 +1,12 @@
+import math::double as db;
+import shapes::{Point as Pt, origin};
+
+fun mk(): Pt {
+    origin()
+}
+
+fun main() {
+    println(db(20))
+    val p = mk()
+    println(p.x)
+}

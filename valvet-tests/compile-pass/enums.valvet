@@ -1,0 +1,22 @@
+enum Shape {
+    Circle(Float64),
+    Rect(Float64, Float64),
+    Point
+}
+
+struct Meters(Float64);
+
+fun describe(s: Shape): String {
+    "shape"
+}
+
+fun main() {
+    val c = Shape::Circle(2.0)
+    val r = Shape::Rect(3.0, 4.0)
+    val p = Shape::Point
+    val m = Meters(1.5)
+    println(m.0)
+    println(describe(c))
+    println(describe(r))
+    println(describe(p))
+}

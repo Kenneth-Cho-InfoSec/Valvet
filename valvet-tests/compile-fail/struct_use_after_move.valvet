@@ -1,0 +1,13 @@
+struct User {
+    name: String
+}
+
+fun greet(u: User) {
+    println(u.name)
+}
+
+fun main() {
+    val u = User { name: "ada" }
+    greet(u)
+    println(u.name)
+}

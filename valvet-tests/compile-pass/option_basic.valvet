@@ -1,0 +1,14 @@
+fun main() {
+    val a: Option<Int32> = Some(41)
+    val b = match (a) {
+        Some(v) -> v + 1,
+        None -> 0,
+    }
+    println(b)
+    val c: Option<Int32> = None
+    val d = match (c) {
+        Some(v) -> v,
+        _ -> 0 - 1,
+    }
+    println(d)
+}

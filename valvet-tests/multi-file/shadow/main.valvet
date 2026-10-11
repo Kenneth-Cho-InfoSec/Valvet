@@ -1,0 +1,9 @@
+import math::double;
+
+fun double(n: Int32): Int32 {
+    n
+}
+
+fun main() {
+    println(double(1))
+}

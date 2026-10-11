@@ -1,0 +1,5 @@
+module shared;
+
+pub fun who(): Int32 {
+    7
+}

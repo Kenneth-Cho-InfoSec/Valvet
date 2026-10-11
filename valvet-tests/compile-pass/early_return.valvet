@@ -1,0 +1,11 @@
+fun first(n: Int32): Int32 {
+    if (n > 0) {
+        return 1
+    }
+    return 0 - 1
+}
+
+fun main() {
+    println(first(5))
+    println(first(0 - 2))
+}

@@ -1,0 +1,4 @@
+fun main() {
+    val v = vec![1, "two"]
+    println(v.len())
+}

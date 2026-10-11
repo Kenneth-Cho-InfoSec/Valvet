@@ -1,0 +1,14 @@
+fun first(a: &'a Int32, b: &'b Int32): &'a Int32 {
+    a
+}
+
+fun id(x: &Int32): &Int32 {
+    x
+}
+
+fun main() {
+    var x = 1
+    var y = 2
+    println(*first(&x, &y))
+    println(*id(&y))
+}

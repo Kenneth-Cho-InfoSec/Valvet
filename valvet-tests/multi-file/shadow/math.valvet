@@ -1,0 +1,5 @@
+module math;
+
+pub fun double(n: Int32): Int32 {
+    n * 2
+}

@@ -1,0 +1,6 @@
+fun main() {
+    var y = 20
+    val m = &mut y
+    println(y)
+    println(*m)
+}

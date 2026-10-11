@@ -1,0 +1,7 @@
+fun main() {
+    val a: Option<Int32> = Some(1)
+    val s = match (a) {
+        Some(v) -> v,
+    }
+    println(s)
+}

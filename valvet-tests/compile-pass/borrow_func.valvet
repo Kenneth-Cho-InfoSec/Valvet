@@ -1,0 +1,14 @@
+fun get(x: &Int32): Int32 {
+    *x + 1
+}
+
+fun bump(x: &mut Int32) {
+    *x = *x + 10
+}
+
+fun main() {
+    var a = 5
+    println(get(&a))
+    bump(&mut a)
+    println(a)
+}

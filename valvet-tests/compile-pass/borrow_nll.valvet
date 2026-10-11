@@ -1,0 +1,7 @@
+fun main() {
+    var x = 1
+    val r = &x
+    println(*r)
+    x = 2
+    println(x)
+}

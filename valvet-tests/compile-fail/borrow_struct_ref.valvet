@@ -1,0 +1,5 @@
+struct S { r: &Int32 }
+
+fun main() {
+    println(1)
+}

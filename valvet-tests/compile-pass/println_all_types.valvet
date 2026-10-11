@@ -1,0 +1,20 @@
+fun main() {
+    println(42)
+    println(70000)
+    println(2.5)
+    println(true)
+    println("hi")
+    println(vec![1, 2, 3])
+    println(vec!["a", "b"])
+    println(Some(7))
+    val n: Option<Int32> = None
+    println(n)
+    val o: Result<Int32, String> = Ok(1)
+    println(o)
+    val e: Result<Int32, String> = Err("boom")
+    println(e)
+    val z: Option<Int32> = None
+    println(vec![Some(1), z])
+    val ov: Option<Vec<Int32>> = Some(vec![4, 5])
+    println(ov)
+}

@@ -1,0 +1,4 @@
+fun main(): Option<Int32> {
+    println("hi")
+    return Some(3)
+}

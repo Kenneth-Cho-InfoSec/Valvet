@@ -1,0 +1,21 @@
+fun classify(n: Int32): String {
+    match (n) {
+        0 -> "zero",
+        1 | 2 -> "small",
+        _ -> "many",
+    }
+}
+
+fun flip(b: Bool): Bool {
+    match (b) {
+        true -> false,
+        false -> true,
+    }
+}
+
+fun main() {
+    println(classify(0))
+    println(classify(2))
+    println(classify(9))
+    println(flip(true))
+}

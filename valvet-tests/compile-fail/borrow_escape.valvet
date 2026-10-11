@@ -1,0 +1,8 @@
+fun bad(x: &Int32): &Int32 {
+    val y = 1
+    &y
+}
+
+fun main() {
+    println(1)
+}

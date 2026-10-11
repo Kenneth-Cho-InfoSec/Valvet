@@ -1,0 +1,13 @@
+42
+70000
+2.5
+true
+hi
+[1, 2, 3]
+[a, b]
+Some(7)
+None
+Ok(1)
+Err(boom)
+[Some(1), None]
+Some([4, 5])

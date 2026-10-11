@@ -1,0 +1,19 @@
+enum Shape {
+    Circle(Float64),
+    Rect(Float64, Float64),
+    Point
+}
+
+fun area(s: Shape): Float64 {
+    match (s) {
+        Shape::Circle(r) -> 3.14159 * r * r,
+        Shape::Rect(w, h) -> w * h,
+        Shape::Point -> 0.0,
+    }
+}
+
+fun main() {
+    println(area(Shape::Circle(2.0)))
+    println(area(Shape::Rect(3.0, 4.0)))
+    println(area(Shape::Point))
+}

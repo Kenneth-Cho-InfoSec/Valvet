@@ -1,0 +1,8 @@
+fun main() {
+    val x = 10
+    val r = &x
+    val s = &x
+    println(*r)
+    println(*s)
+    println(x)
+}

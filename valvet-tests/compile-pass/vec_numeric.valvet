@@ -1,0 +1,23 @@
+fun main() {
+    val a = vec![1.0, 2.0]
+    val b = vec![10.0, 20.0]
+    val s = a.add_scalar(100.0)
+    val g = match (s.get(1)) {
+        Some(x) -> x,
+        None -> 0.0 - 1.0,
+    }
+    println(g)
+    val m = match (a.mul(b)) {
+        Ok(v) -> v,
+        Err(e) -> vec![0.0 - 1.0],
+    }
+    println(m.len())
+    val d = match (a.dot(b)) {
+        Ok(x) -> x,
+        Err(e) -> 0.0 - 1.0,
+    }
+    println(d)
+    val ints = vec![1, 2, 3]
+    val f: Vec<Float64> = ints.cast()
+    println(f.len())
+}

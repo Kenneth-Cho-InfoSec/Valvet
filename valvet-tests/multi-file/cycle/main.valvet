@@ -1,0 +1,5 @@
+import a::fa;
+
+fun main() {
+    println(fa())
+}

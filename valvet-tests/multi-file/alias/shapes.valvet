@@ -1,0 +1,15 @@
+module shapes;
+
+pub struct Point { x: Int32, y: Int32 }
+
+pub fun origin(): Point {
+    Point { x: 3, y: 4 }
+}
+
+pub fun stag(): Int32 {
+    tag()
+}
+
+fun tag(): Int32 {
+    2
+}

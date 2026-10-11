@@ -1,0 +1,5 @@
+import real::ok;
+
+fun main() {
+    println(ok())
+}

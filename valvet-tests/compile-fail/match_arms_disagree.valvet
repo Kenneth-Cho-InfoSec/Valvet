@@ -1,0 +1,7 @@
+fun main() {
+    val s = match (true) {
+        true -> 1,
+        false -> "no",
+    }
+    println(s)
+}

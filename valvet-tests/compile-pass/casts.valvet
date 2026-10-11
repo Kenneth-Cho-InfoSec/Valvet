@@ -1,0 +1,12 @@
+fun main() {
+    val big = 100000
+    println(big as Int64)
+    val x = 7.9
+    println(x as Int32)
+    val n = 42
+    println(n as Float64 + 0.5)
+    println((0.0 / 0.0) as Int32)
+    println((1e300) as Int32)
+    val big64 = 4294967296
+    println(big64 as Int32)
+}

@@ -1,0 +1,9 @@
+module lib;
+
+pub fun help(): Int32 {
+    1
+}
+
+pub fun main() {
+    println(2)
+}

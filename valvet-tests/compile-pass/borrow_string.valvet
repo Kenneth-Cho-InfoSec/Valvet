@@ -1,0 +1,7 @@
+fun main() {
+    var s = "hello"
+    val r = &s
+    val t = *r
+    println(t)
+    println(s)
+}

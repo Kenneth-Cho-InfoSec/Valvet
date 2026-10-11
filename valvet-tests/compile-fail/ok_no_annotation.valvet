@@ -1,0 +1,4 @@
+fun main() {
+    val x = Ok(1)
+    println(0)
+}

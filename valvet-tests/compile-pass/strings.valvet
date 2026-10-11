@@ -1,0 +1,11 @@
+fun greet(name: String): String {
+    "hello, " + name
+}
+
+fun main() {
+    val who = "ada"
+    println(greet(who))
+    var msg = "hi"
+    msg = msg + "!"
+    println(msg)
+}

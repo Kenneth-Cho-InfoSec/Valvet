@@ -1,0 +1,4 @@
+fun pick(b: Bool): Int32 {
+    val v = if (b) { 1 }
+    v
+}

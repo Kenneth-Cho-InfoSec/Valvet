@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/valvet_core", "crates/valvet_cli"]
+resolver = "2"
