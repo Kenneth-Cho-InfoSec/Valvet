@@ -3834,6 +3834,12 @@ impl Cx {
                 }
                 Ty::Str
             }
+            "clone" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`clone` takes no arguments", None);
+                }
+                Ty::Str
+            }
             "parse_int" | "parse_float" => {
                 if !args.is_empty() {
                     self.err(
@@ -3858,7 +3864,7 @@ impl Cx {
                     "E0401",
                     method_span,
                     format!(
-                        "unknown method `{}` (available on String: split, trim, parse_int, parse_float)",
+                        "unknown method `{}` (available on String: split, trim, clone, parse_int, parse_float)",
                         method
                     ),
                     None,
@@ -3866,6 +3872,94 @@ impl Cx {
                 Ty::Unit
             }
         }
+    }
+
+    /// J2 file/CSV/JSON builtins (C-backed; row/offset-attributed `String`
+    /// errors, so no new error types are needed).
+    fn check_io_builtin(&mut self, span: Span, name: &str, args: &[Expr]) -> Ty {
+        let rows_t = || Ty::Generic {
+            base: "Vec".to_string(),
+            args: vec![Ty::Generic {
+                base: "Vec".to_string(),
+                args: vec![Ty::Str],
+            }],
+        };
+        let str_res = || Ty::Generic {
+            base: "Result".to_string(),
+            args: vec![Ty::Str, Ty::Str],
+        };
+        let rows_res = || Ty::Generic {
+            base: "Result".to_string(),
+            args: vec![rows_t(), Ty::Str],
+        };
+        let want = match name {
+            "read_file" | "csv_bad_rows" | "json_rows" => 1,
+            _ => 2,
+        };
+        if args.len() != want {
+            self.err(
+                "E0201",
+                span,
+                format!(
+                    "`{}` takes exactly {} argument(s), found {}",
+                    name,
+                    want,
+                    args.len()
+                ),
+                None,
+            );
+            return if name == "csv_bad_rows" {
+                Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![Ty::Int64],
+                }
+            } else if name == "csv_rows" || name == "json_rows" {
+                rows_res()
+            } else {
+                str_res()
+            };
+        }
+        let expect = |this: &mut Self, i: usize, want: &Ty, what: &str| {
+            let at = this.check_expr(&args[i]);
+            if &at != want {
+                this.err(
+                    "E0201",
+                    args[i].span,
+                    format!(
+                        "`{}` expects {} {}, found {}",
+                        name,
+                        what,
+                        want.name(),
+                        at.name()
+                    ),
+                    None,
+                );
+            }
+        };
+        let t = match name {
+            "read_file" => {
+                expect(self, 0, &Ty::Str, "path");
+                str_res()
+            }
+            "csv_rows" => {
+                expect(self, 0, &Ty::Str, "content");
+                expect(self, 1, &Ty::Bool, "strict flag");
+                rows_res()
+            }
+            "csv_bad_rows" => {
+                expect(self, 0, &Ty::Str, "content");
+                Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![Ty::Int64],
+                }
+            }
+            _ => {
+                expect(self, 0, &Ty::Str, "content");
+                rows_res()
+            }
+        };
+        self.record_ty(&t);
+        t
     }
 
     /// Whether a value can be `println`-ed: primitives plus `Vec` /
@@ -3960,6 +4054,12 @@ impl Cx {
                     Ty::Str
                 }
             };
+        } else if name == "read_file"
+            || name == "csv_rows"
+            || name == "csv_bad_rows"
+            || name == "json_rows"
+        {
+            return self.check_io_builtin(span, name, args);
         } else if (name == "Some" || name == "Ok" || name == "Err")
             && self.resolve_fun(name).is_none()
         {

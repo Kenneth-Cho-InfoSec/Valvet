@@ -108,6 +108,477 @@ static void vprint_bool(int v) { vfmt_bool(v); printf("\n"); }
 static void vprint_str(VStr v) { vfmt_str(v); printf("\n"); }
 "#;
 
+/// J2 file + CSV/JSON kernels. Row buffers use plain layouts identical to
+/// the generated `VVec_String` / `VVec_Vec_String` structs, so the typed
+/// wrappers (emitted post-layout) convert by field copy, no element traffic.
+const PRELUDE_J2: &str = r##"
+typedef struct { VStr *fields; int64_t nfields, capfields; } VCsvRow;
+typedef struct { VCsvRow *rows; int64_t nrows, caprows; } VCsvTable;
+typedef struct { int64_t *rows; int64_t n, cap; } VBadRows;
+typedef struct { VStr text; VStr err; int has_err; } VFileOut;
+static void vcsv_row_push_field(VCsvRow *r, char *p, int64_t len) {
+    if (r->nfields == r->capfields) {
+        int64_t ncap = r->capfields ? r->capfields * 2 : 4;
+        VStr *nd = (VStr *)realloc(r->fields, (size_t)ncap * sizeof(VStr));
+        if (!nd) { fprintf(stderr, "alloc error\n"); abort(); }
+        r->fields = nd; r->capfields = ncap;
+    }
+    r->fields[r->nfields++] = (VStr){p, len};
+}
+static void vcsv_table_push_row(VCsvTable *t, VCsvRow r) {
+    if (t->nrows == t->caprows) {
+        int64_t ncap = t->caprows ? t->caprows * 2 : 4;
+        VCsvRow *nd = (VCsvRow *)realloc(t->rows, (size_t)ncap * sizeof(VCsvRow));
+        if (!nd) { fprintf(stderr, "alloc error\n"); abort(); }
+        t->rows = nd; t->caprows = ncap;
+    }
+    t->rows[t->nrows++] = r;
+}
+static void vbad_push(VBadRows *b, int64_t r) {
+    if (b->n == b->cap) {
+        int64_t ncap = b->cap ? b->cap * 2 : 4;
+        int64_t *nd = (int64_t *)realloc(b->rows, (size_t)ncap * sizeof(int64_t));
+        if (!nd) { fprintf(stderr, "alloc error\n"); abort(); }
+        b->rows = nd; b->cap = ncap;
+    }
+    b->rows[b->n++] = r;
+}
+static void vcsv_free_row(VCsvRow *r) {
+    for (int64_t j = 0; j < r->nfields; j++) free(r->fields[j].s);
+    free(r->fields); r->fields = NULL; r->nfields = r->capfields = 0;
+}
+static void vcsv_free_table(VCsvTable *t) {
+    for (int64_t i = 0; i < t->nrows; i++) {
+        VCsvRow *r = &t->rows[i];
+        for (int64_t j = 0; j < r->nfields; j++) free(r->fields[j].s);
+        free(r->fields);
+    }
+    free(t->rows); t->rows = NULL; t->nrows = t->caprows = 0;
+}
+static VFileOut v_read_file(VStr path) {
+    VFileOut o = {{NULL, 0}, {NULL, 0}, 0};
+    if (!path.s || path.len == 0) { o.err = vstr_from_c("empty path"); o.has_err = 1; return o; }
+    FILE *f = fopen(path.s, "rb");
+    if (!f) {
+        VStr pre = vstr_from_c("cannot open file: ");
+        o.err = vstr_concat(pre, path);
+        vstr_free(&pre);
+        o.has_err = 1;
+        return o;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); o.err = vstr_from_c("cannot seek file"); o.has_err = 1; return o; }
+    long n = ftell(f);
+    if (n < 0) { fclose(f); o.err = vstr_from_c("cannot size file"); o.has_err = 1; return o; }
+    rewind(f);
+    char *p = (char *)malloc((size_t)n + 1);
+    if (!p) { fclose(f); fprintf(stderr, "alloc error\n"); abort(); }
+    size_t got = fread(p, 1, (size_t)n, f);
+    fclose(f);
+    p[got] = '\0';
+    o.text = (VStr){p, (int64_t)got};
+    return o;
+}
+static void vcsv_buf_put(char **buf, int64_t *bcap, int64_t *blen, char c) {
+    if (*blen + 1 >= *bcap) {
+        *bcap *= 2;
+        char *nb = (char *)realloc(*buf, (size_t)*bcap);
+        if (!nb) { fprintf(stderr, "alloc error\n"); abort(); }
+        *buf = nb;
+    }
+    (*buf)[(*blen)++] = c;
+}
+static VStr vcsv_buf_take(char **buf, int64_t *blen) {
+    char *p = (char *)malloc((size_t)*blen + 1);
+    if (!p) { fprintf(stderr, "alloc error\n"); abort(); }
+    if (*blen) memcpy(p, *buf, (size_t)*blen);
+    p[*blen] = '\0';
+    VStr f = {p, *blen};
+    *blen = 0;
+    return f;
+}
+static VStr vcsv_err(int64_t rec_line, const char *reason) {
+    char num[32];
+    snprintf(num, sizeof num, "%lld", (long long)rec_line);
+    VStr a = vstr_from_c("row ");
+    VStr b = vstr_from_c(num);
+    VStr c = vstr_from_c(": ");
+    VStr d = vstr_from_c(reason);
+    VStr ab = vstr_concat(a, b);
+    VStr cd = vstr_concat(c, d);
+    VStr m = vstr_concat(ab, cd);
+    vstr_free(&a); vstr_free(&b); vstr_free(&c);
+    vstr_free(&d); vstr_free(&ab); vstr_free(&cd);
+    return m;
+}
+// RFC 4180 parse. mode 0 = strict (stop at first bad record, report);
+// mode 1 = lenient (drop the bad record, log its line, resync past it).
+// Returns 0 when input is consumed; strict-malformed returns the record
+// start line with *emsg set (caller frees the partial table + buffer).
+static int64_t vcsv_run(VCsvTable *t, VBadRows *bad, const char *s, int64_t n, int mode, VStr *emsg) {
+    int64_t bcap = 64;
+    char *buf = (char *)malloc((size_t)bcap);
+    if (!buf) { fprintf(stderr, "alloc error\n"); abort(); }
+    int64_t blen = 0;
+    VCsvRow row = {NULL, 0, 0};
+    int in_q = 0, started = 0, closed = 0, row_has = 0;
+    int64_t line = 1, rec_line = 1;
+    int64_t i = 0;
+    int done = 0;
+    while (!done) {
+        char c = (i < n) ? s[i] : '\0';
+        int at_end = (i >= n);
+        if (in_q) {
+            if (c == '"') {
+                if (!at_end && i + 1 < n && s[i + 1] == '"') {
+                    vcsv_buf_put(&buf, &bcap, &blen, '"');
+                    i += 2;
+                } else { in_q = 0; closed = 1; i++; }
+            } else if (at_end) {
+                if (mode == 0) {
+                    vcsv_free_row(&row); vcsv_free_table(t); free(buf);
+                    *emsg = vcsv_err(rec_line, "unterminated quoted field");
+                    return rec_line;
+                }
+                if (bad) vbad_push(bad, rec_line);
+                vcsv_free_row(&row); free(buf);
+                return 0;
+            } else {
+                vcsv_buf_put(&buf, &bcap, &blen, c);
+                if (c == '\n') line++;
+                i++;
+            }
+        } else if (c == '"') {
+            if (started) goto malformed_stray;
+            in_q = 1; started = 1; i++;
+        } else if (c == ',') {
+            VStr f = vcsv_buf_take(&buf, &blen);
+            vcsv_row_push_field(&row, f.s, f.len);
+            started = 0; closed = 0; row_has = 1; i++;
+        } else if (c == '\n' || c == '\r' || at_end) {
+            if (at_end && !started && blen == 0 && !row_has) { done = 1; }
+            else {
+                VStr f = vcsv_buf_take(&buf, &blen);
+                vcsv_row_push_field(&row, f.s, f.len);
+                vcsv_table_push_row(t, row);
+                row.fields = NULL; row.nfields = row.capfields = 0;
+                started = 0; closed = 0; row_has = 0;
+                if (at_end) { done = 1; }
+                else {
+                    if (c == '\r' && i + 1 < n && s[i + 1] == '\n') i++;
+                    line++; rec_line = line; i++;
+                }
+            }
+        } else {
+            if (closed) goto malformed_after;
+            vcsv_buf_put(&buf, &bcap, &blen, c);
+            started = 1; i++;
+        }
+        continue;
+malformed_stray:
+        if (mode == 0) {
+            vcsv_free_row(&row); vcsv_free_table(t); free(buf);
+            *emsg = vcsv_err(rec_line, "stray quote in unquoted field");
+            return rec_line;
+        }
+        goto skip_record;
+malformed_after:
+        if (mode == 0) {
+            vcsv_free_row(&row); vcsv_free_table(t); free(buf);
+            *emsg = vcsv_err(rec_line, "unexpected character after closing quote");
+            return rec_line;
+        }
+skip_record:
+        if (bad) vbad_push(bad, rec_line);
+        vcsv_free_row(&row);
+        row.fields = NULL; row.nfields = row.capfields = 0;
+        blen = 0; in_q = 0; started = 0; closed = 0; row_has = 0;
+        while (i < n && s[i] != '\n') i++;
+        if (i < n) { i++; line++; }
+        rec_line = line;
+    }
+    free(buf);
+    return 0;
+}
+static void vjson_skip_ws(const char *s, int64_t n, int64_t *i, int64_t *line) {
+    while (*i < n && (s[*i] == ' ' || s[*i] == '\t' || s[*i] == '\n' || s[*i] == '\r')) {
+        if (s[*i] == '\n') (*line)++;
+        (*i)++;
+    }
+}
+static VStr vjson_err(int64_t off, const char *reason) {
+    char num[32];
+    snprintf(num, sizeof num, "%lld", (long long)off);
+    VStr a = vstr_from_c("offset ");
+    VStr b = vstr_from_c(num);
+    VStr c = vstr_from_c(": ");
+    VStr d = vstr_from_c(reason);
+    VStr ab = vstr_concat(a, b);
+    VStr cd = vstr_concat(c, d);
+    VStr m = vstr_concat(ab, cd);
+    vstr_free(&a); vstr_free(&b); vstr_free(&c);
+    vstr_free(&d); vstr_free(&ab); vstr_free(&cd);
+    return m;
+}
+static void vjson_push_utf8(char **buf, int64_t *bcap, int64_t *blen, unsigned cp) {
+    if (cp < 0x80) { vcsv_buf_put(buf, bcap, blen, (char)cp); }
+    else if (cp < 0x800) {
+        vcsv_buf_put(buf, bcap, blen, (char)(0xC0 | (cp >> 6)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        vcsv_buf_put(buf, bcap, blen, (char)(0xE0 | (cp >> 12)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | ((cp >> 6) & 0x3F)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | (cp & 0x3F)));
+    } else {
+        vcsv_buf_put(buf, bcap, blen, (char)(0xF0 | (cp >> 18)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | ((cp >> 12) & 0x3F)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | ((cp >> 6) & 0x3F)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | (cp & 0x3F)));
+    }
+}
+// One backslash escape at s[*i] (must be '\\'); advances past it.
+// Returns 0 on malformed escape. Surrogate pairs combine; lone
+// surrogates and out-of-range values become U+FFFD.
+static int vjson_hex(const char *s, int64_t n, int64_t i, unsigned *out);
+static int vjson_escape(char **buf, int64_t *bcap, int64_t *blen, const char *s, int64_t n, int64_t *i) {
+    char e = s[*i + 1];
+    if (e == '"' || e == '\\' || e == '/') { vcsv_buf_put(buf, bcap, blen, e); *i += 2; return 1; }
+    if (e == 'n') { vcsv_buf_put(buf, bcap, blen, '\n'); *i += 2; return 1; }
+    if (e == 't') { vcsv_buf_put(buf, bcap, blen, '\t'); *i += 2; return 1; }
+    if (e == 'r') { vcsv_buf_put(buf, bcap, blen, '\r'); *i += 2; return 1; }
+    if (e == 'b') { vcsv_buf_put(buf, bcap, blen, '\b'); *i += 2; return 1; }
+    if (e == 'f') { vcsv_buf_put(buf, bcap, blen, '\f'); *i += 2; return 1; }
+    if (e == 'u') {
+        unsigned cp;
+        if (!vjson_hex(s, n, *i + 2, &cp)) return 0;
+        *i += 6;
+        if (cp >= 0xD800 && cp <= 0xDBFF && *i + 1 < n && s[*i] == '\\' && s[*i + 1] == 'u') {
+            unsigned lo;
+            if (vjson_hex(s, n, *i + 2, &lo) && lo >= 0xDC00 && lo <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                *i += 6;
+            } else { cp = 0xFFFD; }
+        } else if (cp >= 0xD800 && cp <= 0xDFFF) { cp = 0xFFFD; }
+        if (cp > 0x10FFFF) cp = 0xFFFD;
+        vjson_push_utf8(buf, bcap, blen, cp);
+        return 1;
+    }
+    return 0;
+}
+static int vjson_hex(const char *s, int64_t n, int64_t i, unsigned *out) {
+    if (i + 4 > n) return 0;
+    unsigned v = 0;
+    for (int k = 0; k < 4; k++) {
+        char c = s[i + k];
+        v *= 16;
+        if (c >= '0' && c <= '9') v += (unsigned)(c - '0');
+        else if (c >= 'a' && c <= 'f') v += (unsigned)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') v += (unsigned)(c - 'A' + 10);
+        else return 0;
+    }
+    *out = v;
+    return 1;
+}
+// Flat JSON only: top-level array of flat objects with string/number/
+// true/false/null values. Row 0 of the table is the key union in first-
+// appearance order; missing keys become "". Returns 0 on success, else
+// the byte offset+1 with *emsg set.
+static int64_t vjson_parse(VCsvTable *t, const char *s, int64_t n, VStr *emsg) {
+    int64_t bcap = 64;
+    char *buf = (char *)malloc((size_t)bcap);
+    if (!buf) { fprintf(stderr, "alloc error\n"); abort(); }
+    int64_t blen = 0;
+    VCsvRow keys = {NULL, 0, 0};
+    int64_t line = 1;
+    int64_t i = 0;
+    vjson_skip_ws(s, n, &i, &line);
+    if (i >= n || s[i] != '[') {
+        free(buf);
+        *emsg = vjson_err(i, "top level must be an array");
+        return i + 1;
+    }
+    i++;
+    int first = 1;
+    VCsvRow cur = {NULL, 0, 0};
+    int in_obj = 0;
+    for (;;) {
+        vjson_skip_ws(s, n, &i, &line);
+        if (i < n && s[i] == ']') { i++; break; }
+        if (!first) {
+            if (i >= n || s[i] != ',') goto jfail_comma;
+            i++;
+            vjson_skip_ws(s, n, &i, &line);
+        }
+        first = 0;
+        if (i >= n || s[i] != '{') goto jfail_obj;
+        i++;
+        cur.fields = NULL; cur.nfields = cur.capfields = 0;
+        in_obj = 1;
+        int need_comma = 0;
+        for (;;) {
+            vjson_skip_ws(s, n, &i, &line);
+            if (i < n && s[i] == '}') { i++; break; }
+            if (need_comma) {
+                if (i >= n || s[i] != ',') goto jfail_comma_in;
+                i++;
+                vjson_skip_ws(s, n, &i, &line);
+            }
+            need_comma = 1;
+            if (i >= n || s[i] != '"') goto jfail_key;
+            i++;
+            blen = 0;
+            while (i < n && s[i] != '"') {
+                if (s[i] == '\\' && i + 1 < n) {
+                    if (!vjson_escape(&buf, &bcap, &blen, s, n, &i)) goto jfail_esc;
+                } else if (s[i] == '\n') { line++; vcsv_buf_put(&buf, &bcap, &blen, s[i]); i++; }
+                else { vcsv_buf_put(&buf, &bcap, &blen, s[i]); i++; }
+            }
+            if (i >= n) goto jfail_key;
+            i++;
+            VStr kf = vcsv_buf_take(&buf, &blen);
+            int64_t kidx = -1;
+            for (int64_t k = 0; k < keys.nfields; k++) {
+                if (keys.fields[k].len == kf.len && memcmp(keys.fields[k].s, kf.s, (size_t)kf.len) == 0) { kidx = k; break; }
+            }
+            if (kidx < 0) {
+                vcsv_row_push_field(&keys, kf.s, kf.len);
+                kidx = keys.nfields - 1;
+                for (int64_t r = 0; r < t->nrows; r++) {
+                    while (t->rows[r].nfields < kidx) {
+                        char *zp = (char *)malloc(1);
+                        if (!zp) { fprintf(stderr, "alloc error\n"); abort(); }
+                        zp[0] = '\0';
+                        vcsv_row_push_field(&t->rows[r], zp, 0);
+                    }
+                }
+            } else { free(kf.s); }
+            while (cur.nfields < kidx) {
+                char *zp = (char *)malloc(1);
+                if (!zp) { fprintf(stderr, "alloc error\n"); abort(); }
+                zp[0] = '\0';
+                vcsv_row_push_field(&cur, zp, 0);
+            }
+            vjson_skip_ws(s, n, &i, &line);
+            if (i >= n || s[i] != ':') goto jfail_colon;
+            i++;
+            vjson_skip_ws(s, n, &i, &line);
+            if (i >= n) goto jfail_val;
+            if (s[i] == '"') {
+                i++;
+                blen = 0;
+                while (i < n && s[i] != '"') {
+                    if (s[i] == '\\' && i + 1 < n) {
+                        if (!vjson_escape(&buf, &bcap, &blen, s, n, &i)) goto jfail_esc;
+                    } else if (s[i] == '\n') { line++; vcsv_buf_put(&buf, &bcap, &blen, s[i]); i++; }
+                    else { vcsv_buf_put(&buf, &bcap, &blen, s[i]); i++; }
+                }
+                if (i >= n) goto jfail_val;
+                i++;
+                VStr vf = vcsv_buf_take(&buf, &blen);
+                vcsv_row_push_field(&cur, vf.s, vf.len);
+            } else if ((s[i] >= '0' && s[i] <= '9') || s[i] == '-') {
+                int64_t st = i;
+                if (s[i] == '-') i++;
+                int digits = 0;
+                while (i < n && s[i] >= '0' && s[i] <= '9') { i++; digits = 1; }
+                if (i < n && s[i] == '.') { i++; while (i < n && s[i] >= '0' && s[i] <= '9') { i++; digits = 1; } }
+                if (i < n && (s[i] == 'e' || s[i] == 'E')) {
+                    i++;
+                    if (i < n && (s[i] == '+' || s[i] == '-')) i++;
+                    int expd = 0;
+                    while (i < n && s[i] >= '0' && s[i] <= '9') { i++; expd = 1; }
+                    if (!expd) goto jfail_val;
+                }
+                if (!digits) goto jfail_val;
+                int64_t vlen = i - st;
+                char *vp = (char *)malloc((size_t)vlen + 1);
+                if (!vp) { fprintf(stderr, "alloc error\n"); abort(); }
+                memcpy(vp, s + st, (size_t)vlen);
+                vp[vlen] = '\0';
+                vcsv_row_push_field(&cur, vp, vlen);
+            } else if (i + 4 <= n && memcmp(s + i, "true", 4) == 0) {
+                char *vp = (char *)malloc(5);
+                if (!vp) { fprintf(stderr, "alloc error\n"); abort(); }
+                memcpy(vp, "true", 5);
+                vcsv_row_push_field(&cur, vp, 4);
+                i += 4;
+            } else if (i + 5 <= n && memcmp(s + i, "false", 5) == 0) {
+                char *vp = (char *)malloc(6);
+                if (!vp) { fprintf(stderr, "alloc error\n"); abort(); }
+                memcpy(vp, "false", 6);
+                vcsv_row_push_field(&cur, vp, 5);
+                i += 5;
+            } else if (i + 4 <= n && memcmp(s + i, "null", 4) == 0) {
+                char *vp = (char *)malloc(1);
+                if (!vp) { fprintf(stderr, "alloc error\n"); abort(); }
+                vp[0] = '\0';
+                vcsv_row_push_field(&cur, vp, 0);
+                i += 4;
+            } else if (s[i] == '{' || s[i] == '[') {
+                *emsg = vjson_err(i, "nested values need flat objects");
+                goto jfail_free;
+            } else goto jfail_val;
+        }
+        while (cur.nfields < keys.nfields) {
+            char *zp = (char *)malloc(1);
+            if (!zp) { fprintf(stderr, "alloc error\n"); abort(); }
+            zp[0] = '\0';
+            vcsv_row_push_field(&cur, zp, 0);
+        }
+        vcsv_table_push_row(t, cur);
+        cur.fields = NULL; cur.nfields = cur.capfields = 0;
+        in_obj = 0;
+    }
+    vjson_skip_ws(s, n, &i, &line);
+    if (i < n) {
+        *emsg = vjson_err(i, "trailing characters");
+        goto jfail_free;
+    }
+    {
+        VCsvRow hdr = {NULL, 0, 0};
+        for (int64_t k = 0; k < keys.nfields; k++) {
+            vcsv_row_push_field(&hdr, keys.fields[k].s, keys.fields[k].len);
+        }
+        free(keys.fields);
+        VCsvTable combo = {NULL, 0, 0};
+        vcsv_table_push_row(&combo, hdr);
+        for (int64_t r = 0; r < t->nrows; r++) {
+            vcsv_table_push_row(&combo, t->rows[r]);
+        }
+        free(t->rows);
+        *t = combo;
+    }
+    free(buf);
+    return 0;
+jfail_comma:
+    *emsg = vjson_err(i, "expected `,` between objects");
+    goto jfail_free;
+jfail_comma_in:
+    *emsg = vjson_err(i, "expected `,` between members");
+    goto jfail_free;
+jfail_obj:
+    *emsg = vjson_err(i, "expected object");
+    goto jfail_free;
+jfail_key:
+    *emsg = vjson_err(i, "expected string key");
+    goto jfail_free;
+jfail_esc:
+    *emsg = vjson_err(i, "bad string escape");
+    goto jfail_free;
+jfail_colon:
+    *emsg = vjson_err(i, "expected `:`");
+    goto jfail_free;
+jfail_val:
+    *emsg = vjson_err(i, "expected value");
+    goto jfail_free;
+jfail_free:
+    if (in_obj) vcsv_free_row(&cur);
+    vcsv_free_table(t);
+    vcsv_free_row(&keys);
+    free(buf);
+    return i + 1;
+}
+"##;
+
 /// HIR (checked AST) -> C11 source.
 ///
 /// Memory discipline (mirrors ownership.rs, D4 §1–2):
@@ -157,6 +628,7 @@ pub fn lower(checked: &Checked) -> Result<String, Ice> {
         generic_insts: checked.generic_insts.clone(),
     };
     g.out.push_str(PRELUDE);
+    g.out.push_str(PRELUDE_J2);
     g.out.push('\n');
     g.emit_adts()?;
     // Prototypes for every function (cross-module calls + forward references;
@@ -1060,6 +1532,8 @@ impl<'a> Gen<'a> {
         }
         // J1 string kernels (need vec/union layouts above to exist).
         self.emit_str_kernels()?;
+        // J2 CSV/JSON/file kernels (need vec/union layouts above to exist).
+        self.emit_csv_kernels()?;
         // `println` format helpers, gated on printed instantiations (sorted
         // for reproducibility; protos first — formatters call each other).
         let mut pkeys: Vec<String> = self.print_insts.iter().cloned().collect();
@@ -1182,6 +1656,7 @@ impl<'a> Gen<'a> {
     fn emit_str_method(&mut self, method: &str, r: &str, args: &[Expr]) -> Result<String, Ice> {
         match method {
             "trim" => Ok(format!("vstr_trim({})", r)),
+            "clone" => Ok(format!("vstr_clone({})", r)),
             "split" => {
                 let a = args.first().ok_or_else(|| Ice("split arity".into()))?;
                 let saved = self.cur_move;
@@ -1194,6 +1669,131 @@ impl<'a> Gen<'a> {
             "parse_float" => Ok(format!("vstr_parse_float({})", r)),
             _ => Err(Ice("unknown String method".into())),
         }
+    }
+
+    /// J2 CSV/JSON/file wrappers over the prelude row buffers. The plain
+    /// layouts are identical to the generated vec structs, so conversion
+    /// is a field copy. Each emits only when its result type was recorded.
+    fn emit_csv_kernels(&mut self) -> Result<(), Ice> {
+        let vvec = |t: Ty| Ty::Generic {
+            base: "Vec".to_string(),
+            args: vec![t],
+        };
+        let rows_t = vvec(vvec(Ty::Str));
+        let inner_vec_t = vvec(Ty::Str);
+        // `read_file(path): Result<String, String>`.
+        if self.has_inst("Result", &[Ty::Str, Ty::Str]) {
+            let rct = ctype_inst("Result", &[Ty::Str, Ty::Str]);
+            let some = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            let none = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {rct} v_read_file_wrap(VStr path) {{",
+                    "VFileOut o = v_read_file(path);",
+                    "if (o.has_err) return {err};",
+                    "return {ok};}}\n"
+                ),
+                rct = rct,
+                err = none("o.err"),
+                ok = some("o.text")
+            ));
+        }
+        // `csv_rows(content, strict): Result<Vec<Vec<String>>, String>`.
+        if self.has_inst("Result", &[rows_t.clone(), Ty::Str]) {
+            let rct = ctype_inst("Result", &[rows_t.clone(), Ty::Str]);
+            let vct = ctype_inst("Vec", std::slice::from_ref(&inner_vec_t));
+            let some = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            let none = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {rct} v_csv_rows_wrap(VStr content, int strict) {{",
+                    "VCsvTable t = {{NULL, 0, 0}};VStr emsg = {{NULL, 0}};",
+                    "int64_t bad = vcsv_run(&t, NULL, content.s ? content.s : \"\", content.s ? content.len : 0, strict ? 0 : 1, &emsg);",
+                    "if (bad) {{ vcsv_free_table(&t); return {err}; }}",
+                    "{vct} rows;rows.data = ({vinner} *)t.rows;rows.len = t.nrows;rows.cap = t.caprows;",
+                    "return {ok};}}\n"
+                ),
+                rct = rct,
+                vct = vct,
+                vinner = ctype_inst("Vec", std::slice::from_ref(&Ty::Str)),
+                err = none("emsg"),
+                ok = some("rows")
+            ));
+        }
+        // `csv_bad_rows(content): Vec<Int64>` (rows strict mode rejects).
+        if self.has_inst("Vec", &[Ty::Int64]) {
+            let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int64));
+            self.out.push_str(&format!(
+                concat!(
+                    "static {vct} v_csv_bad_rows_wrap(VStr content) {{",
+                    "VCsvTable t = {{NULL, 0, 0}};VBadRows bad = {{NULL, 0, 0}};VStr dummy = {{NULL, 0}};",
+                    "vcsv_run(&t, &bad, content.s ? content.s : \"\", content.s ? content.len : 0, 1, &dummy);",
+                    "vcsv_free_table(&t);",
+                    "{vct} out;out.data = bad.rows;out.len = bad.n;out.cap = bad.cap;",
+                    "return out;}}\n"
+                ),
+                vct = vct
+            ));
+        }
+        // `json_rows(content): Result<Vec<Vec<String>>, String>` (row 0 = keys).
+        if self.has_inst("Result", &[rows_t.clone(), Ty::Str]) {
+            let rct = ctype_inst("Result", &[rows_t.clone(), Ty::Str]);
+            let vct = ctype_inst("Vec", std::slice::from_ref(&inner_vec_t));
+            let some = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            let none = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {rct} v_json_rows_wrap(VStr content) {{",
+                    "VCsvTable t = {{NULL, 0, 0}};VStr emsg = {{NULL, 0}};",
+                    "int64_t bad = vjson_parse(&t, content.s ? content.s : \"\", content.s ? content.len : 0, &emsg);",
+                    "if (bad) {{ vcsv_free_table(&t); return {err}; }}",
+                    "{vct} rows;rows.data = ({vinner} *)t.rows;rows.len = t.nrows;rows.cap = t.caprows;",
+                    "return {ok};}}\n"
+                ),
+                rct = rct,
+                vct = vct,
+                vinner = ctype_inst("Vec", std::slice::from_ref(&Ty::Str)),
+                err = none("emsg"),
+                ok = some("rows")
+            ));
+        }
+        Ok(())
     }
 
     /// Dynamic-array runtime + numeric kernels for one `Vec<T>`.
@@ -1349,7 +1949,7 @@ impl<'a> Gen<'a> {
         if self.type_needs_drop(&t) {
             let stmt = match &t {
                 Ty::Str => "vstr_free(&v->data[i]);".to_string(),
-                _ => format!("{};", self.drop_call(&t, "&v->data[i]")),
+                _ => format!("{};", self.drop_call(&t, "v->data[i]")),
             };
             self.out.push_str(&format!(
                 "for (int64_t i = 0; i < v->len; ++i) {{ {} }}\n",
@@ -2614,6 +3214,33 @@ impl<'a> Gen<'a> {
                         Ty::Float64 => format!("vstr_from_f64({})", inner),
                         Ty::Bool => format!("vstr_from_bool({})", inner),
                         _ => return Err(Ice("to_string of non-scalar".into())),
+                    }
+                } else if name == "read_file"
+                    || name == "csv_rows"
+                    || name == "csv_bad_rows"
+                    || name == "json_rows"
+                {
+                    // J2 file/CSV/JSON kernels (sema checked arity/types).
+                    // Arguments borrow; owned rvalues materialize into
+                    // statement-lived temps like `println`.
+                    let mut parts = vec![];
+                    for a in args {
+                        let saved = self.cur_move;
+                        self.cur_move = false;
+                        let t = self.ty_of(a.id);
+                        let v = if self.moves(&t) {
+                            self.mat_str(a)?
+                        } else {
+                            self.emit_expr(a)?
+                        };
+                        self.cur_move = saved;
+                        parts.push(v);
+                    }
+                    match name.as_str() {
+                        "read_file" => format!("v_read_file_wrap({})", parts.join(", ")),
+                        "csv_rows" => format!("v_csv_rows_wrap({})", parts.join(", ")),
+                        "csv_bad_rows" => format!("v_csv_bad_rows_wrap({})", parts.join(", ")),
+                        _ => format!("v_json_rows_wrap({})", parts.join(", ")),
                     }
                 } else if name == "Some" || name == "Ok" || name == "Err" {
                     // Option/Result constructors (sema typed the result).

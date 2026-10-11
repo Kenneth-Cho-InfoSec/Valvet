@@ -1,0 +1,6 @@
+3
+[name, age, ok, nick]
+[ada, 36, true]
+[gr, , , x]
+offset 7: expected value
+offset 0: top level must be an array

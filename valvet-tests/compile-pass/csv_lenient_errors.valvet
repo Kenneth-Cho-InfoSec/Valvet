@@ -1,0 +1,6 @@
+fun main() {
+    println(match (csv_rows("a,b\nx\"y,z\n", true)) { Ok(v) -> "unexpected", Err(e) -> e, });
+    println(csv_bad_rows("a,b\nx\"y,z\n"));
+    println(match (csv_rows("a,b\nok,1\np\"q,r\nzz,2\n", false)) { Ok(v) -> v.len(), Err(e) -> 0 as Int64, });
+    println(csv_bad_rows("a,b\nok,1\np\"q,r\nzz,2\n"));
+}

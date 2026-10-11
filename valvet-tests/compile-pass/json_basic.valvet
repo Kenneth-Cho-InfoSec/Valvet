@@ -1,0 +1,10 @@
+fun main() {
+    val j = "[{\"name\": \"ada\", \"age\": 36, \"ok\": true}, {\"name\": \"gr\", \"nick\": \"x\"}]";
+    val t = match (json_rows(j)) { Ok(v) -> v, Err(e) -> vec![vec!["e"]], };
+    println(t.len());
+    println(t[0]);
+    println(t[1]);
+    println(t[2]);
+    println(match (json_rows("[{\"a\": }")) { Ok(v) -> "unexpected", Err(e) -> e, });
+    println(match (json_rows("{\"a\": 1}")) { Ok(v) -> "unexpected", Err(e) -> e, });
+}

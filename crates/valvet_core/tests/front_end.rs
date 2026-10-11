@@ -344,8 +344,11 @@ fn match_guard_falls_through() {
     let checked = pipeline::front_end(&s).expect("front end");
     let c = valvet_core::codegen::lower(&checked).expect("lower");
     // Sequential ifs (correct) rather than else-if chain (wrong on guard-false).
+    // Scoped to the lowered function: the shared prelude legitimately
+    // contains `else if` chains of its own.
+    let body = &c[c.find("v_f_fn").expect("lowered f")..];
     assert!(
-        !c.contains("else if"),
+        !body.contains("else if"),
         "guard fallthrough needs sequential ifs"
     );
 }
