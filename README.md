@@ -1,6 +1,8 @@
 # Valvet
 
-<img src="docs/logo.png" width="250" alt="Valvet logo">
+<p align="center">
+  <img src="docs/logo.png" width="250" alt="Valvet logo">
+</p>
 
 Valvet is a small, safe, compiled language for data work. It compiles to
 native binaries through C11, with no garbage collector and no runtime:
