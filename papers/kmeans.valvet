@@ -1,0 +1,126 @@
+// K-means (Lloyd 1982) ported from papers/mbrace_kmeans.fsx
+// (MBrace StarterKit example: findCentroid / kmeansLocal map step /
+// centroid update). Single-machine, first-order Valvet port.
+//
+// Deviations from the F# script, all disclosed:
+// - Fixed dataset of 24 2D points in 3 clusters (literals below) instead
+//   of the F# random-walk generator (no RNG dependence; deterministic).
+// - Init = first k points (as in KMeansCloud), dataset interleaved so the
+//   first k points span the clusters.
+// - Convergence: stop when no assignment changes (cap 100 iterations);
+//   the F# cloud loop stops on centroid-movement diff < epsilon.
+// - Empty cluster keeps its old centroid (the F# divPoint would divide
+//   by zero); does not trigger on this dataset.
+// - Only + - * / and comparisons on floats (squared distances, sums,
+//   mean divisions), so results match the Python reference bit-for-bit.
+
+struct Pt { x: Float64, y: Float64 }
+
+// Squared Euclidean distance between point pi and centroid ci
+// (F# KMeansHelpers.dist sums squared diffs; no sqrt anywhere).
+fun sqdist(pts: &Vec<Pt>, pi: Int64, cents: &Vec<Pt>, ci: Int64): Float64 {
+    val dx = (*pts)[pi].x - (*cents)[ci].x
+    val dy = (*pts)[pi].y - (*cents)[ci].y
+    dx * dx + dy * dy
+}
+
+// F# findCentroid: index of nearest centroid (ties -> lowest index).
+fun find_centroid(pts: &Vec<Pt>, pi: Int64, cents: &Vec<Pt>): Int64 {
+    var mini = 0 as Int64
+    var best = sqdist(pts, pi, cents, 0 as Int64)
+    var i = 1 as Int64
+    while (i < (*cents).len()) {
+        val d = sqdist(pts, pi, cents, i)
+        if (d < best) {
+            best = d
+            mini = i
+        }
+        i += 1 as Int64
+    }
+    mini
+}
+
+fun main() {
+    // Interleaved A/B/C so the first k=3 points span the clusters.
+    var pts = vec![
+        Pt { x: 0.8, y: 1.2 }, Pt { x: 8.1, y: 1.9 }, Pt { x: 4.1, y: 8.2 },
+        Pt { x: 1.1, y: 0.9 }, Pt { x: 7.8, y: 2.2 }, Pt { x: 3.8, y: 7.9 },
+        Pt { x: 0.9, y: 1.0 }, Pt { x: 8.3, y: 2.0 }, Pt { x: 4.2, y: 7.7 },
+        Pt { x: 1.2, y: 1.3 }, Pt { x: 7.9, y: 1.7 }, Pt { x: 3.9, y: 8.3 },
+        Pt { x: 0.7, y: 0.8 }, Pt { x: 8.0, y: 2.4 }, Pt { x: 4.0, y: 7.8 },
+        Pt { x: 1.0, y: 1.1 }, Pt { x: 8.2, y: 1.6 }, Pt { x: 4.3, y: 8.1 },
+        Pt { x: 1.3, y: 0.7 }, Pt { x: 7.7, y: 2.1 }, Pt { x: 3.7, y: 8.0 },
+        Pt { x: 0.9, y: 1.4 }, Pt { x: 8.4, y: 2.3 }, Pt { x: 4.1, y: 7.9 }
+    ]
+    val k = 3 as Int64
+    val n = pts.len()
+    // Init = first k points (F# KMeansCloud: Seq.take numCentroids).
+    var cents: Vec<Pt> = vec![]
+    var i = 0 as Int64
+    while (i < k) {
+        cents.push(Pt { x: pts[i].x, y: pts[i].y })
+        i += 1 as Int64
+    }
+    var assign: Vec<Int64> = vec![]
+    var j = 0 as Int64
+    while (j < n) {
+        assign.push((0 - 1) as Int64)
+        j += 1 as Int64
+    }
+    // Lloyd iteration: assign step (kmeansLocal map) + centroid update.
+    var changed = true
+    var iter = 0 as Int64
+    while (changed && iter < (100 as Int64)) {
+        changed = false
+        var p = 0 as Int64
+        while (p < n) {
+            val c = find_centroid(&pts, p, &cents)
+            if (c != assign[p]) {
+                assign[p] = c
+                changed = true
+            }
+            p += 1 as Int64
+        }
+        var sx: Vec<Float64> = vec![]
+        var sy: Vec<Float64> = vec![]
+        var cnt: Vec<Int64> = vec![]
+        var c = 0 as Int64
+        while (c < k) {
+            sx.push(0.0)
+            sy.push(0.0)
+            cnt.push(0 as Int64)
+            c += 1 as Int64
+        }
+        var q = 0 as Int64
+        while (q < n) {
+            val a = assign[q]
+            sx[a] = sx[a] + pts[q].x
+            sy[a] = sy[a] + pts[q].y
+            cnt[a] = cnt[a] + (1 as Int64)
+            q += 1 as Int64
+        }
+        var r = 0 as Int64
+        while (r < k) {
+            if (cnt[r] > (0 as Int64)) {
+                cents[r] = Pt { x: sx[r] / (cnt[r] as Float64), y: sy[r] / (cnt[r] as Float64) }
+            }
+            r += 1 as Int64
+        }
+        iter += 1 as Int64
+    }
+    println("centroids:")
+    var m = 0 as Int64
+    while (m < k) {
+        println(cents[m].x)
+        println(cents[m].y)
+        m += 1 as Int64
+    }
+    println("assignments:")
+    var t = 0 as Int64
+    while (t < n) {
+        println(assign[t])
+        t += 1 as Int64
+    }
+    println("iters:")
+    println(iter)
+}

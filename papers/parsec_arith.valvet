@@ -1,0 +1,194 @@
+// Parsec (Leijen & Meijer 2001) — port of papers/parsec_charparsers.fs (FParsec).
+//
+// CharParsers' core ideas reproduced in first-order Valvet: sequencing (<|> choice
+// specialized by hand), and — the paper's central contribution — error messages
+// carrying the input position AND the set of expected productions.
+//
+// Tokenizer: String.split on spaces (Valvet Strings expose no char indexing).
+// Input contract: tokens are space-separated, e.g. "( 1 + 2 ) * 3".
+// Grammar:
+//   expr   := term (('+' | '-') term)*
+//   term   := factor (('*' | '/') factor)*
+//   factor := number | '(' expr ')' | '-' factor
+// Evaluation is Float64 with only + - * / (bit-identical to Python floats).
+
+struct ParseOut { value: Float64, pos: Int64, ok: Bool, err: String }
+
+fun tokenize(src: String): Vec<String> {
+    val parts = src.split(" ");
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < parts.len()) {
+        val t = match (parts.get(i)) {
+            Some(s) -> s,
+            None -> "",
+        };
+        if (t != "") {
+            out.push(t);
+        }
+        i += 1 as Int64
+    }
+    out
+}
+
+fun peek(toks: &Vec<String>, pos: Int64): String {
+    match ((*toks).get(pos)) {
+        Some(s) -> s,
+        None -> "",
+    }
+}
+
+fun describe(tok: String): String {
+    if (tok == "") { "end of input" } else { "'" + tok + "'" }
+}
+
+fun err_at(pos: Int64, expected: String, found: String): ParseOut {
+    ParseOut { value: 0.0, pos: pos, ok: false, err: "error at token " + to_string(pos) + ": expected " + expected + " but found " + found }
+}
+
+fun parse_expr(toks: &Vec<String>, pos: Int64): ParseOut {
+    val first = parse_term(toks, pos);
+    // Ownership is move-based and conditional `return first` counts as a move,
+    // so copy out everything needed before the early return.
+    val fval = first.value;
+    val fpos = first.pos;
+    if (!first.ok) {
+        return first
+    }
+    var acc = fval;
+    var p = fpos;
+    // NOTE: early `return` inside doubly-nested if/else in a `loop` is rejected
+    // by the compiler (see papers/bug_loop_nested_return.valvet), so the loop
+    // below uses a break-guard plus single-nested returns only.
+    loop {
+        val t = peek(toks, p);
+        if (t != "+" && t != "-") {
+            break
+        }
+        val rhs = parse_term(toks, p + (1 as Int64));
+        val rval = rhs.value;
+        val rpos = rhs.pos;
+        if (!rhs.ok) {
+            return rhs
+        }
+        if (t == "+") {
+            acc = acc + rval
+        }
+        if (t == "-") {
+            acc = acc - rval
+        }
+        p = rpos
+    }
+    ParseOut { value: acc, pos: p, ok: true, err: "" }
+}
+
+fun parse_term(toks: &Vec<String>, pos: Int64): ParseOut {
+    val first = parse_factor(toks, pos);
+    val fval = first.value;
+    val fpos = first.pos;
+    if (!first.ok) {
+        return first
+    }
+    var acc = fval;
+    var p = fpos;
+    // Same single-nesting workaround as parse_expr (see note there).
+    loop {
+        val t = peek(toks, p);
+        if (t != "*" && t != "/") {
+            break
+        }
+        val rhs = parse_factor(toks, p + (1 as Int64));
+        val rval = rhs.value;
+        val rpos = rhs.pos;
+        if (!rhs.ok) {
+            return rhs
+        }
+        if (t == "*") {
+            acc = acc * rval
+        }
+        if (t == "/") {
+            if (rval == 0.0) {
+                return ParseOut { value: 0.0, pos: p, ok: false, err: "error at token " + to_string(p) + ": division by zero" }
+            }
+            acc = acc / rval
+        }
+        p = rpos
+    }
+    ParseOut { value: acc, pos: p, ok: true, err: "" }
+}
+
+fun parse_factor(toks: &Vec<String>, pos: Int64): ParseOut {
+    val t = peek(toks, pos);
+    if (t == "") {
+        return err_at(pos, "number, '(' or unary '-'", "end of input")
+    }
+    if (t == "-") {
+        val sub = parse_factor(toks, pos + (1 as Int64));
+        val sval = sub.value;
+        val spos = sub.pos;
+        if (!sub.ok) {
+            return sub
+        }
+        return ParseOut { value: 0.0 - sval, pos: spos, ok: true, err: "" }
+    }
+    if (t == "(") {
+        val inner = parse_expr(toks, pos + (1 as Int64));
+        val ival = inner.value;
+        val ipos = inner.pos;
+        if (!inner.ok) {
+            return inner
+        }
+        val closing = peek(toks, ipos);
+        if (closing == ")") {
+            return ParseOut { value: ival, pos: ipos + (1 as Int64), ok: true, err: "" }
+        }
+        return err_at(ipos, "')'", describe(closing))
+    }
+    match (t.parse_float()) {
+        Some(f) -> ParseOut { value: f, pos: pos + (1 as Int64), ok: true, err: "" },
+        None -> err_at(pos, "number, '(' or unary '-'", describe(t)),
+    }
+}
+
+fun eval_input(src: String): String {
+    val toks = tokenize(src);
+    val r = parse_expr(&toks, 0 as Int64);
+    val rok = r.ok;
+    val rval = r.value;
+    val rpos = r.pos;
+    if (!rok) {
+        return "out: ERROR: " + r.err
+    }
+    if (rpos != toks.len()) {
+        val extra = peek(&toks, rpos);
+        return "out: ERROR: error at token " + to_string(rpos) + ": expected operator ('+', '-', '*', '/'), ')' or end of input but found " + describe(extra)
+    }
+    "out: " + to_string(rval)
+}
+
+fun run_case(src: String) {
+    println("in: " + src.clone());
+    println(eval_input(src));
+}
+
+fun main() {
+    println("Parsec (Leijen & Meijer 2001): recursive-descent expr parser, errors carry position + expected set");
+    run_case("3 + 4 * 2");
+    run_case("( 1 + 2 ) * 3");
+    run_case("10 - 4 / 2");
+    run_case("- 3 + 4");
+    run_case("2 * ( 3 + 4 ) - 5");
+    run_case("7 / 2");
+    run_case("3.5 * 2");
+    run_case("( ( 1 + 1 ) * ( 2 + 2 ) ) / 2");
+    run_case("0 - 5");
+    run_case("10 / 3");
+    run_case("1 +");
+    run_case("( 1 + 2");
+    run_case("3 * * 4");
+    run_case(") 3 + 4");
+    run_case("4 / ( 2 - 2 )");
+    run_case("");
+    run_case("3 4");
+    run_case("* 3 + 4");
+}

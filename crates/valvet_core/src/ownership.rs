@@ -1254,7 +1254,18 @@ impl<'a> Cx<'a> {
     /// Check one match arm: bindings are fresh slots; owned payload bindings
     /// out of a variable scrutinee conservatively move the whole scrutinee.
     /// `move_ctx` propagates to arm tails (value position) like `if` tails.
-    fn check_match_arm(&mut self, arm: &MatchArm, scrut: &Expr, move_ctx: bool) {
+    /// Check one arm from the pre-match move state, adding its moves to
+    /// `union_out`. Arms are exclusive (like if/else branches), so each arm
+    /// starts from `before`; the caller unions all arms and applies once
+    /// after the match. Applying per-arm would poison later arms with
+    /// earlier arms' moves (spurious E0301).
+    fn check_match_arm(
+        &mut self,
+        arm: &MatchArm,
+        scrut: &Expr,
+        move_ctx: bool,
+        union_out: &mut HashSet<String>,
+    ) {
         let before = self.moved_snapshot();
         let st = self.ty_of(scrut.id);
         let bindings = self.arm_bindings(&arm.pat, &st);
@@ -1299,7 +1310,7 @@ impl<'a> Cx<'a> {
         self.scopes.pop();
         let moved_arm = self.moved_snapshot();
         self.restore_snapshot(&before);
-        self.apply_moved(&moved_arm);
+        union_out.extend(moved_arm);
     }
 
     /// Binding slots introduced by a pattern: (name, type). Mirrors the sema
@@ -1482,9 +1493,11 @@ impl<'a> Cx<'a> {
                 scrutinee, arms, ..
             } => {
                 self.check_expr(scrutinee, false);
+                let mut union = HashSet::new();
                 for arm in arms {
-                    self.check_match_arm(arm, scrutinee, false);
+                    self.check_match_arm(arm, scrutinee, false, &mut union);
                 }
+                self.apply_moved(&union);
             }
             Stmt::Break { value, .. } => {
                 // `break v` moves a value out of the loop (like `return`).
@@ -1751,9 +1764,11 @@ impl<'a> Cx<'a> {
             }
             ExprKind::Match { scrutinee, arms } => {
                 self.check_expr(scrutinee, false);
+                let mut union = HashSet::new();
                 for arm in arms {
-                    self.check_match_arm(arm, scrutinee, move_ctx);
+                    self.check_match_arm(arm, scrutinee, move_ctx, &mut union);
                 }
+                self.apply_moved(&union);
             }
             ExprKind::Loop { body } => {
                 // Value loop: check body in a scope; `break v` tails propagate

@@ -1,0 +1,16 @@
+fun consume(a: Vec<Int64>): Vec<Int64> { a }
+
+fun f(a: Vec<Int64>, tag: Int32): Vec<Int64> {
+    var x = a
+    match (tag) {
+        1 -> consume(x),
+        2 -> consume(x),
+        _ -> x,
+    }
+}
+
+fun main() {
+    var v: Vec<Int64> = vec![1 as Int64]
+    v = f(v, 1)
+    println(v.len())
+}

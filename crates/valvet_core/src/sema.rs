@@ -305,6 +305,108 @@ struct BinCheck<'a> {
     rhs: Option<&'a Expr>,
 }
 
+/// Whether a statement tree contains a `return` at any depth. Valvet has no
+/// closures, so every `return` is function-level; value-position blocks
+/// (`check_block_expr`) reject them with E0800 instead of checking against
+/// a dummy `()` return type (which produced a bogus "`return` value is T,
+/// but function returns ()").
+fn stmt_tree_has_return(s: &Stmt) -> bool {
+    match s {
+        Stmt::Return { .. } => true,
+        Stmt::Val { init, .. } | Stmt::Var { init, .. } => expr_tree_has_return(init),
+        Stmt::Expr { expr, .. } => expr_tree_has_return(expr),
+        Stmt::If {
+            cond,
+            then_b,
+            else_b,
+            ..
+        } => {
+            expr_tree_has_return(cond)
+                || block_tree_has_return(then_b)
+                || else_b.as_ref().is_some_and(|b| block_tree_has_return(b))
+        }
+        Stmt::Match {
+            scrutinee, arms, ..
+        } => {
+            expr_tree_has_return(scrutinee)
+                || arms.iter().any(|a| {
+                    a.guard.as_ref().is_some_and(expr_tree_has_return)
+                        || block_tree_has_return(&a.body)
+                })
+        }
+        Stmt::While { cond, body, .. } => expr_tree_has_return(cond) || block_tree_has_return(body),
+        Stmt::For { iter, body, .. } => {
+            let it = match iter {
+                ForIter::Range { lo, hi, .. } => {
+                    expr_tree_has_return(lo) || expr_tree_has_return(hi)
+                }
+                ForIter::Each { vec } => expr_tree_has_return(vec),
+            };
+            it || block_tree_has_return(body)
+        }
+        Stmt::Loop { body, .. } => block_tree_has_return(body),
+        Stmt::Break { value, .. } => value.as_ref().is_some_and(expr_tree_has_return),
+        Stmt::Continue { .. } => false,
+    }
+}
+
+fn block_tree_has_return(b: &Block) -> bool {
+    b.stmts.iter().any(stmt_tree_has_return)
+        || b.tail.as_ref().is_some_and(|t| expr_tree_has_return(t))
+}
+
+fn expr_tree_has_return(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Str(_)
+        | ExprKind::Var(_) => false,
+        ExprKind::Call { args, .. } | ExprKind::Variant { args, .. } => {
+            args.iter().any(expr_tree_has_return)
+        }
+        ExprKind::Binary { lhs, rhs, .. } => expr_tree_has_return(lhs) || expr_tree_has_return(rhs),
+        ExprKind::Unary { expr, .. }
+        | ExprKind::Cast { expr, .. }
+        | ExprKind::AsUnit { expr, .. }
+        | ExprKind::AddrOf { expr, .. }
+        | ExprKind::Field { base: expr, .. }
+        | ExprKind::OptField { base: expr, .. }
+        | ExprKind::Try { expr } => expr_tree_has_return(expr),
+        ExprKind::Index { base, idx, .. } => {
+            expr_tree_has_return(base) || expr_tree_has_return(idx)
+        }
+        ExprKind::Assign { value, .. } => expr_tree_has_return(value),
+        ExprKind::If {
+            cond,
+            then_b,
+            else_b,
+            ..
+        } => {
+            expr_tree_has_return(cond)
+                || block_tree_has_return(then_b)
+                || else_b.as_ref().is_some_and(|b| block_tree_has_return(b))
+        }
+        ExprKind::Match {
+            scrutinee, arms, ..
+        } => {
+            expr_tree_has_return(scrutinee)
+                || arms.iter().any(|a| {
+                    a.guard.as_ref().is_some_and(expr_tree_has_return)
+                        || block_tree_has_return(&a.body)
+                })
+        }
+        ExprKind::Loop { body, .. } => block_tree_has_return(body),
+        ExprKind::StructLit { fields, .. } => {
+            fields.iter().any(|(_, _, f)| expr_tree_has_return(f))
+        }
+        ExprKind::VecMacro { elems, .. } => elems.iter().any(expr_tree_has_return),
+        ExprKind::Method { receiver, args, .. } => {
+            expr_tree_has_return(receiver) || args.iter().any(expr_tree_has_return)
+        }
+    }
+}
+
 impl Cx {
     fn err(
         &mut self,
@@ -2058,6 +2160,20 @@ impl Cx {
             }
             ExprKind::Assign { target, op, value } => {
                 let vt = self.check_expr(value);
+                // Only an outermost index carries a bounds check: an index
+                // under Field/Deref (e.g. `(*a)[t].red = v`) would reach
+                // codegen addressing without one, so reject it here with
+                // the same E0201 as index-under-index (bind the element
+                // first). Index-under-Index is rejected inside check_place.
+                if !matches!(target, Place::Index { .. }) && Self::place_has_index(target) {
+                    self.err(
+                        "E0201",
+                        target.span(),
+                        "nested index assignment is not supported (bind the inner element first)",
+                        None,
+                    );
+                    return self.insert(e.id, Ty::Unit);
+                }
                 // Resolve the place: (place type, mutable?).
                 match self.check_place(target) {
                     None => Ty::Unit,
@@ -2912,6 +3028,12 @@ impl Cx {
             // Simplification: reject `return` inside value-position blocks in 0.1.0.
             if matches!(s, Stmt::Return { .. }) {
                 self.err("E0800", stmt_span(s), "`return` inside an `if` value-branch is not yet supported; restructure with statements", None);
+                diverged = true;
+            } else if stmt_tree_has_return(s) {
+                // Nested `return` (e.g. inside a nested `if` in the arm) must
+                // not fall through to the dummy-Unit check below: that yields
+                // a bogus "`return` value is T, but function returns ()".
+                self.err("E0800", stmt_span(s), "`return` inside an `if`/`match` value-branch is not yet supported; restructure with statements", None);
                 diverged = true;
             } else {
                 // check with dummy Unit return type (return already rejected)

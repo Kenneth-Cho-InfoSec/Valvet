@@ -1,0 +1,16 @@
+fun g(n: Int32): Int32 {
+    loop {
+        if (n > 0) {
+            if (n > 1) {
+                return 7
+            }
+        } else {
+            break
+        }
+    }
+    1
+}
+
+fun main() {
+    println(g(3));
+}

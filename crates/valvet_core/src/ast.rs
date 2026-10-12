@@ -526,6 +526,18 @@ pub enum Place {
     },
 }
 
+impl Place {
+    /// Source span of the place itself (outermost layer).
+    pub fn span(&self) -> Span {
+        match self {
+            Place::Var(_, span)
+            | Place::Field { span, .. }
+            | Place::Deref { span, .. }
+            | Place::Index { span, .. } => *span,
+        }
+    }
+}
+
 /// Whether a type contains a reference anywhere inside (for the top-level
 ///-only rule: no nested references in 0.1.0).
 pub fn has_ref(ty: &Ty) -> bool {
