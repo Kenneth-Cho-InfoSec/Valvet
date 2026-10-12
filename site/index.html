@@ -46,9 +46,7 @@
     total / (v.len() as Float64)
 }
 
-fun main() {
-    println(mean(vec![2.0, 4.0, 6.0, 8.0]))
-}</pre></div>
+println(mean(vec![2.0, 4.0, 6.0, 8.0]))</pre></div>
 <div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">5</pre></div>
 </div></section>
 
@@ -72,11 +70,21 @@ fun main() {
 </div>
 </div></section>
 
+<section class="block alt"><div class="wrap">
+<h2>New in 0.2.0</h2>
+<div class="grid4">
+  <div class="card"><h3>Units</h3><p>Annotate numbers with <code class="inline">@m</code>, <code class="inline">@s</code>, <code class="inline">@km/h</code>. Dimensions check at compile time; compatible scales convert silently.</p></div>
+  <div class="card"><h3>Frames</h3><p>CSV in, grouped means and audited joins out. Missing cells stay explicit, and every join reports what matched.</p></div>
+  <div class="card"><h3>Autodiff</h3><p>Dual-number forward differentiation with a <code class="inline">seed</code> helper. Write the loss once, read the gradient.</p></div>
+  <div class="card"><h3>Parallel</h3><p><code class="inline">par_sum</code> splits vectors across threads deterministically. Same input, same bits, every thread count.</p></div>
+</div>
+</div></section>
+
 <section class="block" id="install"><div class="wrap">
 <h2>Install</h2>
 <p>Prerequisites: stable Rust and a C compiler. Then:</p>
 <div class="code"><div class="chead"><span>Bash</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><div class="install"><span class="c"># clone the repo, then</span><br>cargo build --release<br>./target/release/valvet run hello.valvet</div></div>
-<p>Commands: <code class="inline">check</code>, <code class="inline">build</code>, <code class="inline">run</code>, <code class="inline">test</code>, <code class="inline">new</code>. See the <a href="docs.html">docs</a> for the tour.</p>
+<p>Commands: <code class="inline">check</code>, <code class="inline">build</code>, <code class="inline">run</code>, <code class="inline">test</code>, <code class="inline">new</code>, <code class="inline">repl</code>. Programs are scripts by default: top-level statements run directly, and <code class="inline">mode exp;</code> keeps the strict classic entry. See the <a href="docs.html">docs</a> for the tour.</p>
 </div></section>
 
 <footer><div class="wrap">
