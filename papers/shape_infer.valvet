@@ -238,7 +238,8 @@ fun count_merged(x: &ShapeVal, xp: Int64, y: &ShapeVal, yp: Int64): Int64 {
     val nb: Int64 = y.aux[yp]
     while (f < nb) {
         val nm: String = y.names[d]
-        if (find_header(x, xp, nm.clone()) == 0 as Int64 - 1 as Int64) {
+        val hb = find_header(x, xp, nm.clone())
+        if (hb == 0 as Int64 - 1 as Int64) {
             n += 1 as Int64
         }
         d = d + 1 as Int64 + vsize(y, d + 1 as Int64)
@@ -302,7 +303,8 @@ fun merge(x: &ShapeVal, xp: Int64, y: &ShapeVal, yp: Int64): ShapeVal {
 
 fun merge_records(x: &ShapeVal, xp: Int64, y: &ShapeVal, yp: Int64): ShapeVal {
     var o = new_val()
-    push_tok(&mut o, 5 as Int64, count_merged(x, xp, y, yp), "")
+    val nf = count_merged(x, xp, y, yp)
+    push_tok(&mut o, 5 as Int64, nf, "")
     var c = xp + 1 as Int64
     var fa = 0 as Int64
     val na: Int64 = x.aux[xp]
@@ -328,7 +330,8 @@ fun merge_records(x: &ShapeVal, xp: Int64, y: &ShapeVal, yp: Int64): ShapeVal {
     val nb: Int64 = y.aux[yp]
     while (fb < nb) {
         val nm: String = y.names[d]
-        if (find_header(x, xp, nm.clone()) == 0 as Int64 - 1 as Int64) {
+        val ha = find_header(x, xp, nm.clone())
+        if (ha == 0 as Int64 - 1 as Int64) {
             push_tok(&mut o, 8 as Int64, 1 as Int64, nm)
             append_into(&mut o, y, d + 1 as Int64)
         }

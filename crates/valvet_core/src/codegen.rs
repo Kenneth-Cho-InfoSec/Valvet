@@ -648,6 +648,7 @@ pub fn lower(checked: &Checked) -> Result<String, Ice> {
         owned: HashMap::new(),
         vartypes: HashMap::new(),
         nulls: vec![],
+        null_shields: vec![],
         tmp_frames: vec![],
         cur_move: false,
         fn_ret: Ty::Unit,
@@ -721,6 +722,12 @@ struct Gen<'a> {
     vartypes: HashMap<String, Ty>,
     /// pending moved-from slots to poison: (lvalue, type).
     nulls: Vec<(String, Ty)>,
+    /// stacked shields for `if`-condition poisons (see Stmt::If): each entry
+    /// holds nulls queued before a branch region. Diverging paths (`break`,
+    /// `continue`, `return`, `?`) flush through the whole stack — every
+    /// queued poison post-dominates its move on such paths — while
+    /// fallthrough restores shields for the enclosing statement-end flush.
+    null_shields: Vec<Vec<(String, Ty)>>,
     /// ADT tables for layout/drop/poison lowering.
     structs: HashMap<String, StructDef>,
     enums: HashMap<String, EnumDef>,
@@ -987,6 +994,32 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Emit destruction for temps in frames above `depth` WITHOUT popping,
+    /// for `break`/`continue`: the taken path jumps away, while enclosing
+    /// constructs still pop (and destroy) the same frames on fallthrough
+    /// paths. Popping here orphaned those pops — they destroyed the wrong
+    /// frame's temps (or nothing), leaking temps on fallthrough; and
+    /// destroys ran without flushing queued move-poisons first
+    /// (double free on moved call temps). Callers flush first.
+    fn destroy_frames_above(&mut self, depth: usize) {
+        let live: Vec<(String, String)> = self
+            .tmp_frames
+            .get(depth..)
+            .unwrap_or(&[])
+            .iter()
+            .rev()
+            .flat_map(|f| f.iter().rev().cloned())
+            .collect();
+        for (t, cty) in &live {
+            if cty == "VStr" {
+                self.out.push_str(&format!("vstr_free(&{});\n", t));
+            } else {
+                let vty = self.valvet_ty_of_cty(cty);
+                self.emit_destroy(t, &vty);
+            }
+        }
+    }
+
     /// Best-effort reverse map from temp C type to Valvet type (temps only
     /// ever hold Strings or nominal ADTs, both unambiguous here).
     fn valvet_ty_of_cty(&self, cty: &str) -> Ty {
@@ -1061,6 +1094,32 @@ impl<'a> Gen<'a> {
                 self.emit_poison(&n, &t);
             }
         }
+    }
+
+    /// Push the currently queued poisons behind a shield (branch regions
+    /// must not flush them early — see Stmt::If).
+    fn push_null_shield(&mut self) {
+        self.null_shields.push(std::mem::take(&mut self.nulls));
+    }
+
+    /// Pop the innermost shield, restoring its poisons ahead of any queued
+    /// since (they were queued earliest).
+    fn pop_null_shield(&mut self) {
+        if let Some(sh) = self.null_shields.pop() {
+            let mut kept = sh;
+            kept.extend(std::mem::take(&mut self.nulls));
+            self.nulls = kept;
+        }
+    }
+
+    /// Flush everything, including shielded poisons, for diverging paths
+    /// (`break`/`continue`/`return`/`?`): every queued poison's move
+    /// dominates the jump, and nothing after the jump can use the slots.
+    fn flush_all_nulls(&mut self) {
+        while let Some(sh) = self.null_shields.pop() {
+            self.nulls.extend(sh);
+        }
+        self.flush_nulls();
     }
 
     /// Emit poisoning statements for moved-from lvalue `lval` of type `ty`.
@@ -3126,6 +3185,14 @@ impl<'a> Gen<'a> {
                 // Header first: cond temps stay alive through the branches
                 // and are freed after (freeing before would be use-after-free).
                 self.out.push_str(&format!("if ({}) {{\n", c));
+                // Shield: nulls queued while emitting the condition (e.g. a
+                // temp moved into a call) belong after the WHOLE statement —
+                // the condition runs on every path. Branch bodies flush
+                // after each of their statements and would otherwise write
+                // these poisons into the taken branch only, while the frame
+                // pop frees the (already callee-freed) temp on all paths
+                // (double free on the untaken path).
+                self.push_null_shield();
                 self.emit_block(then_b, ret_ty, false)?;
                 self.out.push('}');
                 if let Some(e) = else_b {
@@ -3134,6 +3201,9 @@ impl<'a> Gen<'a> {
                     self.out.push('}');
                 }
                 self.out.push('\n');
+                // Condition poisons first (queued earliest), then any
+                // leftovers from the branches.
+                self.pop_null_shield();
                 self.flush_nulls();
                 self.pop_frame();
                 Ok(())
@@ -3288,12 +3358,13 @@ impl<'a> Gen<'a> {
                     .map(|v| (v.res.clone(), v.label.clone()));
                 match (value, target) {
                     (None, _) => {
-                        // Plain break: abandon statement temps, run intervening
-                        // Drops, then leave the loop.
+                        // Plain break: flush queued move-poisons first (moved
+                        // temps must read NULL here), destroy live temps
+                        // WITHOUT popping (enclosing constructs still pop on
+                        // fallthrough), run intervening drops, leave the loop.
                         let tmp_depth = self.loop_stack.last().map(|i| i.tmp_depth).unwrap_or(0);
-                        while self.tmp_frames.len() > tmp_depth {
-                            self.pop_frame();
-                        }
+                        self.flush_all_nulls();
+                        self.destroy_frames_above(tmp_depth);
                         self.emit_scope_frees_from(depth);
                         self.out.push_str("break;\n");
                     }
@@ -3323,9 +3394,10 @@ impl<'a> Gen<'a> {
                     .last()
                     .ok_or_else(|| Ice("continue outside loop".into()))?;
                 let (depth, tmp_depth) = (info.body_depth, info.tmp_depth);
-                while self.tmp_frames.len() > tmp_depth {
-                    self.pop_frame();
-                }
+                // Same pairing rule as plain break: flush, destroy without
+                // popping; enclosing pops still run on fallthrough paths.
+                self.flush_all_nulls();
+                self.destroy_frames_above(tmp_depth);
                 self.emit_scope_frees_from(depth);
                 self.out.push_str("continue;\n");
                 Ok(())
@@ -3335,8 +3407,10 @@ impl<'a> Gen<'a> {
                 // skip transferred slots; then free every live statement
                 // temp on the return path, keeping frames registered (see
                 // `destroy_all_temps`): enclosing owners still pop (and
-                // destroy) on fallthrough paths.
-                self.flush_nulls();
+                // destroy) on fallthrough paths. Flush through shields: a
+                // return inside a branch must also poison temps moved by an
+                // enclosing condition (their moves dominate the jump).
+                self.flush_all_nulls();
                 self.destroy_all_temps();
                 self.push_frame();
                 let saved = self.cur_move;
@@ -3448,10 +3522,13 @@ impl<'a> Gen<'a> {
                 // Lvalue path; the base must be a plain variable in 0.1.0
                 // (field-of-temporary has no stable slot to poison).
                 // Field access through a reference uses `->` (sema auto-derefs).
+                // Materialize (not just emit) the base: a call/index rvalue
+                // base must land in a frame temp, or the rest of the
+                // temporary leaks after the field is read out of it.
                 let arrow = matches!(self.ty_of(base.id), Ty::Reference { .. });
                 let saved = self.cur_move;
                 self.cur_move = false;
-                let b = self.emit_expr(base)?;
+                let b = self.mat_str(base)?;
                 self.cur_move = saved;
                 let path = if arrow {
                     format!("{}->{}", b, cfield(field))
@@ -3770,6 +3847,41 @@ impl<'a> Gen<'a> {
                     } else {
                         eq
                     }
+                } else if matches!(op, BinOp::And | BinOp::Or) {
+                    // Short-circuit is semantic: `a && b` must not evaluate
+                    // `b` (or its argument temps) when `a` decides the
+                    // result. Hoisting rhs temps before a C `&&` would run
+                    // them unconditionally (wrong side effects + leaks), so
+                    // lower to a guarded if instead (like value-`if`):
+                    //   l = lhs; r = neutral; if (l == take) { r = rhs; }; r
+                    // Bool operands are Copy, so no move/poison bookkeeping
+                    // applies to l/r themselves; rhs temps live in a pushed
+                    // frame destroyed inside the guarded block (taken path
+                    // only — creation never runs otherwise).
+                    let l = self.emit_expr(lhs)?;
+                    let res = self.fresh_tmp();
+                    self.out.push_str(&format!(
+                        "int {} = {};\n",
+                        res,
+                        if *op == BinOp::And { 0 } else { 1 }
+                    ));
+                    if let Some(f) = self.tmp_frames.last_mut() {
+                        f.push((res.clone(), "int".to_string()));
+                    }
+                    let take = if *op == BinOp::And { 1 } else { 0 };
+                    self.out.push_str(&format!("if (({}) == {}) {{\n", l, take));
+                    // Shield: nulls queued by lhs (or earlier) must not be
+                    // flushed by statement ends inside rhs.
+                    let shielded = std::mem::take(&mut self.nulls);
+                    self.push_frame();
+                    let r = self.emit_expr(rhs)?;
+                    self.out.push_str(&format!("{} = ({});\n", res, r));
+                    self.flush_nulls();
+                    self.pop_frame();
+                    self.out.push_str("}\n");
+                    self.nulls.extend(shielded);
+                    self.cur_move = saved;
+                    res
                 } else {
                     let l = self.emit_expr(lhs)?;
                     let r = self.emit_expr(rhs)?;
@@ -4158,7 +4270,10 @@ impl<'a> Gen<'a> {
                     ));
                     self.nulls
                         .push((ok_path.replace(".u.v0.", ".u.v1."), ety.clone()));
-                    self.flush_nulls();
+                    // Flush through shields: on the failure path this `return`
+                    // diverges, so enclosing-condition poisons must be visible
+                    // before the destroys below skip them.
+                    self.flush_all_nulls();
                     // Free without popping: popping here would orphan the
                     // success path's statement-end cleanup (same bug class
                     // as `return` before `destroy_all_temps` existed —
@@ -4175,7 +4290,9 @@ impl<'a> Gen<'a> {
                     ));
                 } else {
                     // Option: no payload to move; return None of fn type.
-                    // (Free without popping, as above.)
+                    // (Free without popping, as above; flush through shields
+                    // first for the same diverging-path reason.)
+                    self.flush_all_nulls();
                     self.destroy_all_temps();
                     self.emit_all_frees();
                     let frct = self.cty(&fret);
