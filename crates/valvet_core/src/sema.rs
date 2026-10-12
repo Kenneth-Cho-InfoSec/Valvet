@@ -4607,6 +4607,43 @@ impl Cx {
                 );
             }
             return Ty::Int64;
+        } else if name == "par_sum" {
+            // K4: `par_sum(v: Vec<Float64>, nthreads: Int64): Float64`
+            // (deterministic parallel blocked sum; see codegen).
+            if args.len() != 2 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`par_sum` takes exactly 2 arguments, found {}", args.len()),
+                    None,
+                );
+                return Ty::Float64;
+            }
+            let at = self.check_expr(&args[0]);
+            let want = Ty::Generic {
+                base: "Vec".to_string(),
+                args: vec![Ty::Float64],
+            };
+            if at != want {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!("`par_sum` expects Vec<Float64>, found {}", at.name()),
+                    None,
+                );
+            } else {
+                self.record_vec_inst(&Ty::Float64);
+            }
+            let bt = self.check_expr(&args[1]);
+            if bt != Ty::Int64 && bt != Ty::Int32 {
+                self.err(
+                    "E0201",
+                    args[1].span,
+                    format!("`par_sum` expects an Int thread count, found {}", bt.name()),
+                    None,
+                );
+            }
+            return Ty::Float64;
         } else if name == "write_file" {
             // J6: `write_file(path, content): Result<Int64, String>`
             // (bytes written).

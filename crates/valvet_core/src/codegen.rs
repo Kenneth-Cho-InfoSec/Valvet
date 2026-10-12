@@ -16,6 +16,7 @@ const PRELUDE: &str = r#"
 #include <string.h>
 #include <inttypes.h>
 #include <math.h>
+#include <pthread.h>
 
 static int32_t v_f2i32(double v) {
     if (isnan(v)) return 0;
@@ -1953,6 +1954,63 @@ impl<'a> Gen<'a> {
                 ok = some("(int64_t)wrote")
             ));
         }
+        // K4: deterministic parallel sum over `Vec<Float64>` (fixed
+        // 4096-element blocks summed sequentially, block partials
+        // combined in index order: the partition is a pure function of
+        // the length, so every thread count gives bit-identical results).
+        if self.has_inst("Vec", &[Ty::Float64]) {
+            let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Float64));
+            self.out.push_str(&format!(
+                concat!(
+                    "typedef struct {{ double *a; int64_t n; int64_t nb;",
+                    " int64_t tid; int64_t nt; double *partials; }} VParSumTask;",
+                    "static void *vpar_sum_work(void *p) {{",
+                    "VParSumTask *t = (VParSumTask *)p;",
+                    "for (int64_t b = t->tid; b < t->nb; b += t->nt) {{",
+                    "int64_t lo = b * 4096; int64_t hi = lo + 4096;",
+                    "if (hi > t->n) hi = t->n;",
+                    "double s = 0.0;",
+                    "for (int64_t i = lo; i < hi; i++) s += t->a[i];",
+                    "t->partials[b] = s;",
+                    "}} return NULL; }}",
+                    "static double v_par_sum_wrap({vct} *v, int64_t nt) {{",
+                    "double *a = (v && v->data) ? v->data : NULL;",
+                    "int64_t n = (v && a) ? v->len : 0;",
+                    "if (n <= 0) return 0.0;",
+                    "if (nt < 1) nt = 1;",
+                    "int64_t nb = (n + 4095) / 4096;",
+                    "if (nt > nb) nt = nb;",
+                    "double *partials = (double *)malloc((size_t)nb * sizeof(double));",
+                    "if (!partials) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "if (nt == 1) {{",
+                    "VParSumTask one = {{a, n, nb, 0, 1, partials}};",
+                    "vpar_sum_work(&one);",
+                    "}} else {{",
+                    "pthread_t *ths = (pthread_t *)malloc((size_t)nt * sizeof(pthread_t));",
+                    "VParSumTask *tasks = (VParSumTask *)malloc((size_t)nt * sizeof(VParSumTask));",
+                    "if (!ths || !tasks) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "int64_t started = 0; int failed = 0;",
+                    "for (int64_t t = 0; t < nt; t++) {{",
+                    "tasks[t] = (VParSumTask){{a, n, nb, t, nt, partials}};",
+                    "if (pthread_create(&ths[t], NULL, vpar_sum_work, &tasks[t]) != 0)",
+                    " {{ failed = 1; break; }}",
+                    "started++; }}",
+                    "for (int64_t t = 0; t < started; t++) pthread_join(ths[t], NULL);",
+                    "if (failed) {{",
+                    "for (int64_t b = 0; b < nb; b++) {{",
+                    "int64_t lo = b * 4096; int64_t hi = lo + 4096;",
+                    "if (hi > n) hi = n;",
+                    "double s = 0.0;",
+                    "for (int64_t i = lo; i < hi; i++) s += a[i];",
+                    "partials[b] = s; }} }}",
+                    "free(ths); free(tasks); }}",
+                    "double total = 0.0;",
+                    "for (int64_t b = 0; b < nb; b++) total += partials[b];",
+                    "free(partials); return total; }}\n"
+                ),
+                vct = vct,
+            ));
+        }
         Ok(())
     }
 
@@ -3493,6 +3551,21 @@ impl<'a> Gen<'a> {
                     let inner = self.emit_expr(a)?;
                     self.cur_move = saved;
                     format!("vrng_seeded((uint64_t)({}))", inner)
+                } else if name == "par_sum" {
+                    // K4: vector borrows (never moves); thread count is Copy.
+                    let a = args.first().ok_or_else(|| Ice("par_sum arity".into()))?;
+                    let b = args.get(1).ok_or_else(|| Ice("par_sum arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let v = self.mat_str(a)?;
+                    let t = self.ty_of(b.id);
+                    let n = if self.moves(&t) {
+                        self.mat_str(b)?
+                    } else {
+                        self.emit_expr(b)?
+                    };
+                    self.cur_move = saved;
+                    format!("v_par_sum_wrap(&{}, {})", v, n)
                 } else if name == "read_file"
                     || name == "csv_rows"
                     || name == "csv_bad_rows"
@@ -4957,6 +5030,7 @@ pub fn cc_build(c_file: &Path, exe: &Path) -> Result<(), String> {
     cmd.arg("-std=c11")
         .arg("-O2")
         .arg("-fwrapv")
+        .arg("-pthread")
         .arg("-o")
         .arg(exe)
         .arg(c_file);
