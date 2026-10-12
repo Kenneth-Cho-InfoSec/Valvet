@@ -310,6 +310,26 @@ struct BinCheck<'a> {
 /// (`check_block_expr`) reject them with E0800 instead of checking against
 /// a dummy `()` return type (which produced a bogus "`return` value is T,
 /// but function returns ()").
+/// Builtin nominal type names share C type names with user ADTs; user
+/// redefinitions are rejected (E0401) in `register_adts` instead of
+/// shadowing (shadowing produced conflicting C declarations).
+fn is_builtin_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Int32"
+            | "Int64"
+            | "Float64"
+            | "Bool"
+            | "String"
+            | "Unit"
+            | "Vec"
+            | "Option"
+            | "Result"
+            | "Missing"
+            | "Rng"
+    )
+}
+
 fn stmt_tree_has_return(s: &Stmt) -> bool {
     match s {
         Stmt::Return { .. } => true,
@@ -741,6 +761,20 @@ impl Cx {
         for d in &prog.structs {
             self.set_mod(&d.module);
             let q = crate::resolver::qname(&d.module, &d.name);
+            if is_builtin_type_name(&d.name) {
+                // Shadowing a builtin type breaks codegen (shared C type
+                // names), so it is rejected rather than shadowed.
+                self.err(
+                    "E0401",
+                    d.name_span,
+                    format!(
+                        "`{}` is a builtin type name and cannot be redefined",
+                        d.name
+                    ),
+                    Some("rename the type".into()),
+                );
+                continue;
+            }
             if self.structs.contains_key(&q)
                 || self.enums.contains_key(&q)
                 || self.fun_names.contains_key(&q)
@@ -776,6 +810,18 @@ impl Cx {
         for d in &prog.enums {
             self.set_mod(&d.module);
             let q = crate::resolver::qname(&d.module, &d.name);
+            if is_builtin_type_name(&d.name) {
+                self.err(
+                    "E0401",
+                    d.name_span,
+                    format!(
+                        "`{}` is a builtin type name and cannot be redefined",
+                        d.name
+                    ),
+                    Some("rename the type".into()),
+                );
+                continue;
+            }
             if self.enums.contains_key(&q)
                 || self.structs.contains_key(&q)
                 || self.fun_names.contains_key(&q)

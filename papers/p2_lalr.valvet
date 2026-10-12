@@ -1,0 +1,154 @@
+// papers/p2_lalr.valvet
+// Table-driven LR driver after Knuth ("On the Translation of Languages
+// from Left to Right", 1965) and the LALR tradition (DeRemer), following
+// papers/p2_lalr.fs (FsYacc table driver: action/goto tables, value stack,
+// shift/reduce/accept/error). The F# encodes actions with bit flags; Valvet
+// has no bitwise ops, so actions encode arithmetically as kind*10+num
+// (0=error, 1=shift s, 2=reduce rule, 3=accept), decoded with / and %.
+//
+// Grammar (augmented): E -> E + T | T ; T -> n. Tokens: n=0, +=1, end=2.
+// States 0..5 as documented below. Errors report the token position.
+// Mirrored by papers/p2_lalr_ref.py over identical tables.
+
+// action[state][tok]; goto[state][nonterm E=0,T=1]; -1 = none.
+fun build_tables(): Vec<Vec<Int64>> {
+    var a: Vec<Vec<Int64>> = vec![];
+    var r0: Vec<Int64> = vec![(13 as Int64), (0 as Int64), (0 as Int64)];
+    var r1: Vec<Int64> = vec![(0 as Int64), (14 as Int64), (30 as Int64)];
+    var r2: Vec<Int64> = vec![(0 as Int64), (22 as Int64), (22 as Int64)];
+    var r3: Vec<Int64> = vec![(0 as Int64), (23 as Int64), (23 as Int64)];
+    var r4: Vec<Int64> = vec![(13 as Int64), (0 as Int64), (0 as Int64)];
+    var r5: Vec<Int64> = vec![(0 as Int64), (21 as Int64), (21 as Int64)];
+    a.push(r0);
+    a.push(r1);
+    a.push(r2);
+    a.push(r3);
+    a.push(r4);
+    a.push(r5);
+    // goto rows
+    var g0: Vec<Int64> = vec![(1 as Int64), (2 as Int64)];
+    var g1: Vec<Int64> = vec![((0 as Int64) - (1 as Int64)), ((0 as Int64) - (1 as Int64))];
+    var g2: Vec<Int64> = vec![((0 as Int64) - (1 as Int64)), ((0 as Int64) - (1 as Int64))];
+    var g3: Vec<Int64> = vec![((0 as Int64) - (1 as Int64)), ((0 as Int64) - (1 as Int64))];
+    var g4: Vec<Int64> = vec![((0 as Int64) - (1 as Int64)), (5 as Int64)];
+    var g5: Vec<Int64> = vec![((0 as Int64) - (1 as Int64)), ((0 as Int64) - (1 as Int64))];
+    a.push(g0);
+    a.push(g1);
+    a.push(g2);
+    a.push(g3);
+    a.push(g4);
+    a.push(g5);
+    a
+}
+
+struct ParseRes { ok: Bool, value: Float64, errpos: Int64 }
+
+// toks: token codes; vals: semantic values (n's value, 0 else).
+fun lr_parse(t: &Vec<Vec<Int64>>, toks: Vec<Int64>, vals: Vec<Float64>): ParseRes {
+    var states: Vec<Int64> = vec![];
+    states.push(0 as Int64);
+    var vstack: Vec<Float64> = vec![];
+    var pos = 0 as Int64;
+    loop {
+        val st = states[states.len() - (1 as Int64)];
+        val tok = toks[pos];
+        val act = (*t)[st][tok];
+        val kind = act / (10 as Int64);
+        val num = act % (10 as Int64);
+        if (kind == (0 as Int64)) {
+            break ParseRes { ok: false, value: 0.0, errpos: pos }
+        }
+        if (kind == (3 as Int64)) {
+            break ParseRes { ok: true, value: vstack[vstack.len() - (1 as Int64)], errpos: pos }
+        }
+        if (kind == (1 as Int64)) {
+            states.push(num);
+            vstack.push(vals[pos]);
+            pos = pos + (1 as Int64);
+        } else {
+            // reduce rule num (1: E->E+T len3; 2: E->T len1; 3: T->n len1)
+            // NOTE: the value stack holds one fewer entry than the state
+            // stack (initial state 0 carries no value), so index it by its
+            // own length, not the state top.
+            val vtop = vstack.len() - (1 as Int64);
+            if (num == (1 as Int64)) {
+                val b = vstack[vtop];
+                val a = vstack[vtop - (2 as Int64)];
+                vstack = vec_pop_n(vstack, 3 as Int64);
+                states = vec_pop_n_i(states, 3 as Int64);
+                vstack.push(a + b);
+                val ns = states[states.len() - (1 as Int64)];
+                states.push((*t)[ns + (6 as Int64)][0 as Int64]);
+            } else {
+                val v = vstack[vtop];
+                vstack = vec_pop_n(vstack, 1 as Int64);
+                states = vec_pop_n_i(states, 1 as Int64);
+                vstack.push(v);
+                val ns = states[states.len() - (1 as Int64)];
+                if (num == (2 as Int64)) {
+                    states.push((*t)[ns + (6 as Int64)][0 as Int64]);
+                } else {
+                    states.push((*t)[ns + (6 as Int64)][1 as Int64]);
+                }
+            }
+        }
+    }
+}
+
+fun vec_pop_n(v: Vec<Float64>, n: Int64): Vec<Float64> {
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len() - n) {
+        out.push(v[i]);
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+fun vec_pop_n_i(v: Vec<Int64>, n: Int64): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len() - n) {
+        out.push(v[i]);
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+fun run_case(t: &Vec<Vec<Int64>>, toks: Vec<Int64>, vals: Vec<Float64>) {
+    val r = lr_parse(t, toks, vals);
+    if (r.ok) {
+        println(r.value)
+    } else {
+        println((0 as Int64) - (1000 as Int64) - r.errpos)
+    }
+}
+
+fun main() {
+    val t = build_tables();
+    // 3 + 4 * 2 is NOT this grammar (no *): use + chains and parens-free.
+    // case 1: 3 + 4 + 2 = 9
+    var c1: Vec<Int64> = vec![(0 as Int64), (1 as Int64), (0 as Int64), (1 as Int64), (0 as Int64), (2 as Int64)];
+    var v1: Vec<Float64> = vec![3.0, 0.0, 4.0, 0.0, 2.0, 0.0];
+    run_case(&t, c1, v1);
+    // case 2: 7 = 7
+    var c2: Vec<Int64> = vec![(0 as Int64), (2 as Int64)];
+    var v2: Vec<Float64> = vec![7.0, 0.0];
+    run_case(&t, c2, v2);
+    // case 3: 1 + 2 + 3 + 4 = 10
+    var c3: Vec<Int64> = vec![(0 as Int64), (1 as Int64), (0 as Int64), (1 as Int64), (0 as Int64), (1 as Int64), (0 as Int64), (2 as Int64)];
+    var v3: Vec<Float64> = vec![1.0, 0.0, 2.0, 0.0, 3.0, 0.0, 4.0, 0.0];
+    run_case(&t, c3, v3);
+    // case 4: leading + -> error at 0 => -1000
+    var c4: Vec<Int64> = vec![(1 as Int64), (0 as Int64), (2 as Int64)];
+    var v4: Vec<Float64> = vec![0.0, 5.0, 0.0];
+    run_case(&t, c4, v4);
+    // case 5: 3 + -> error at 2 => -1002
+    var c5: Vec<Int64> = vec![(0 as Int64), (1 as Int64), (2 as Int64)];
+    var v5: Vec<Float64> = vec![3.0, 0.0, 0.0];
+    run_case(&t, c5, v5);
+    // case 6: empty (= end only) -> error at 0 => -1000
+    var c6: Vec<Int64> = vec![(2 as Int64)];
+    var v6: Vec<Float64> = vec![0.0];
+    run_case(&t, c6, v6);
+}

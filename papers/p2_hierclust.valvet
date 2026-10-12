@@ -1,0 +1,130 @@
+// UPGMA agglomerative clustering (Sokal & Michener 1958: "A statistical
+// method for evaluating systematic relationships") after FSharp.Stats
+// ML.Unsupervised.HierarchicalClustering (papers/p2_hierclust.fs, 647 lines).
+//
+// UPGMA IS implemented in the F# source: Linker.upgmaLwLinker weights the two
+// sub-distances by member counts (alpha1 = mA/(mA+mB), alpha2 = mB/(mA+mB)),
+// which by induction equals the plain mean over all member cross-pairs, so
+// this port computes that mean directly (same heights, same merges).
+//
+// Disclosed deviations from the F#:
+// - SQUARED Euclidean distances (sums of squared diffs, no sqrt). The F#
+//   `euclidean` applies sqrt; sqrt is monotone so pairwise order agrees, but
+//   average-linkage heights live on the squared scale. The Python oracle uses
+//   the identical squared convention, same summation order, one division.
+// - Fixed 8 literal 2D points instead of file input (no file I/O in Valvet).
+// - Linear scan for the closest pair (n=8) instead of the F# priority queue,
+//   with deterministic tie-break: ascending id order, strict < keeps first.
+// - Only + - * / and comparisons on floats.
+
+fun sq2(xs: &Vec<Float64>, ys: &Vec<Float64>, a: Int64, b: Int64): Float64 {
+    val dx = (*xs)[a] - (*xs)[b]
+    val dy = (*ys)[a] - (*ys)[b]
+    dx * dx + dy * dy
+}
+
+// Average linkage: mean squared distance over member cross-pairs
+// (equals the F# upgmaLwLinker Lance-Williams recursion by induction).
+fun cdist(members: &Vec<Vec<Int64>>, xs: &Vec<Float64>, ys: &Vec<Float64>, a: Int64, b: Int64): Float64 {
+    val ma = (*members)[a].clone()
+    val mb = (*members)[b].clone()
+    var s = 0.0
+    var i = 0 as Int64
+    while (i < ma.len()) {
+        var j = 0 as Int64
+        while (j < mb.len()) {
+            s = s + sq2(xs, ys, ma[i], mb[j])
+            j = j + (1 as Int64)
+        }
+        i = i + (1 as Int64)
+    }
+    s / ((ma.len() * mb.len()) as Float64)
+}
+
+fun main() {
+    var xs: Vec<Float64> = vec![]
+    var ys: Vec<Float64> = vec![]
+    xs.push(1.0)
+    ys.push(1.0)
+    xs.push(1.5)
+    ys.push(1.2)
+    xs.push(0.8)
+    ys.push(1.7)
+    xs.push(5.0)
+    ys.push(5.0)
+    xs.push(5.4)
+    ys.push(4.8)
+    xs.push(4.9)
+    ys.push(5.5)
+    xs.push(9.0)
+    ys.push(1.0)
+    xs.push(9.3)
+    ys.push(1.4)
+    val n = xs.len()
+    var members: Vec<Vec<Int64>> = vec![]
+    var sizes: Vec<Int64> = vec![]
+    var active: Vec<Int64> = vec![]
+    var i = 0 as Int64
+    while (i < n) {
+        var one: Vec<Int64> = vec![]
+        one.push(i)
+        members.push(one)
+        sizes.push(1 as Int64)
+        active.push(1 as Int64)
+        i = i + (1 as Int64)
+    }
+    println("merges:")
+    var next = n
+    var nactive = n
+    while (nactive > (1 as Int64)) {
+        var ba = 0 as Int64
+        var bb = 0 as Int64
+        var best = 0.0
+        var first = true
+        var a = 0 as Int64
+        while (a < next) {
+            if (active[a] == (1 as Int64)) {
+                var b = a + (1 as Int64)
+                while (b < next) {
+                    if (active[b] == (1 as Int64)) {
+                        val d = cdist(&members, &xs, &ys, a, b)
+                        if (first || d < best) {
+                            best = d
+                            ba = a
+                            bb = b
+                            first = false
+                        }
+                    }
+                    b = b + (1 as Int64)
+                }
+            }
+            a = a + (1 as Int64)
+        }
+        val ma = members[ba].clone()
+        val mb = members[bb].clone()
+        var m: Vec<Int64> = vec![]
+        var k = 0 as Int64
+        while (k < ma.len()) {
+            m.push(ma[k])
+            k = k + (1 as Int64)
+        }
+        k = 0 as Int64
+        while (k < mb.len()) {
+            m.push(mb[k])
+            k = k + (1 as Int64)
+        }
+        val sz = sizes[ba] + sizes[bb]
+        members.push(m)
+        sizes.push(sz)
+        active.push(1 as Int64)
+        active[ba] = 0 as Int64
+        active[bb] = 0 as Int64
+        println(next)
+        println(ba)
+        println(bb)
+        println(best)
+        println(sz)
+        nactive = nactive - (1 as Int64)
+        next = next + (1 as Int64)
+    }
+}

@@ -1,0 +1,89 @@
+// PAPER SWAP (disclosed): papers/p2_normal.fs Normal.SampleUnchecked does
+// NOT implement Box & Muller (1958) — it implements the Marsaglia-Bray
+// polar method, so this port pairs Marsaglia & Bray (1964), "A Convenient
+// Method for Generating Normal Variables" (SIAM Review 6(3):260-264),
+// keeping the required p2_boxmuller.* filenames.
+// F# source (lines 84-94): v1 = 2*u1-1, v2 = 2*u2-1, r = v1^2+v2^2,
+// reject while (r >= 1 || r == 0), fac = sqrt(-2*ln(r)/r),
+// return sigma*v1*fac + mu (second deviate discarded).
+// Deviations from the F# (all disclosed):
+// - Fixed LCG uniform source below (a=1664525, c=1013904223, m=2^32,
+//   seed=12345; all products < 2^63 so Int64 arithmetic is exact) instead
+//   of Random.rndgen; the Python oracle hardcodes the identical LCG so the
+//   uniform stream is bit-identical, then applies the identical op order.
+// - mu=0, sigma=1, N=2000 deviates; only the first deviate per accepted
+//   pair is kept, exactly like the F# (which returns v1*fac).
+// - sqrt/log come from stdlib/math.valvet (iterative approximations, not
+//   libm), so the oracle compares with rel tolerance 1e-9, not bitwise.
+
+import std::math::sqrt;
+import std::math::log;
+
+fun lcg(s: Int64): Int64 {
+    (1664525 as Int64 * s + 1013904223 as Int64) % (4294967296 as Int64)
+}
+
+fun uni(seed: Int64): Float64 {
+    (seed as Float64) / 4294967296.0
+}
+
+fun main() {
+    val n = 2000 as Int64
+    var seed = 12345 as Int64
+    var out: Vec<Float64> = vec![]
+    while (out.len() < n) {
+        seed = lcg(seed)
+        val u1 = uni(seed)
+        seed = lcg(seed)
+        val u2 = uni(seed)
+        val v1 = 2.0 * u1 - 1.0
+        val v2 = 2.0 * u2 - 1.0
+        val r = v1 * v1 + v2 * v2
+        if (r < 1.0 && r > 0.0) {
+            val fac = sqrt((0.0 - 2.0 * log(r)) / r)
+            out.push(v1 * fac)
+        }
+    }
+    var sum = 0.0
+    var i = 0 as Int64
+    while (i < n) {
+        sum = sum + out[i]
+        i = i + (1 as Int64)
+    }
+    val mean = sum / (n as Float64)
+    var mn = out[0]
+    var mx = out[0]
+    var j = 1 as Int64
+    while (j < n) {
+        if (out[j] < mn) {
+            mn = out[j]
+        }
+        if (out[j] > mx) {
+            mx = out[j]
+        }
+        j = j + (1 as Int64)
+    }
+    var ss = 0.0
+    var k = 0 as Int64
+    while (k < n) {
+        val d = out[k] - mean
+        ss = ss + d * d
+        k = k + (1 as Int64)
+    }
+    val variance = ss / (n as Float64)
+    println("n=2000")
+    println("mean")
+    println(mean)
+    println("variance")
+    println(variance)
+    println("min")
+    println(mn)
+    println("max")
+    println(mx)
+    println("first5")
+    var f = 0 as Int64
+    while (f < (5 as Int64)) {
+        println(out[f])
+        f = f + (1 as Int64)
+    }
+}

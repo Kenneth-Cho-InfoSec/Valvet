@@ -330,6 +330,14 @@ struct VarState {
     moved_fields: HashSet<String>,
 }
 
+/// Move state snapshot for branch joins (if/else, match arms, loop bodies):
+/// whole-moved vars plus per-var moved fields, so exclusive branches roll
+/// back partial moves exactly like whole moves.
+struct MoveSnap {
+    vars: HashSet<String>,
+    fields: HashMap<String, HashSet<String>>,
+}
+
 /// A live borrow region.
 #[derive(Debug, Clone)]
 struct Loan {
@@ -854,19 +862,26 @@ impl<'a> Cx<'a> {
         }
     }
 
-    fn moved_snapshot(&self) -> HashSet<String> {
-        let mut set = HashSet::new();
+    fn moved_snapshot(&self) -> MoveSnap {
+        let mut vars = HashSet::new();
+        let mut fields: HashMap<String, HashSet<String>> = HashMap::new();
         for s in &self.scopes {
             for (n, v) in s {
                 // Disjoint field borrows keep this legal under the borrow checker.
                 if (v.moved || !v.moved_fields.is_empty())
                     && !is_copy_ty(&v.ty, &self.checked.structs, &self.checked.enums)
                 {
-                    set.insert(n.clone());
+                    vars.insert(n.clone());
+                }
+                if !v.moved_fields.is_empty() {
+                    fields
+                        .entry(n.clone())
+                        .or_default()
+                        .extend(v.moved_fields.iter().cloned());
                 }
             }
         }
-        set
+        MoveSnap { vars, fields }
     }
 
     fn apply_moved(&mut self, set: &HashSet<String>) {
@@ -1310,7 +1325,7 @@ impl<'a> Cx<'a> {
         self.scopes.pop();
         let moved_arm = self.moved_snapshot();
         self.restore_snapshot(&before);
-        union_out.extend(moved_arm);
+        union_out.extend(moved_arm.vars);
     }
 
     /// Binding slots introduced by a pattern: (name, type). Mirrors the sema
@@ -1426,8 +1441,8 @@ impl<'a> Cx<'a> {
                 }
                 let moved_else = self.moved_snapshot();
                 // union
-                let mut union = moved_then;
-                union.extend(moved_else);
+                let mut union = moved_then.vars;
+                union.extend(moved_else.vars);
                 self.restore_snapshot(&before);
                 self.apply_moved(&union);
             }
@@ -1440,7 +1455,7 @@ impl<'a> Cx<'a> {
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
                 // Conservative: body moves persist after loop.
-                self.apply_moved(&moved_body);
+                self.apply_moved(&moved_body.vars);
             }
             Stmt::For {
                 var, iter, body, ..
@@ -1478,7 +1493,7 @@ impl<'a> Cx<'a> {
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
                 // Conservative like `while`: body moves persist after loop.
-                self.apply_moved(&moved_body);
+                self.apply_moved(&moved_body.vars);
             }
             Stmt::Loop { body, .. } => {
                 let before = self.moved_snapshot();
@@ -1487,7 +1502,7 @@ impl<'a> Cx<'a> {
                 self.loop_depth -= 1;
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
-                self.apply_moved(&moved_body);
+                self.apply_moved(&moved_body.vars);
             }
             Stmt::Match {
                 scrutinee, arms, ..
@@ -1525,10 +1540,14 @@ impl<'a> Cx<'a> {
         }
     }
 
-    fn restore_snapshot(&mut self, snap: &HashSet<String>) {
+    fn restore_snapshot(&mut self, snap: &MoveSnap) {
         for s in self.scopes.iter_mut() {
             for (n, v) in s.iter_mut() {
-                v.moved = snap.contains(n);
+                v.moved = snap.vars.contains(n);
+                // Field moves must also roll back: exclusive branches must
+                // not observe each other's partial moves (same rule as whole
+                // moves above; previously leaked, causing spurious E0301).
+                v.moved_fields = snap.fields.get(n).cloned().unwrap_or_default();
             }
         }
     }
@@ -1789,7 +1808,7 @@ impl<'a> Cx<'a> {
                 self.scopes.pop();
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
-                self.apply_moved(&moved_body);
+                self.apply_moved(&moved_body.vars);
             }
             ExprKind::Assign { target, value, .. } => {
                 let moves = self.moves_ty(value.id);
@@ -1927,8 +1946,8 @@ impl<'a> Cx<'a> {
                     self.scopes.pop();
                 }
                 let moved_else = self.moved_snapshot();
-                let mut union = moved_then;
-                union.extend(moved_else);
+                let mut union = moved_then.vars;
+                union.extend(moved_else.vars);
                 self.restore_snapshot(&before);
                 self.apply_moved(&union);
             }

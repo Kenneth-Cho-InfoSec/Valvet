@@ -1,0 +1,138 @@
+// papers/p2_knn.valvet
+// k-nearest neighbors after Cover & Hart ("Nearest Neighbor Pattern
+// Classification", IEEE TIT 1967), following papers/p2_knn.fs (FSharp.Stats
+// ML: distance-weighted votes over labeled points). Squared Euclidean
+// distance (no sqrt), majority vote with ties broken by lowest class.
+// Mirrored by papers/p2_knn_ref.py.
+
+struct Pt2 { x: Float64, y: Float64, c: Int64 }
+
+fun tget(t: &Vec<Pt2>, i: Int64): Pt2 {
+    match ((*t).get(i)) {
+        Some(p) -> p,
+        None -> Pt2 { x: 0.0, y: 0.0, c: (0 as Int64) - (1 as Int64) },
+    }
+}
+
+fun sqdist(a: Pt2, b: Pt2): Float64 {
+    val dx = a.x - b.x;
+    val dy = a.y - b.y;
+    dx * dx + dy * dy
+}
+
+// classify query q by k nearest among train; returns winning class.
+fun knn(train: &Vec<Pt2>, q: Pt2, k: Int64): Int64 {
+    // insertion order of (dist, class) pairs, keep k smallest
+    var best_d: Vec<Float64> = vec![];
+    var best_c: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < (*train).len()) {
+        val d = sqdist(tget(train, i), q);
+        val c = tget(train, i).c;
+        if (best_d.len() < k) {
+            best_d.push(d);
+            best_c.push(c);
+            // bubble the new entry down to keep ascending
+            var j = best_d.len() - (1 as Int64);
+            while (j > (0 as Int64) && best_d[j] < best_d[j - (1 as Int64)]) {
+                val td = best_d[j];
+                val pd = best_d[j - (1 as Int64)];
+                best_d = vec_set_f(best_d, j, pd);
+                best_d = vec_set_f(best_d, j - (1 as Int64), td);
+                val tc = best_c[j];
+                val pc = best_c[j - (1 as Int64)];
+                best_c = vec_set_i(best_c, j, pc);
+                best_c = vec_set_i(best_c, j - (1 as Int64), tc);
+                j = j - (1 as Int64);
+            }
+        } else {
+            if (d < best_d[k - (1 as Int64)]) {
+                best_d = vec_set_f(best_d, k - (1 as Int64), d);
+                best_c = vec_set_i(best_c, k - (1 as Int64), c);
+                var j = k - (1 as Int64);
+                while (j > (0 as Int64) && best_d[j] < best_d[j - (1 as Int64)]) {
+                    val td = best_d[j];
+                    val pd = best_d[j - (1 as Int64)];
+                    best_d = vec_set_f(best_d, j, pd);
+                    best_d = vec_set_f(best_d, j - (1 as Int64), td);
+                    val tc = best_c[j];
+                    val pc = best_c[j - (1 as Int64)];
+                    best_c = vec_set_i(best_c, j, pc);
+                    best_c = vec_set_i(best_c, j - (1 as Int64), tc);
+                    j = j - (1 as Int64);
+                }
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    // majority vote, ties -> lowest class
+    var c0 = 0 as Int64;
+    var c1 = 0 as Int64;
+    i = 0 as Int64;
+    while (i < best_c.len()) {
+        if (best_c[i] == (0 as Int64)) {
+            c0 = c0 + (1 as Int64)
+        } else {
+            c1 = c1 + (1 as Int64)
+        }
+        i = i + (1 as Int64);
+    }
+    if (c1 > c0) { (1 as Int64) } else { (0 as Int64) }
+}
+
+fun vec_set_f(v: Vec<Float64>, at: Int64, x: Float64): Vec<Float64> {
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (i == at) {
+            out.push(x)
+        } else {
+            out.push(v[i])
+        }
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+fun vec_set_i(v: Vec<Int64>, at: Int64, x: Int64): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (i == at) {
+            out.push(x)
+        } else {
+            out.push(v[i])
+        }
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+fun main() {
+    // Two Gaussian-ish blobs, labels 0 and 1.
+    val train: Vec<Pt2> = vec![
+        Pt2 { x: 1.0, y: 1.0, c: 0 as Int64 }, Pt2 { x: 1.5, y: 2.0, c: 0 as Int64 },
+        Pt2 { x: 2.0, y: 1.0, c: 0 as Int64 }, Pt2 { x: 0.5, y: 1.5, c: 0 as Int64 },
+        Pt2 { x: 2.5, y: 2.5, c: 0 as Int64 }, Pt2 { x: 1.0, y: 2.5, c: 0 as Int64 },
+        Pt2 { x: 3.0, y: 1.5, c: 0 as Int64 }, Pt2 { x: 2.0, y: 0.5, c: 0 as Int64 },
+        Pt2 { x: 8.0, y: 8.0, c: 1 as Int64 }, Pt2 { x: 7.5, y: 9.0, c: 1 as Int64 },
+        Pt2 { x: 9.0, y: 8.0, c: 1 as Int64 }, Pt2 { x: 8.5, y: 7.0, c: 1 as Int64 },
+        Pt2 { x: 7.0, y: 8.5, c: 1 as Int64 }, Pt2 { x: 9.5, y: 9.0, c: 1 as Int64 },
+        Pt2 { x: 8.0, y: 9.5, c: 1 as Int64 }, Pt2 { x: 7.5, y: 7.5, c: 1 as Int64 }
+    ];
+    val q1 = Pt2 { x: 1.2, y: 1.3, c: 0 as Int64 };
+    val q2 = Pt2 { x: 8.2, y: 8.1, c: 0 as Int64 };
+    val q3 = Pt2 { x: 4.9, y: 5.1, c: 0 as Int64 };
+    val q4 = Pt2 { x: 5.2, y: 4.8, c: 0 as Int64 };
+    val ks: Vec<Int64> = vec![(1 as Int64), (3 as Int64), (5 as Int64)];
+    var qi = 0 as Int64;
+    while (qi < (4 as Int64)) {
+        val q = if (qi == (0 as Int64)) { q1 } else { if (qi == (1 as Int64)) { q2 } else { if (qi == (2 as Int64)) { q3 } else { q4 } } };
+        var ki = 0 as Int64;
+        while (ki < ks.len()) {
+            println(knn(&train, q, ks[ki]));
+            ki = ki + (1 as Int64);
+        }
+        qi = qi + (1 as Int64);
+    }
+}

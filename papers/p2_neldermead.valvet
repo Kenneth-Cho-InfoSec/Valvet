@@ -1,0 +1,152 @@
+// papers/p2_neldermead.valvet
+// Nelder-Mead downhill simplex after Nelder & Mead ("A Simplex Method for
+// Function Minimization", Computer Journal 1965), following
+// papers/p2_neldermead.fs (FSharp.Stats Optimization: reflect / expand /
+// contract / shrink with alpha=1, gamma=2, rho=1/2, sigma=1/2).
+//
+// Valvet mapping (first-order): 2D simplex as 3 Pt structs, Rosenbrock
+// objective with +-*/ only, fixed 300-iteration budget, deterministic.
+// Mirrored by papers/p2_neldermead_ref.py with identical op order.
+
+struct Pt { x: Float64, y: Float64 }
+
+fun rosen(p: Pt): Float64 {
+    val a = 1.0 - p.x;
+    val b = p.y - p.x * p.x;
+    a * a + 100.0 * b * b
+}
+
+fun pt_add(a: Pt, s: Float64, b: Pt): Pt {
+    Pt { x: a.x + s * b.x, y: a.y + s * b.y }
+}
+
+fun pt_scale(a: Pt, s: Float64): Pt {
+    Pt { x: a.x * s, y: a.y * s }
+}
+
+// Order simplex worst-first (returns indices): simple selection on values.
+fun order3(f0: Float64, f1: Float64, f2: Float64): Vec<Int64> {
+    // returns [best, mid, worst] as indices into (p0,p1,p2)
+    var order: Vec<Int64> = vec![(0 as Int64), (1 as Int64), (2 as Int64)];
+    var fs: Vec<Float64> = vec![f0, f1, f2];
+    var i = 0 as Int64;
+    while (i < (3 as Int64)) {
+        var j = i + (1 as Int64);
+        while (j < (3 as Int64)) {
+            if (fs[j] < fs[i]) {
+                val a = fs[i];
+                val b = fs[j];
+                fs = vec_set_f(fs, i, b);
+                fs = vec_set_f(fs, j, a);
+                val u = order[i];
+                val w = order[j];
+                order = vec_set_i(order, i, w);
+                order = vec_set_i(order, j, u);
+            }
+            j = j + (1 as Int64);
+        }
+        i = i + (1 as Int64);
+    }
+    order
+}
+
+fun vec_set_f(v: Vec<Float64>, at: Int64, x: Float64): Vec<Float64> {
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (i == at) {
+            out.push(x)
+        } else {
+            out.push(v[i])
+        }
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+fun vec_set_i(v: Vec<Int64>, at: Int64, x: Int64): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (i == at) {
+            out.push(x)
+        } else {
+            out.push(v[i])
+        }
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+fun get_pt(p0: Pt, p1: Pt, p2: Pt, i: Int64): Pt {
+    if (i == (0 as Int64)) { p0 } else { if (i == (1 as Int64)) { p1 } else { p2 } }
+}
+
+fun main() {
+    var p0 = Pt { x: -1.2, y: 1.0 };
+    var p1 = Pt { x: -1.2 + (0.5), y: 1.0 };
+    var p2 = Pt { x: -1.2, y: 1.0 + (0.5) };
+    var it = 0 as Int64;
+    while (it < (300 as Int64)) {
+        val f0 = rosen(p0);
+        val f1 = rosen(p1);
+        val f2 = rosen(p2);
+        val o = order3(f0, f1, f2);
+        val bi = o[(0 as Int64)];
+        val mi = o[(1 as Int64)];
+        val wi = o[(2 as Int64)];
+        val pb = get_pt(p0, p1, p2, bi);
+        val pm = get_pt(p0, p1, p2, mi);
+        val pw = get_pt(p0, p1, p2, wi);
+        // centroid of best two
+        val cx = (pb.x + pm.x) / 2.0;
+        val cy = (pb.y + pm.y) / 2.0;
+        // reflect: xr = c + 1*(c - w)
+        val rx = cx + (cx - pw.x);
+        val ry = cy + (cy - pw.y);
+        val fr = rosen(Pt { x: rx, y: ry });
+        val fb = rosen(pb);
+        if (fr < fb) {
+            // expand: xe = c + 2*(c - w)
+            val ex = cx + 2.0 * (cx - pw.x);
+            val ey = cy + 2.0 * (cy - pw.y);
+            val fe = rosen(Pt { x: ex, y: ey });
+            if (fe < fr) {
+                p0 = pb;
+                p1 = pm;
+                p2 = Pt { x: ex, y: ey };
+            } else {
+                p0 = pb;
+                p1 = pm;
+                p2 = Pt { x: rx, y: ry };
+            }
+        } else {
+            val fm = rosen(pm);
+            if (fr < fm) {
+                // outside contraction
+                p0 = pb;
+                p1 = pm;
+                p2 = Pt { x: cx + 0.5 * (rx - cx), y: cy + 0.5 * (ry - cy) };
+            } else {
+                // inside contraction
+                val ix = cx + 0.5 * (pw.x - cx);
+                val iy = cy + 0.5 * (pw.y - cy);
+                val fi = rosen(Pt { x: ix, y: iy });
+                if (fi < rosen(pw)) {
+                    p0 = pb;
+                    p1 = pm;
+                    p2 = Pt { x: ix, y: iy };
+                } else {
+                    // shrink toward best
+                    p0 = pb;
+                    p1 = Pt { x: pb.x + 0.5 * (pm.x - pb.x), y: pb.y + 0.5 * (pm.y - pb.y) };
+                    p2 = Pt { x: pb.x + 0.5 * (pw.x - pb.x), y: pb.y + 0.5 * (pw.y - pb.y) };
+                }
+            }
+        }
+        it = it + (1 as Int64);
+    }
+    println(p0.x);
+    println(p0.y);
+    println(rosen(p0));
+}
