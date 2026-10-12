@@ -219,6 +219,7 @@ fn number_uses(
                 }
                 ExprKind::Unary { expr, .. } => self.walk_expr(expr),
                 ExprKind::Cast { expr, .. } => self.walk_expr(expr),
+                ExprKind::AsUnit { expr, .. } => self.walk_expr(expr),
                 ExprKind::AddrOf { expr, .. } => self.walk_expr(expr),
                 ExprKind::Assign { target, value, .. } => {
                     Self::walk_place_static(target, &mut self.last_use, self.next);
@@ -1076,6 +1077,7 @@ impl<'a> Cx<'a> {
             }
             ExprKind::Unary { expr, .. } => Self::collect_ref_vars(expr, cx, out),
             ExprKind::Cast { expr, .. } => Self::collect_ref_vars(expr, cx, out),
+            ExprKind::AsUnit { expr, .. } => Self::collect_ref_vars(expr, cx, out),
             ExprKind::AddrOf { expr, .. } => Self::collect_ref_vars(expr, cx, out),
             ExprKind::Assign { target, value, .. } => {
                 Self::collect_place_refs(target, cx, out);
@@ -1540,6 +1542,10 @@ impl<'a> Cx<'a> {
             ExprKind::Unary { expr, .. } => self.check_expr(expr, false),
             ExprKind::Cast { expr, .. } => {
                 // Conversions borrow (all convertible types are `Copy` anyway).
+                self.check_expr(expr, false);
+            }
+            ExprKind::AsUnit { expr, .. } => {
+                // Dimension assertion/conversion borrows (numerics are `Copy`).
                 self.check_expr(expr, false);
             }
             ExprKind::Index { base, idx } => {

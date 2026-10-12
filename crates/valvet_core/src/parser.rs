@@ -330,10 +330,16 @@ impl Parser {
             let (pn, ps) = self.expect_ident("parameter name")?;
             self.expect(Tok::Colon, "expected `:` after parameter name")?;
             let ty = self.parse_type()?;
+            let mut unit = None;
+            if matches!(self.cur(), Tok::At) {
+                self.bump();
+                unit = Some(self.parse_unit_expr()?);
+            }
             params.push(Param {
                 name: pn,
                 span: ps,
                 ty,
+                unit,
             });
             match self.cur() {
                 Tok::Comma => {
@@ -348,10 +354,15 @@ impl Parser {
         }
         let mut ret = Ty::Unit;
         let mut ret_span = Span::empty(self.cur_span().start);
+        let mut ret_unit = None;
         if matches!(self.cur(), Tok::Colon) {
             self.bump();
             ret_span = self.cur_span();
             ret = self.parse_type()?;
+            if matches!(self.cur(), Tok::At) {
+                self.bump();
+                ret_unit = Some(self.parse_unit_expr()?);
+            }
         }
         let body = self.parse_block()?;
         let end = body.span.end;
@@ -362,6 +373,7 @@ impl Parser {
             params,
             ret,
             ret_span,
+            ret_unit,
             body,
             span: Span::new(start, end),
             module: String::new(),
@@ -535,6 +547,80 @@ impl Parser {
             module: String::new(),
             is_pub,
         })
+    }
+
+    /// Units-of-measure expression after `@`: `*`/`/` left-assoc, postfix
+    /// `^n` (optional `-`), identifiers and parentheses. Anything else is
+    /// E0005; unknown unit *names* are E0401 in sema.
+    fn parse_unit_expr(&mut self) -> Option<UnitExpr> {
+        self.skip_nls();
+        let mut e = self.parse_unit_atom()?;
+        loop {
+            match self.cur() {
+                Tok::Star => {
+                    self.bump();
+                    self.skip_nls();
+                    let rhs = self.parse_unit_atom()?;
+                    e = UnitExpr::Mul(Box::new(e), Box::new(rhs));
+                }
+                Tok::Slash => {
+                    self.bump();
+                    self.skip_nls();
+                    let rhs = self.parse_unit_atom()?;
+                    e = UnitExpr::Div(Box::new(e), Box::new(rhs));
+                }
+                _ => break,
+            }
+        }
+        Some(e)
+    }
+
+    fn parse_unit_atom(&mut self) -> Option<UnitExpr> {
+        self.skip_nls();
+        let mut e = match self.cur().clone() {
+            Tok::Ident(n) => {
+                let sp = self.cur_span();
+                self.bump();
+                UnitExpr::Name(n, sp)
+            }
+            Tok::LParen => {
+                self.bump();
+                let inner = self.parse_unit_expr()?;
+                if !matches!(self.cur(), Tok::RParen) {
+                    self.err("E0005", "expected `)` in unit expression");
+                    return None;
+                }
+                self.bump();
+                inner
+            }
+            _ => {
+                self.err("E0005", "expected a unit name after `@`");
+                return None;
+            }
+        };
+        // Postfix `^n` power with optional `-` (`s^2`, `s^-1`).
+        while matches!(self.cur(), Tok::Caret) {
+            self.bump();
+            let neg = if matches!(self.cur(), Tok::Minus) {
+                self.bump();
+                true
+            } else {
+                false
+            };
+            match self.cur().clone() {
+                Tok::IntLit(n) => {
+                    self.bump();
+                    let mag = (n as i32).saturating_abs();
+                    let exp = if neg { mag.saturating_neg() } else { mag };
+                    e = UnitExpr::Pow(Box::new(e), exp);
+                }
+                _ => {
+                    self.err("E0005", "expected an integer exponent after `^`");
+                    return None;
+                }
+            }
+        }
+        Some(e)
     }
 
     fn parse_type(&mut self) -> Option<Ty> {
@@ -1024,6 +1110,12 @@ impl Parser {
                     self.bump();
                     ty = Some(self.parse_type()?);
                 }
+                // Optional `@unit` annotation (units of measure).
+                let mut unit = None;
+                if matches!(self.cur(), Tok::At) {
+                    self.bump();
+                    unit = Some(self.parse_unit_expr()?);
+                }
                 self.expect(Tok::Eq, "expected `=` in variable declaration")?;
                 let init = self.parse_expr()?;
                 let end = init.span.end;
@@ -1035,6 +1127,7 @@ impl Parser {
                         name,
                         name_span: nspan,
                         ty,
+                        unit,
                         init,
                         span,
                     }))
@@ -1044,6 +1137,7 @@ impl Parser {
                         name,
                         name_span: nspan,
                         ty,
+                        unit,
                         init,
                         span,
                     }))
@@ -1549,6 +1643,7 @@ impl Parser {
     }
 
     /// `as` conversions bind tighter than `*` (D5 precedence).
+    /// `as @unit` asserts/converts dimension, keeping the operand type.
     fn parse_cast(&mut self) -> Option<Expr> {
         let mut expr = self.parse_unary()?;
         loop {
@@ -1557,6 +1652,21 @@ impl Parser {
             }
             self.skip_nls();
             self.bump(); // as
+            if matches!(self.cur(), Tok::At) {
+                self.bump();
+                let unit = self.parse_unit_expr()?;
+                let end = self.prev_span().end;
+                let start = expr.span.start;
+                expr = Expr {
+                    id: self.fresh(),
+                    span: Span::new(start, end),
+                    kind: ExprKind::AsUnit {
+                        expr: Box::new(expr),
+                        unit: Box::new(unit),
+                    },
+                };
+                continue;
+            }
             let target_span = self.cur_span();
             let target = self.parse_type()?;
             let end = target_span.end;

@@ -1,0 +1,12 @@
+fun main() {
+    var x: Float64 @m = 1.0;
+    x += 2.0;
+    println(x);
+    x *= 3.0;
+    println(x);
+    var y: Float64 @km = 1.0;
+    y += 500.0;
+    println(y);
+    val g = if (x > 2.0) { x } else { 0.0 };
+    println(g);
+}

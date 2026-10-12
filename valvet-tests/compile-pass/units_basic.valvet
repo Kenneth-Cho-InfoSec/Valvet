@@ -1,0 +1,15 @@
+fun speed(d: Float64 @m, t: Float64 @s): Float64 @m/s {
+    d / t
+}
+
+fun main() {
+    println(speed(100.0, 9.58));
+    val d: Float64 @m = 100.0
+    val t: Float64 @s = 9.58
+    println(d / t);
+    println(d + 5.0);
+    println(d > 50.0);
+    println(d == 100.0);
+    val raw = 1500.0;
+    println((raw as @m) / 3.0);
+}

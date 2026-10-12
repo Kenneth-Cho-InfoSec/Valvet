@@ -51,7 +51,7 @@ fn lexer_unterminated_block_comment() {
 
 #[test]
 fn lexer_bad_char() {
-    let s = src("val x = @");
+    let s = src("val x = $");
     let (_, errs) = lexer::lex(&s);
     assert!(errs.iter().any(|e| e.code == "E0001"));
 }

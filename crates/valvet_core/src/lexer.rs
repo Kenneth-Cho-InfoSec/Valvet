@@ -544,6 +544,8 @@ impl<'a> Lexer<'a> {
             b'?' => Tok::Question,
             b'&' => Tok::Amp,
             b'|' => Tok::BitOr,
+            b'@' => Tok::At,
+            b'^' => Tok::Caret,
             _ => {
                 let ch = self.text[s] as char;
                 self.errs.push(

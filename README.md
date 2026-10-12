@@ -88,6 +88,28 @@ structs, enums, `Option<T>`, `Result<T, E>`, `Vec<T>`, and references
 `Vec`/`Option`/`Result` of printable types (`[1, 2]`, `Some(7)`/`None`,
 `Ok(1)`/`Err(e)`); `print` remains as a deprecated alias (warns `W1002`).
 
+Units of measure: annotate numeric bindings, parameters, and returns with
+`@unit`. Same dimensions unify, scales convert silently (left side wins),
+and `*`/`/` compose dimensions:
+
+```valvet
+fun speed(d: Float64 @m, t: Float64 @s): Float64 @m/s {
+    d / t
+}
+
+fun main() {
+    println(speed(100.0, 9.58))   // 10.438413361169102
+    val v: Float64 @km/h = 72.0
+    val w: Float64 @m/s = v       // auto-scales: 20
+    println(w)
+    println(w * 10.0)             // (m/s) * s = m: 200
+}
+```
+
+Dimensionless literals coerce (`d + 5.0` is meters); mismatched dimensions
+are `E0201`, unknown units `E0401` (see `stdlib/units.valvet` for the known
+units). `expr as @unit` asserts and converts explicitly.
+
 Multi-file projects: the root is the entry file's directory:
 
 ```valvet

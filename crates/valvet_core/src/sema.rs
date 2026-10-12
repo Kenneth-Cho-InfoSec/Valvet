@@ -3,12 +3,14 @@ use std::collections::HashMap;
 use crate::ast::*;
 use crate::diag::Diagnostic;
 use crate::source::Span;
+use crate::units::Dim;
 
 /// Symbol info for a local binding.
 #[derive(Debug, Clone)]
 struct Local {
     ty: Ty,
     mutable: bool,
+    dim: Dim,
 }
 
 /// How a statement exits: normally, or by diverging control flow.
@@ -52,6 +54,11 @@ pub struct Checked {
     /// Builtin generic instantiations by mangled key: (base, arg types).
     /// Only Option/Result resolve in Phase D (`Vec` waits for Phase F).
     pub generic_insts: HashMap<String, (String, Vec<Ty>)>,
+    /// NodeId -> resolved dimension (units of measure; absent =
+    /// dimensionless). Populated alongside `types`.
+    pub dims: HashMap<NodeId, Dim>,
+    /// FunDecl id -> parameter dimensions in order (for call conversion).
+    pub param_dims: HashMap<NodeId, Vec<Dim>>,
     /// Import aliases: (importing module, local name) -> (target module,
     /// target name). Empty in single-source mode.
     pub aliases: HashMap<(String, String), (String, String)>,
@@ -116,6 +123,7 @@ pub fn check_with_files(
         locals: vec![],
         loop_stack: vec![],
         fn_ret: Ty::Unit,
+        fn_ret_dim: Dim::dimensionless(),
         fn_params: std::collections::HashSet::new(),
         expected: None,
         structs: HashMap::new(),
@@ -127,6 +135,8 @@ pub fn check_with_files(
         aliases: HashMap::new(),
         warns: vec![],
         print_insts: std::collections::HashSet::new(),
+        dims: HashMap::new(),
+        param_dims: HashMap::new(),
     };
     // Builtin `ShapeError` for Vec kernels (user redefinition is E0401).
     cx.structs.insert(
@@ -218,6 +228,7 @@ pub fn check_with_files(
     let structs2 = cx.structs.clone();
     let enums2 = cx.enums.clone();
     let insts2 = cx.generic_insts.clone();
+    let pdims2 = cx.param_dims.clone();
     (
         Some(Checked {
             program: prog,
@@ -232,6 +243,8 @@ pub fn check_with_files(
             // Pipeline stamps owning sources after (sema never sees text).
             files: vec![],
             print_insts: cx.print_insts,
+            dims: cx.dims,
+            param_dims: pdims2,
         }),
         vec![],
     )
@@ -246,6 +259,8 @@ struct Cx {
     loop_stack: Vec<LoopCtx>,
     /// Enclosing function return type (for `return` inside value-`loop` bodies).
     fn_ret: Ty,
+    /// Enclosing function return dimension (`@unit` on the return type).
+    fn_ret_dim: Dim,
     /// Enclosing function parameter names (for return-dangling checks).
     fn_params: std::collections::HashSet<String>,
     /// Expected type for constructor inference (`None`, qualified Result
@@ -270,6 +285,24 @@ struct Cx {
     /// Composite instantiations actually printed (`println(v)`); codegen
     /// emits `vfmt_`/`vprint_` helpers exactly for these (gated, like kernels).
     print_insts: std::collections::HashSet<String>,
+    /// NodeId -> resolved dimension (units of measure; absent =
+    /// dimensionless). Exported via `Checked::dims` for scale conversions.
+    dims: HashMap<NodeId, Dim>,
+    /// FunDecl id -> parameter dimensions (exported via `Checked`).
+    param_dims: HashMap<NodeId, Vec<Dim>>,
+}
+
+/// Operands for `check_binary` (bundled: clippy arity limit).
+struct BinCheck<'a> {
+    id: NodeId,
+    span: Span,
+    op: BinOp,
+    lt: &'a Ty,
+    rt: &'a Ty,
+    ld: &'a Dim,
+    rd: &'a Dim,
+    lhs: Option<&'a Expr>,
+    rhs: Option<&'a Expr>,
 }
 
 impl Cx {
@@ -319,19 +352,21 @@ impl Cx {
         }
     }
 
-    /// Resolve an assignment target to (type, mutable?). `var` roots need
-    /// mutable bindings; `*r` needs `&mut`; field paths recurse.
-    fn check_place(&mut self, target: &Place) -> Option<(Ty, bool)> {
+    /// Resolve an assignment target to (type, mutable?, dimension). `var`
+    /// roots need mutable bindings; `*r` needs `&mut`; field paths recurse.
+    /// Only `Var` roots and dereferences carry dimensions (fields and
+    /// indices are dimensionless: neither can be `@`-annotated).
+    fn check_place(&mut self, target: &Place) -> Option<(Ty, bool, Dim)> {
         match target {
             Place::Var(name, span) => match self.lookup(name).cloned() {
                 None => {
                     self.err("E0401", *span, format!("unknown variable `{}`", name), None);
                     None
                 }
-                Some(l) => Some((l.ty, l.mutable)),
+                Some(l) => Some((l.ty, l.mutable, l.dim)),
             },
             Place::Field { base, field, span } => {
-                let (bt, bmut) = self.check_place(base)?;
+                let (bt, bmut, _) = self.check_place(base)?;
                 // Auto-deref: field access through a reference resolves into
                 // the referent struct (mirrors the expression-position rule).
                 // Mutability then comes from the borrow (`&mut`), not the
@@ -343,7 +378,7 @@ impl Cx {
                 match bt {
                     Ty::Struct(sn) => match self.structs.get(&sn).cloned() {
                         Some(def) => match def.fields.iter().find(|(f, _)| f == field) {
-                            Some((_, fty)) => Some((fty.clone(), bmut)),
+                            Some((_, fty)) => Some((fty.clone(), bmut, Dim::dimensionless())),
                             None => {
                                 self.err(
                                     "E0401",
@@ -368,13 +403,13 @@ impl Cx {
                 }
             }
             Place::Deref { inner, span } => {
-                let (bt, _) = self.check_place(inner)?;
+                let (bt, _, bdim) = self.check_place(inner)?;
                 match bt {
                     Ty::Reference {
                         mutable: true,
                         inner,
                         ..
-                    } => Some((*inner.clone(), true)),
+                    } => Some((*inner.clone(), true, bdim)),
                     Ty::Reference { mutable: false, .. } => {
                         self.err(
                             "E0201",
@@ -405,7 +440,7 @@ impl Cx {
                     );
                     return None;
                 }
-                let (bt, bmut) = self.check_place(base)?;
+                let (bt, bmut, _) = self.check_place(base)?;
                 match bt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
                         let it = self.check_expr(idx);
@@ -417,7 +452,7 @@ impl Cx {
                                 None,
                             );
                         }
-                        Some((args[0].clone(), bmut))
+                        Some((args[0].clone(), bmut, Dim::dimensionless()))
                     }
                     _ => {
                         self.err(
@@ -1139,6 +1174,7 @@ impl Cx {
                         .unwrap_or(false)
             }
             ExprKind::Cast { expr, .. } => self.contains_local_borrow(expr, params),
+            ExprKind::AsUnit { expr, .. } => self.contains_local_borrow(expr, params),
             ExprKind::StructLit { fields, .. } => fields
                 .iter()
                 .any(|(_, _, fe)| self.contains_local_borrow(fe, params)),
@@ -1277,16 +1313,39 @@ impl Cx {
         }
         self.fn_ret = f.ret.clone();
         self.fn_params = f.params.iter().map(|p| p.name.clone()).collect();
+        // Declared return dimension (for `return` conversion checks).
+        let ret_dim = self.eval_unit(&f.ret_unit);
+        self.fn_ret_dim = ret_dim.clone();
+        self.dims.insert(f.id, ret_dim);
+        if f.ret_unit.is_some() && !matches!(f.ret, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+            self.err(
+                "E0201",
+                f.ret_span,
+                format!("units apply to numeric types, not {}", f.ret.name()),
+                None,
+            );
+        }
         self.check_lifetimes(f);
         self.locals.push(HashMap::new());
         for p in &f.params {
+            let pdim = self.eval_unit(&p.unit);
+            if p.unit.is_some() && !matches!(p.ty, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+                self.err(
+                    "E0201",
+                    p.span,
+                    format!("units apply to numeric types, not {}", p.ty.name()),
+                    None,
+                );
+            }
             self.locals.last_mut().unwrap().insert(
                 p.name.clone(),
                 Local {
                     ty: p.ty.clone(),
                     mutable: false,
+                    dim: pdim.clone(),
                 },
             );
+            self.param_dim_push(f.id, pdim);
         }
         let (body_ty, flow) = self.check_block(&f.body, &f.ret);
         // Tail/unit coherence: block type must equal declared return, unless the
@@ -1304,6 +1363,23 @@ impl Cx {
                 ),
                 Some("add `return` with the right type or adjust the return type".into()),
             );
+        }
+        // Units: tail dimension must match the declared return dimension.
+        if matches!(flow, Flow::Normal) && body_ty == f.ret {
+            let bdim = self.dim_of(f.body.id);
+            if !self.fn_ret_dim.same_dim(&bdim) {
+                self.err(
+                    "E0201",
+                    f.body.span,
+                    format!(
+                        "function `{}` returns {}, but body evaluates to {}",
+                        f.name,
+                        self.fn_ret_dim.display(),
+                        bdim.display()
+                    ),
+                    Some("dimensions must agree; convert explicitly".into()),
+                );
+            }
         }
         self.types.insert(f.id, f.ret.clone());
         // Dangling tails: a function-body tail evaluating to a reference that
@@ -1360,6 +1436,11 @@ impl Cx {
             None => Ty::Unit,
         };
         self.types.insert(b.id, tail_ty.clone());
+        let bdim = match &b.tail {
+            Some(e) => self.dim_of(e.id),
+            None => Dim::dimensionless(),
+        };
+        self.set_dim(b.id, bdim);
         self.locals.pop();
         let out_flow = if b.tail.is_none() { flow } else { Flow::Normal };
         (tail_ty, out_flow)
@@ -1373,6 +1454,7 @@ impl Cx {
                 name,
                 name_span,
                 ty,
+                unit,
                 init,
                 span,
             } => {
@@ -1427,6 +1509,27 @@ impl Cx {
                 // Record the resolved declared type for codegen (the AST
                 // annotation may still hold an unresolved nominal type).
                 self.types.insert(*id, decl_ty.clone());
+                // Units: declared `@unit` must match the initializer's
+                // dimension (literals pin silently; scales convert at
+                // codegen); otherwise the binding inherits the
+                // initializer's dimension.
+                let want = self.eval_unit(unit);
+                if unit.is_some() && !matches!(decl_ty, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+                    self.err(
+                        "E0201",
+                        *span,
+                        format!("units apply to numeric types, not {}", decl_ty.name()),
+                        None,
+                    );
+                }
+                let idim = self.dim_of(init.id);
+                let bdim = if unit.is_some() {
+                    self.unify_dim(init, &want, *span, &format!("variable `{}`", name));
+                    want
+                } else {
+                    idim
+                };
+                self.set_dim(*id, bdim.clone());
                 if self.locals.last().unwrap().contains_key(name) {
                     self.err(
                         "E0401",
@@ -1440,6 +1543,7 @@ impl Cx {
                         Local {
                             ty: decl_ty.clone(),
                             mutable: false,
+                            dim: bdim,
                         },
                     );
                 }
@@ -1450,6 +1554,7 @@ impl Cx {
                 name,
                 name_span,
                 ty,
+                unit,
                 init,
                 span,
             } => {
@@ -1504,6 +1609,24 @@ impl Cx {
                 // Record the resolved declared type for codegen (the AST
                 // annotation may still hold an unresolved nominal type).
                 self.types.insert(*id, decl_ty.clone());
+                // Units: same rule as `val` (see above).
+                let want = self.eval_unit(unit);
+                if unit.is_some() && !matches!(decl_ty, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+                    self.err(
+                        "E0201",
+                        *span,
+                        format!("units apply to numeric types, not {}", decl_ty.name()),
+                        None,
+                    );
+                }
+                let idim = self.dim_of(init.id);
+                let bdim = if unit.is_some() {
+                    self.unify_dim(init, &want, *span, &format!("variable `{}`", name));
+                    want
+                } else {
+                    idim
+                };
+                self.set_dim(*id, bdim.clone());
                 if self.locals.last().unwrap().contains_key(name) {
                     self.err(
                         "E0401",
@@ -1517,6 +1640,7 @@ impl Cx {
                         Local {
                             ty: decl_ty.clone(),
                             mutable: true,
+                            dim: bdim,
                         },
                     );
                 }
@@ -1661,6 +1785,7 @@ impl Cx {
                     Local {
                         ty: vt.clone(),
                         mutable: false,
+                        dim: Dim::dimensionless(),
                     },
                 );
                 let _ = var_span;
@@ -1709,7 +1834,7 @@ impl Cx {
                 span,
                 ..
             } => {
-                self.check_match(scrutinee, arms, *span, ret_ty, false);
+                let _ = self.check_match(scrutinee, arms, *span, ret_ty, false);
                 self.types.insert(*id, Ty::Unit);
                 Flow::Normal
             }
@@ -1773,6 +1898,11 @@ impl Cx {
                         None,
                     );
                 }
+                // Units: returned value must share the declared dimension
+                // (literals pin; scales convert silently at codegen).
+                if let Some(v) = value {
+                    self.unify_dim(v, &self.fn_ret_dim.clone(), stmt_span(s), "`return` value");
+                }
                 // Dangling references cannot be returned: any borrow of a
                 // non-parameter root inside the value escapes its owner.
                 if matches!(vt, Ty::Reference { .. }) {
@@ -1808,7 +1938,11 @@ impl Cx {
             ExprKind::Str(_) => Ty::Str,
             ExprKind::Var(name) => {
                 match self.lookup(name) {
-                    Some(l) => l.ty.clone(),
+                    Some(l) => {
+                        let (ty, dim) = (l.ty.clone(), l.dim.clone());
+                        self.set_dim(e.id, dim);
+                        ty
+                    }
                     None if name == "print" || name == "println" => {
                         self.err(
                             "E0401",
@@ -1842,13 +1976,30 @@ impl Cx {
             ExprKind::Binary { op, lhs, rhs } => {
                 let lt = self.check_expr(lhs);
                 let rt = self.check_expr(rhs);
-                self.check_binary(e.span, *op, &lt, &rt)
+                let ld = self.dim_of(lhs.id);
+                let rd = self.dim_of(rhs.id);
+                self.check_binary(BinCheck {
+                    id: e.id,
+                    span: e.span,
+                    op: *op,
+                    lt: &lt,
+                    rt: &rt,
+                    ld: &ld,
+                    rd: &rd,
+                    lhs: Some(lhs.as_ref()),
+                    rhs: Some(rhs.as_ref()),
+                })
             }
             ExprKind::Unary { op, expr } => {
                 let t = self.check_expr(expr);
+                // Negation and dereference preserve dimensions.
+                let d = self.dim_of(expr.id);
                 match op {
                     UnOp::Neg => match t {
-                        Ty::Int32 | Ty::Int64 | Ty::Float64 => t,
+                        Ty::Int32 | Ty::Int64 | Ty::Float64 => {
+                            self.set_dim(e.id, d);
+                            t
+                        }
                         _ => {
                             self.err(
                                 "E0201",
@@ -1871,7 +2022,11 @@ impl Cx {
                         Ty::Bool
                     }
                     UnOp::Deref => match t {
-                        Ty::Reference { inner, .. } => *inner.clone(),
+                        Ty::Reference { inner, .. } => {
+                            let d = self.dim_of(expr.id);
+                            self.set_dim(e.id, d);
+                            *inner.clone()
+                        }
                         _ => {
                             self.err(
                                 "E0201",
@@ -1889,7 +2044,7 @@ impl Cx {
                 // Resolve the place: (place type, mutable?).
                 match self.check_place(target) {
                     None => Ty::Unit,
-                    Some((pt, mutable)) => {
+                    Some((pt, mutable, pdim)) => {
                         if !mutable {
                             self.err(
                                 "E0205",
@@ -1898,6 +2053,13 @@ impl Cx {
                                 Some("use `var` bindings and `&mut` for mutation".into()),
                             );
                         }
+                        // Units: `Set` unifies the value with the place
+                        // (literals pin; scales convert at codegen).
+                        // Compound ops check dimensions per-operator below.
+                        if *op == AssignOp::Set {
+                            self.unify_dim(value, &pdim, e.span, "cannot assign");
+                        }
+                        self.set_dim(e.id, pdim.clone());
                         if *op == AssignOp::Set {
                             if pt != vt {
                                 self.err(
@@ -1912,19 +2074,43 @@ impl Cx {
                                 );
                             }
                         } else {
-                            // compound: numeric only, same-type
-                            let res = self.check_binary(
-                                e.span,
-                                match op {
+                            // compound: numeric only, same-type, same dimension.
+                            // `*=`/`/=` compose dimensions, which would change
+                            // the place's dimension — so factors must be
+                            // dimensionless (codegen cannot retype the slot).
+                            if matches!(op, AssignOp::Mul | AssignOp::Div) {
+                                let vdim = self.dim_of(value.id);
+                                if !vdim.is_dimensionless() {
+                                    self.err(
+                                        "E0201",
+                                        e.span,
+                                        format!(
+                                            "compound `{}` needs a dimensionless factor, found {}",
+                                            if *op == AssignOp::Mul { "*=" } else { "/=" },
+                                            vdim.display()
+                                        ),
+                                        Some("dimensions must agree; convert explicitly".into()),
+                                    );
+                                }
+                            }
+                            let vdim = self.dim_of(value.id);
+                            let res = self.check_binary(BinCheck {
+                                id: e.id,
+                                span: e.span,
+                                op: match op {
                                     AssignOp::Add => BinOp::Add,
                                     AssignOp::Sub => BinOp::Sub,
                                     AssignOp::Mul => BinOp::Mul,
                                     AssignOp::Div => BinOp::Div,
                                     _ => BinOp::Rem,
                                 },
-                                &pt,
-                                &vt,
-                            );
+                                lt: &pt,
+                                rt: &vt,
+                                ld: &pdim,
+                                rd: &vdim,
+                                lhs: None,
+                                rhs: Some(value.as_ref()),
+                            });
                             if res != pt {
                                 self.err(
                                     "E0201",
@@ -1933,6 +2119,10 @@ impl Cx {
                                     None,
                                 );
                             }
+                            // The place keeps its dimension regardless of what
+                            // the operator composed (Mul/Div factors above are
+                            // dimensionless, so this is identity for them).
+                            self.set_dim(e.id, pdim.clone());
                         }
                         Ty::Unit
                     }
@@ -1971,10 +2161,18 @@ impl Cx {
                 // mismatches — reuse enclosing? We don't track enclosing ret here; approximate:
                 let (t1, d1) = self.check_block_expr(then_b);
                 let (t2, d2) = self.check_block_expr(els);
+                let dim1 = self.dim_of(then_b.id);
+                let dim2 = self.dim_of(els.id);
                 match (d1, d2) {
                     (true, true) => Ty::Unit, // both diverge: whole if diverges (Unit here)
-                    (true, false) => t2,
-                    (false, true) => t1,
+                    (true, false) => {
+                        self.set_dim(e.id, dim2.clone());
+                        t2
+                    }
+                    (false, true) => {
+                        self.set_dim(e.id, dim1.clone());
+                        t1
+                    }
                     (false, false) => {
                         if t1 != t2 {
                             self.err(
@@ -1985,13 +2183,38 @@ impl Cx {
                             );
                             Ty::Unit
                         } else {
+                            // Units: branches must share the dimension
+                            // (literals pin); the first arm's scale wins
+                            // (codegen converts).
+                            let dim1 = self.dim_of(then_b.id);
+                            match &els.tail {
+                                Some(t) => self.unify_dim(t, &dim1, e.span, "`if` branch"),
+                                None => {
+                                    if !dim1.is_dimensionless() {
+                                        self.err(
+                                            "E0201",
+                                            e.span,
+                                            format!(
+                                                "`if` branches disagree in dimension: {} vs 1",
+                                                dim1.display()
+                                            ),
+                                            Some(
+                                                "dimensions must agree; convert explicitly".into(),
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                            self.set_dim(e.id, dim1.clone());
                             t1
                         }
                     }
                 }
             }
             ExprKind::Match { scrutinee, arms } => {
-                self.check_match(scrutinee, arms, e.span, &self.fn_ret.clone(), true)
+                let (t, d) = self.check_match(scrutinee, arms, e.span, &self.fn_ret.clone(), true);
+                self.set_dim(e.id, d);
+                t
             }
             ExprKind::Loop { body } => {
                 self.loop_stack.push(LoopCtx {
@@ -2300,7 +2523,40 @@ impl Cx {
                         Some("supported: int<->int, int<->Float64 (float->int saturates)".into()),
                     );
                 }
+                // Casts change representation, never dimension.
+                let d = self.dim_of(expr.id);
+                self.set_dim(e.id, d);
                 target.clone()
+            }
+            ExprKind::AsUnit { expr, unit } => {
+                // `x as @unit`: numeric only; dimensionless operands adopt
+                // the dimension, same-vector operands convert scales,
+                // anything else is E0201. No runtime effect beyond scale.
+                let t = self.check_expr(expr);
+                match t {
+                    Ty::Int32 | Ty::Int64 | Ty::Float64 => {}
+                    _ => {
+                        self.err(
+                            "E0201",
+                            e.span,
+                            format!("`as @unit` needs a number, found {}", t.name()),
+                            None,
+                        );
+                        return self.insert(e.id, Ty::Unit);
+                    }
+                }
+                let want = self.eval_unit_expr(unit);
+                let have = self.dim_of(expr.id);
+                if !have.is_dimensionless() && !want.same_dim(&have) {
+                    self.err(
+                        "E0201",
+                        e.span,
+                        format!("cannot interpret {} as {}", have.display(), want.display()),
+                        Some("dimensions must agree; convert explicitly".into()),
+                    );
+                }
+                self.set_dim(e.id, want);
+                t
             }
             ExprKind::StructLit { name, fields, .. } => {
                 let qname = self.resolve_type(name);
@@ -2652,6 +2908,12 @@ impl Cx {
             None => Ty::Unit,
         };
         self.types.insert(b.id, t.clone());
+        // Block dimension follows its tail (for `if`/`match` arm agreement).
+        let bd = match &b.tail {
+            Some(e) => self.dim_of(e.id),
+            None => Dim::dimensionless(),
+        };
+        self.set_dim(b.id, bd);
         self.locals.pop();
         (t, diverged && b.tail.is_none())
     }
@@ -3085,7 +3347,13 @@ impl Cx {
 
     /// Check a pattern against the scrutinee type. Declares bindings in the
     /// current (arm) scope. Returns Err(()) on any error (already reported).
-    fn check_pat(&mut self, pat: &Pat, scrut_ty: &Ty, e_span: Span) -> Result<(), ()> {
+    fn check_pat(
+        &mut self,
+        pat: &Pat,
+        scrut_ty: &Ty,
+        scrut_dim: &Dim,
+        e_span: Span,
+    ) -> Result<(), ()> {
         match pat {
             Pat::Wild => Ok(()),
             Pat::LitInt(v) => {
@@ -3175,6 +3443,7 @@ impl Cx {
                     Local {
                         ty: scrut_ty.clone(),
                         mutable: false,
+                        dim: scrut_dim.clone(),
                     },
                 );
                 Ok(())
@@ -3316,7 +3585,7 @@ impl Cx {
                     return Err(());
                 }
                 for (sp, pt) in sub.iter().zip(payload.iter()) {
-                    self.check_pat(sp, pt, e_span)?;
+                    self.check_pat(sp, pt, &Dim::dimensionless(), e_span)?;
                 }
                 Ok(())
             }
@@ -3384,11 +3653,12 @@ impl Cx {
                                         Local {
                                             ty: fty.clone(),
                                             mutable: false,
+                                            dim: Dim::dimensionless(),
                                         },
                                     );
                                 }
                                 Some(p) => {
-                                    self.check_pat(p, fty, e_span)?;
+                                    self.check_pat(p, fty, &Dim::dimensionless(), e_span)?;
                                 }
                             }
                         }
@@ -3398,21 +3668,21 @@ impl Cx {
             }
             Pat::Or(alts) => {
                 // Every alternative must bind exactly the same names/types.
-                let mut first: Option<Vec<(String, Ty)>> = None;
+                let mut first: Option<Vec<(String, Ty, Dim)>> = None;
                 for a in alts {
                     let before: Vec<String> = self
                         .locals
                         .last()
                         .map(|m| m.keys().cloned().collect())
                         .unwrap_or_default();
-                    self.check_pat(a, scrut_ty, e_span)?;
-                    let mut got: Vec<(String, Ty)> = self
+                    self.check_pat(a, scrut_ty, scrut_dim, e_span)?;
+                    let mut got: Vec<(String, Ty, Dim)> = self
                         .locals
                         .last()
                         .map(|m| {
                             m.iter()
                                 .filter(|(k, _)| !before.contains(k))
-                                .map(|(k, v)| (k.clone(), v.ty.clone()))
+                                .map(|(k, v)| (k.clone(), v.ty.clone(), v.dim.clone()))
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -3434,19 +3704,20 @@ impl Cx {
                     // Remove this alternative's bindings; the merged set is
                     // declared after the loop so later arms start clean.
                     if let Some(scope) = self.locals.last_mut() {
-                        for (k, _) in &got {
+                        for (k, _, _) in &got {
                             scope.remove(k);
                         }
                     }
                 }
                 if let Some(bindings) = first {
                     if let Some(scope) = self.locals.last_mut() {
-                        for (k, t) in bindings {
+                        for (k, t, d) in bindings {
                             scope.insert(
                                 k,
                                 Local {
                                     ty: t,
                                     mutable: false,
+                                    dim: d,
                                 },
                             );
                         }
@@ -3602,13 +3873,15 @@ impl Cx {
         span: Span,
         ret_ty: &Ty,
         value: bool,
-    ) -> Ty {
+    ) -> (Ty, Dim) {
         let st = self.check_expr(scrutinee);
         let mut first_ty: Option<Ty> = None;
+        let mut first_dim: Option<Dim> = None;
         let mut result = Ty::Unit;
         for arm in arms {
             self.locals.push(HashMap::new());
-            let ok = self.check_pat(&arm.pat, &st, span).is_ok();
+            let sdim = self.dim_of(scrutinee.id);
+            let ok = self.check_pat(&arm.pat, &st, &sdim, span).is_ok();
             if let Some(g) = &arm.guard {
                 let gt = self.check_expr(g);
                 if gt != Ty::Bool {
@@ -3634,12 +3907,14 @@ impl Cx {
                 }
             }
             // Arm value type (value position): block tail or Unit.
+            // First arm's dimension wins (codegen converts the rest).
             if value && ok {
                 let at = self.types.get(&arm.body.id).cloned().unwrap_or(Ty::Unit);
                 match &first_ty {
                     None => {
                         first_ty = Some(at.clone());
                         result = at;
+                        first_dim = Some(self.dim_of(arm.body.id));
                     }
                     Some(f) => {
                         if *f != at {
@@ -3649,6 +3924,31 @@ impl Cx {
                                 format!("`match` arms disagree: {} vs {}", f.name(), at.name()),
                                 None,
                             );
+                        }
+                        if let Some(fd) = &first_dim {
+                            // Literal tails pin silently to the first arm.
+                            let pinned = match &arm.body.tail {
+                                Some(t) if Self::is_dimless_literal(t) => {
+                                    self.set_dim(t.id, fd.clone());
+                                    true
+                                }
+                                _ => false,
+                            };
+                            if !pinned {
+                                let ad = self.dim_of(arm.body.id);
+                                if !fd.same_dim(&ad) {
+                                    self.err(
+                                        "E0201",
+                                        arm.span,
+                                        format!(
+                                            "`match` arms disagree in dimension: {} vs {}",
+                                            fd.display(),
+                                            ad.display()
+                                        ),
+                                        Some("dimensions must agree; convert explicitly".into()),
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -3678,9 +3978,9 @@ impl Cx {
             // Borrow-position matches clone arm values into the result
             // slot: record the type so its clone helper is emitted.
             self.record_ty(&result);
-            result
+            (result, first_dim.unwrap_or_else(Dim::dimensionless))
         } else {
-            Ty::Unit
+            (Ty::Unit, Dim::dimensionless())
         }
     }
 
@@ -4366,7 +4666,8 @@ impl Cx {
             );
             return Ty::Unit;
         }
-        let (pt, rt) = match self.resolve_fun(name).and_then(|fid| self.sigs.get(&fid)) {
+        let fid_opt = self.resolve_fun(name);
+        let (pt, rt) = match fid_opt.and_then(|fid| self.sigs.get(&fid)) {
             Some(s) => (s.0.clone(), s.1.clone()),
             None => {
                 // Tuple-struct construction `Meters(1.0)` lives in value position too.
@@ -4412,6 +4713,15 @@ impl Cx {
                 return Ty::Unit;
             }
         };
+        // Parameter + return dimensions (for unit conversion checks).
+        let pdims: Vec<Dim> = fid_opt
+            .and_then(|fid| self.param_dims.get(&fid))
+            .cloned()
+            .unwrap_or_default();
+        let ret_dim: Dim = fid_opt
+            .and_then(|fid| self.dims.get(&fid))
+            .cloned()
+            .unwrap_or_else(Dim::dimensionless);
         if args.len() != pt.len() {
             self.err(
                 "E0201",
@@ -4426,7 +4736,7 @@ impl Cx {
             );
             return rt;
         }
-        for (a, p) in args.iter().zip(pt.iter()) {
+        for (i, (a, p)) in args.iter().zip(pt.iter()).enumerate() {
             let saved_exp = self.expected.clone();
             self.expected = Some(p.clone());
             let at = match self.ctor_use(a) {
@@ -4434,6 +4744,11 @@ impl Cx {
                 None => self.check_expr(a),
             };
             self.expected = saved_exp;
+            // Units: argument dimension must match the parameter's
+            // (literals pin; scales convert silently at codegen).
+            if let Some(pdim) = pdims.get(i) {
+                self.unify_dim(a, pdim, a.span, "argument");
+            }
             // Reference compatibility: mutability + inner type must match;
             // elided lifetimes unify with anything (fresh inference at the
             // borrow); two explicit lifetimes must agree. A missing borrow
@@ -4481,14 +4796,82 @@ impl Cx {
                 );
             }
         }
+        self.set_dim(id, ret_dim);
         rt
     }
 
-    fn check_binary(&mut self, span: Span, op: BinOp, lt: &Ty, rt: &Ty) -> Ty {
+    fn check_binary(&mut self, b: BinCheck<'_>) -> Ty {
+        let id = b.id;
+        let span = b.span;
+        let op = b.op;
+        let (lt, rt, ld, rd, lhs, rhs) = (b.lt, b.rt, b.ld, b.rd, b.lhs, b.rhs);
+        // Dimension agreement for numeric operands (scales convert
+        // silently at codegen; vectors must match or this is E0201).
+        // A dimensionless *literal* side pins to the other side
+        // (untyped constants coerce); dimensionless variables do not.
+        let mut same_dim = |a: &Dim, b: &Dim| {
+            if !a.same_dim(b) {
+                self.err(
+                    "E0201",
+                    span,
+                    format!(
+                        "operator needs equal dimensions, found {} and {}",
+                        a.display(),
+                        b.display()
+                    ),
+                    Some("dimensions must agree; convert explicitly".into()),
+                );
+                false
+            } else {
+                true
+            }
+        };
         match op {
-            BinOp::Add if *lt == Ty::Str && *rt == Ty::Str => Ty::Str,
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
+            BinOp::Add if *lt == Ty::Str && *rt == Ty::Str => {
+                self.set_dim(id, Dim::dimensionless());
+                Ty::Str
+            }
+            BinOp::Add | BinOp::Sub | BinOp::Rem => {
                 if lt == rt && matches!(lt, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+                    let result = if ld.same_dim(rd) {
+                        ld.clone()
+                    } else if lhs.map(Self::is_dimless_literal).unwrap_or(false) {
+                        self.set_dim(lhs.map(|e| e.id).unwrap_or(id), rd.clone());
+                        rd.clone()
+                    } else if rhs.map(Self::is_dimless_literal).unwrap_or(false) {
+                        self.set_dim(rhs.map(|e| e.id).unwrap_or(id), ld.clone());
+                        ld.clone()
+                    } else {
+                        same_dim(ld, rd);
+                        ld.clone()
+                    };
+                    self.set_dim(id, result);
+                    lt.clone()
+                } else {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "operator needs two equal numeric types, found {} and {}",
+                            lt.name(),
+                            rt.name()
+                        ),
+                        Some(
+                            "convert explicitly; Valvet has no implicit numeric conversions".into(),
+                        ),
+                    );
+                    lt.clone()
+                }
+            }
+            BinOp::Mul | BinOp::Div => {
+                if lt == rt && matches!(lt, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+                    // Dimensions compose (`m/s * s` is `m`).
+                    let d = if op == BinOp::Mul {
+                        ld.mul(rd)
+                    } else {
+                        ld.div(rd)
+                    };
+                    self.set_dim(id, d);
                     lt.clone()
                 } else {
                     self.err(
@@ -4510,6 +4893,17 @@ impl Cx {
                 if lt == rt
                     && matches!(lt, Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str)
                 {
+                    // Quantities compare only within one dimension;
+                    // dimensionless literals pin to the other side.
+                    if matches!(lt, Ty::Int32 | Ty::Int64 | Ty::Float64) && !ld.same_dim(rd) {
+                        if lhs.map(Self::is_dimless_literal).unwrap_or(false) {
+                            self.set_dim(lhs.map(|e| e.id).unwrap_or(id), rd.clone());
+                        } else if rhs.map(Self::is_dimless_literal).unwrap_or(false) {
+                            self.set_dim(rhs.map(|e| e.id).unwrap_or(id), ld.clone());
+                        } else {
+                            same_dim(ld, rd);
+                        }
+                    }
                     Ty::Bool
                 } else if matches!(&lt, Ty::Generic { base, args } if base == "Missing" && args.len() == 1)
                     && lt == rt
@@ -4535,6 +4929,15 @@ impl Cx {
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 if lt == rt && matches!(lt, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+                    if !ld.same_dim(rd) {
+                        if lhs.map(Self::is_dimless_literal).unwrap_or(false) {
+                            self.set_dim(lhs.map(|e| e.id).unwrap_or(id), rd.clone());
+                        } else if rhs.map(Self::is_dimless_literal).unwrap_or(false) {
+                            self.set_dim(rhs.map(|e| e.id).unwrap_or(id), ld.clone());
+                        } else {
+                            same_dim(ld, rd);
+                        }
+                    }
                     Ty::Bool
                 } else {
                     self.err(
@@ -4569,6 +4972,87 @@ impl Cx {
     fn insert(&mut self, id: NodeId, ty: Ty) -> Ty {
         self.types.insert(id, ty.clone());
         ty
+    }
+
+    /// Resolve an optional `@unit` annotation (dimensionless default).
+    /// Unknown unit names are E0401; evaluation is total otherwise.
+    fn eval_unit(&mut self, unit: &Option<UnitExpr>) -> Dim {
+        match unit {
+            None => Dim::dimensionless(),
+            Some(u) => self.eval_unit_expr(u),
+        }
+    }
+
+    /// Resolve a unit expression (unknown names are E0401).
+    fn eval_unit_expr(&mut self, u: &UnitExpr) -> Dim {
+        match crate::units::eval(u) {
+            Ok(d) => d,
+            Err((sp, msg)) => {
+                self.err(
+                    "E0401",
+                    sp,
+                    msg,
+                    Some("see `std.units` for the known units".into()),
+                );
+                Dim::dimensionless()
+            }
+        }
+    }
+
+    /// Dimension of an expression (dimensionless when unrecorded).
+    fn dim_of(&self, id: NodeId) -> Dim {
+        self.dims
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(Dim::dimensionless)
+    }
+
+    /// Record one parameter dimension (called in signature order).
+    fn param_dim_push(&mut self, fid: NodeId, dim: Dim) {
+        self.param_dims.entry(fid).or_default().push(dim);
+    }
+
+    /// Whether an expression is a bare numeric literal (optionally
+    /// negated): untyped constants coerce to any dimension, Go/Rust-style.
+    /// Only syntactic literals qualify; dimensionless *variables* do not.
+    fn is_dimless_literal(e: &Expr) -> bool {
+        matches!(&e.kind, ExprKind::Int(_) | ExprKind::Float(_))
+            || matches!(
+                &e.kind,
+                ExprKind::Unary {
+                    op: UnOp::Neg,
+                    expr,
+                } if matches!(&expr.kind, ExprKind::Int(_) | ExprKind::Float(_))
+            )
+    }
+
+    /// Record an expression's dimension.
+    fn set_dim(&mut self, id: NodeId, dim: Dim) {
+        self.dims.insert(id, dim);
+    }
+
+    /// Check expression `e` against declared dimension `want`: literals pin
+    /// silently, same vectors pass, anything else is E0201 at `span`.
+    fn unify_dim(&mut self, e: &Expr, want: &Dim, span: Span, ctx: &str) {
+        let have = self.dim_of(e.id);
+        if want.same_dim(&have) {
+            return;
+        }
+        if Self::is_dimless_literal(e) {
+            self.set_dim(e.id, want.clone());
+            return;
+        }
+        self.err(
+            "E0201",
+            span,
+            format!(
+                "{}: dimension {} does not match {}",
+                ctx,
+                have.display(),
+                want.display()
+            ),
+            Some("dimensions must agree; convert explicitly".into()),
+        );
     }
 }
 

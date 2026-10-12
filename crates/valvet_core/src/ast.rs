@@ -120,6 +120,7 @@ pub struct FunDecl {
     pub params: Vec<Param>,
     pub ret: Ty,
     pub ret_span: Span,
+    pub ret_unit: Option<UnitExpr>,
     pub body: Block,
     pub span: Span,
     /// Owning module (`""` for the entry / single-file mode; stamped by the resolver).
@@ -133,6 +134,17 @@ pub struct Param {
     pub name: String,
     pub span: Span,
     pub ty: Ty,
+    pub unit: Option<UnitExpr>,
+}
+
+/// A units-of-measure expression after `@` (`m/s^2`, `kg*m`, `(km/h)`).
+/// Evaluated by `units.rs` into a dimension vector + scale.
+#[derive(Debug, Clone)]
+pub enum UnitExpr {
+    Name(String, Span),
+    Mul(Box<UnitExpr>, Box<UnitExpr>),
+    Div(Box<UnitExpr>, Box<UnitExpr>),
+    Pow(Box<UnitExpr>, i32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +227,7 @@ pub enum Stmt {
         name: String,
         name_span: Span,
         ty: Option<Ty>,
+        unit: Option<UnitExpr>,
         init: Expr,
         span: Span,
     },
@@ -223,6 +236,7 @@ pub enum Stmt {
         name: String,
         name_span: Span,
         ty: Option<Ty>,
+        unit: Option<UnitExpr>,
         init: Expr,
         span: Span,
     },
@@ -373,6 +387,11 @@ pub enum ExprKind {
         expr: Box<Expr>,
         target: Ty,
         target_span: Span,
+    },
+    /// `expr as @unit` — assert/convert dimension, keeping the type.
+    AsUnit {
+        expr: Box<Expr>,
+        unit: Box<UnitExpr>,
     },
     /// `Point { x: 1.0, y: 2.0 }` (colons; `=` is only for named call args).
     StructLit {

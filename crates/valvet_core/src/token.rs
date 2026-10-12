@@ -89,6 +89,10 @@ pub enum Tok {
     DotQuestion,
     Amp,
     AmpMut,
+    /// `@` introducing a units-of-measure annotation (J: `@m/s`).
+    At,
+    /// `^` power in unit expressions (`m/s^2`).
+    Caret,
     // Layout
     Nl,
     Eof,

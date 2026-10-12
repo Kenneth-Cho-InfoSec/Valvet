@@ -1,0 +1,5 @@
+fun main() {
+    val d: Float64 @m = 5.0;
+    val t: Float64 @s = 2.0;
+    println(d + t);
+}

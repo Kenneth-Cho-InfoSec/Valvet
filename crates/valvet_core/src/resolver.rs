@@ -475,6 +475,7 @@ fn renumber_expr(e: &mut crate::ast::Expr, next: &mut crate::ast::NodeId) {
         Unary { expr, .. }
         | Try { expr }
         | Cast { expr, .. }
+        | AsUnit { expr, .. }
         | AddrOf { expr, .. }
         | Field { base: expr, .. }
         | OptField { base: expr, .. } => renumber_expr(expr, next),

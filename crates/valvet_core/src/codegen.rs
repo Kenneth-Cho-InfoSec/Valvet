@@ -6,6 +6,7 @@ use crate::ast::*;
 use crate::ast::{EnumDef, StructDef};
 use crate::diag::Ice;
 use crate::sema::{is_copy_ty, Checked};
+use crate::units::Dim;
 
 /// C11 runtime prelude: owned strings without GC, deterministic free on NULL-check.
 const PRELUDE: &str = r#"
@@ -666,6 +667,8 @@ pub fn lower(checked: &Checked) -> Result<String, Ice> {
         structs: checked.structs.clone(),
         enums: checked.enums.clone(),
         generic_insts: checked.generic_insts.clone(),
+        dims: checked.dims.clone(),
+        fn_ret_dim: crate::units::Dim::dimensionless(),
     };
     g.out.push_str(PRELUDE);
     g.out.push_str(PRELUDE_J2);
@@ -732,6 +735,11 @@ struct Gen<'a> {
     /// Composite instantiations printed via `println` (keys into
     /// `generic_insts`); format helpers emit exactly for these.
     print_insts: std::collections::HashSet<String>,
+    /// NodeId -> resolved dimension (units of measure; absent =
+    /// dimensionless). Drives `*k` scale conversions.
+    dims: HashMap<NodeId, Dim>,
+    /// Current function's declared return dimension.
+    fn_ret_dim: Dim,
 }
 
 /// Innermost-enclosing-loop info for `break`/`continue` codegen.
@@ -754,6 +762,49 @@ struct LoopValue {
 impl<'a> Gen<'a> {
     fn ty_of(&self, id: NodeId) -> Ty {
         self.checked.types.get(&id).cloned().unwrap_or(Ty::Unit)
+    }
+
+    /// Dimension of a node (dimensionless default).
+    fn dim_of(&self, id: NodeId) -> Dim {
+        self.dims
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(Dim::dimensionless)
+    }
+
+    /// Wrap emitted `text` (dimension `from`) into `to`: `((text) * k)`.
+    /// Identity when scales match (the common case costs nothing).
+    /// Vectors are already known equal; only scales convert.
+    fn coerce(&self, text: String, from: &Dim, to: &Dim) -> String {
+        let k = from.to(to);
+        if (k - 1.0).abs() < f64::EPSILON {
+            text
+        } else {
+            format!("(({}) * {})", text, k)
+        }
+    }
+
+    /// Declared parameter dimensions of a user function, in order
+    /// (sema already validated names; unknown units fall back to
+    /// dimensionless here — sema reported them).
+    fn callee_param_dims(&self, module: &str, name: &str) -> Vec<Dim> {
+        match self
+            .checked
+            .program
+            .funs
+            .iter()
+            .find(|f| f.module == module && f.name == name)
+        {
+            Some(f) => f
+                .params
+                .iter()
+                .map(|p| match &p.unit {
+                    None => Dim::dimensionless(),
+                    Some(u) => crate::units::eval(u).unwrap_or_else(|_| Dim::dimensionless()),
+                })
+                .collect(),
+            None => vec![],
+        }
     }
 
     /// Resolve a callee name from the current module: own items first, then
@@ -2600,6 +2651,7 @@ impl<'a> Gen<'a> {
         self.owned.clear();
         self.vartypes.clear();
         self.cur_module = f.module.clone();
+        self.fn_ret_dim = self.dim_of(f.id);
         let is_main = f.name == "main";
         // `main` returning `Result<Int32, E>` / `Option<Int32>` compiles the
         // body as an inner function; a small wrapper maps to exit codes.
@@ -2760,9 +2812,12 @@ impl<'a> Gen<'a> {
         } else if self.moves(tt) {
             self.cur_move = true;
             let v = self.mat_str(t)?;
+            // Units: convert the tail to the declared return dimension.
+            let rd = self.fn_ret_dim.clone();
+            let vc = self.coerce(v.clone(), &self.dim_of(t.id), &rd);
             let ret = self.fresh_tmp();
             self.out
-                .push_str(&format!("{} {} = {};\n", self.cty_val(tt), ret, v));
+                .push_str(&format!("{} {} = {};\n", self.cty_val(tt), ret, vc));
             self.consume(&v);
             self.flush_nulls();
             self.pop_frame();
@@ -2773,6 +2828,9 @@ impl<'a> Gen<'a> {
             let e = self.emit_expr(t)?;
             // Materialize before frees: the expression may read owned locals
             // (e.g. `v.len()`), which frees would zero first (silent wrong answer).
+            // Units: convert to the declared return dimension.
+            let rd = self.fn_ret_dim.clone();
+            let e = self.coerce(e, &self.dim_of(t.id), &rd);
             let ret = self.fresh_tmp();
             self.out
                 .push_str(&format!("{} {} = {};\n", self.cty_val(tt), ret, e));
@@ -2832,15 +2890,20 @@ impl<'a> Gen<'a> {
                     .unwrap_or_else(|| ty.clone().unwrap_or(it));
                 let cname = mangle(name);
                 let saved = self.cur_move;
+                // Units: convert the initializer to the declared dimension.
+                let tdim = self.dim_of(*id);
+                let idim = self.dim_of(init.id);
                 if self.moves(&decl_ty) {
                     self.cur_move = true;
                     let v = self.mat_str(init)?;
+                    let vc = self.coerce(v.clone(), &idim, &tdim);
                     self.out
-                        .push_str(&format!("{} {} = {};\n", self.cty_val(&decl_ty), cname, v));
+                        .push_str(&format!("{} {} = {};\n", self.cty_val(&decl_ty), cname, vc));
                     self.consume(&v);
                 } else {
                     self.cur_move = false;
                     let rhs = self.emit_expr(init)?;
+                    let rhs = self.coerce(rhs, &idim, &tdim);
                     self.out.push_str(&format!(
                         "{} {} = {};\n",
                         self.cty_val(&decl_ty),
@@ -2899,12 +2962,15 @@ impl<'a> Gen<'a> {
                                 // then destroy old, install new.
                                 self.cur_move = true;
                                 let v = self.mat_str(value)?;
+                                let td = self.dim_of(expr.id);
+                                let vd = self.dim_of(value.id);
+                                let vc = self.coerce(v.clone(), &vd, &td);
                                 let hold = self.fresh_tmp();
                                 self.out.push_str(&format!(
                                     "{} {} = {};\n",
                                     self.cty_val(&vt),
                                     hold,
-                                    v
+                                    vc
                                 ));
                                 self.consume(&v);
                                 self.flush_nulls();
@@ -2914,6 +2980,9 @@ impl<'a> Gen<'a> {
                             } else {
                                 self.cur_move = false;
                                 let rhs = self.emit_expr(value)?;
+                                let td = self.dim_of(expr.id);
+                                let vd = self.dim_of(value.id);
+                                let rhs = self.coerce(rhs, &vd, &td);
                                 self.out.push_str(&format!("{} = {};\n", cname, rhs));
                                 self.flush_nulls();
                                 self.pop_frame();
@@ -2938,6 +3007,11 @@ impl<'a> Gen<'a> {
                             } else {
                                 self.cur_move = false;
                                 let rhs = self.emit_expr(value)?;
+                                // Units: scale the RHS to the place (identity
+                                // for `*=`/`/=` — factors are dimensionless).
+                                let td = self.dim_of(expr.id);
+                                let vd = self.dim_of(value.id);
+                                let rhs = self.coerce(rhs, &vd, &td);
                                 let cop = match op {
                                     AssignOp::Add => "+=",
                                     AssignOp::Sub => "-=",
@@ -3199,12 +3273,20 @@ impl<'a> Gen<'a> {
                     }
                     Some(v) => {
                         let vt = self.ty_of(v.id);
+                        // Units: convert to the declared return dimension.
+                        let rd = self.fn_ret_dim.clone();
+                        let vd = self.dim_of(v.id);
                         if self.moves(&vt) {
                             self.cur_move = true;
                             let w = self.mat_str(v)?;
+                            let wc = self.coerce(w.clone(), &vd, &rd);
                             let ret = self.fresh_tmp();
-                            self.out
-                                .push_str(&format!("{} {} = {};\n", self.cty_val(&vt), ret, w));
+                            self.out.push_str(&format!(
+                                "{} {} = {};\n",
+                                self.cty_val(&vt),
+                                ret,
+                                wc
+                            ));
                             self.consume(&w);
                             self.flush_nulls();
                             self.pop_frame();
@@ -3224,6 +3306,10 @@ impl<'a> Gen<'a> {
                             // Materialize before frees: the expression may
                             // read owned locals (index, field, call), which
                             // frees would destroy first (use-after-free).
+                            // Units: convert to the declared return dimension.
+                            let rd = self.fn_ret_dim.clone();
+                            let vd = self.dim_of(v.id);
+                            let e = self.coerce(e, &vd, &rd);
                             let ret = self.fresh_tmp();
                             self.out
                                 .push_str(&format!("{} {} = {};\n", self.cty_val(&vt), ret, e));
@@ -3506,12 +3592,17 @@ impl<'a> Gen<'a> {
                     let saved = self.cur_move;
                     let mut parts = vec![];
                     let mut moved_tmps = vec![];
+                    // Declared parameter dimensions (for scale conversion).
+                    let pdims = match self.resolve_fun(name) {
+                        Some((m, n)) => self.callee_param_dims(&m, &n),
+                        None => vec![],
+                    };
                     // Shield (as in struct literals): an argument that
                     // flushes internally (e.g. a nested `vec![..]`) must
                     // not write poisons queued by earlier arguments — the
                     // call text has not been emitted yet.
                     let mut shielded: Vec<(String, Ty)> = vec![];
-                    for a in args {
+                    for (i, a) in args.iter().enumerate() {
                         shielded.extend(std::mem::take(&mut self.nulls));
                         let t = self.ty_of(a.id);
                         self.cur_move = self.moves(&t);
@@ -3520,6 +3611,11 @@ impl<'a> Gen<'a> {
                         if self.cur_move && self.is_tmp_since(before, &v) {
                             moved_tmps.push(v.clone());
                         }
+                        // Units: convert to the parameter's scale.
+                        let v = match pdims.get(i) {
+                            Some(pd) => self.coerce(v, &self.dim_of(a.id), pd),
+                            None => v,
+                        };
                         parts.push(v);
                     }
                     self.cur_move = saved;
@@ -3585,6 +3681,18 @@ impl<'a> Gen<'a> {
                     let l = self.emit_expr(lhs)?;
                     let r = self.emit_expr(rhs)?;
                     self.cur_move = saved;
+                    // Units: scale arithmetic/comparison operands to the
+                    // result dimension (identity unless sema recorded a
+                    // scale conversion; `*`/`/` compose instead).
+                    let (l, r) = if matches!(op, BinOp::Mul | BinOp::Div) {
+                        (l, r)
+                    } else {
+                        let res = self.dim_of(e.id);
+                        (
+                            self.coerce(l, &self.dim_of(lhs.id), &res),
+                            self.coerce(r, &self.dim_of(rhs.id), &res),
+                        )
+                    };
                     let sop = match op {
                         BinOp::Add => "+",
                         BinOp::Sub => "-",
@@ -3651,10 +3759,11 @@ impl<'a> Gen<'a> {
                     let res = self
                         .new_tmp_ty(&self.cty_val(&tt), &format!("({}){{0}}", self.cty_val(&tt)));
                     self.out.push_str(&format!("if ({}) {{\n", c));
-                    self.emit_arm(then_b, &res, &tt, mv)?;
+                    let tdim = self.dim_of(e.id);
+                    self.emit_arm(then_b, &res, &tt, &tdim, mv)?;
                     self.out.push_str("} else {\n");
                     match else_b {
-                        Some(b) => self.emit_arm(b, &res, &tt, mv)?,
+                        Some(b) => self.emit_arm(b, &res, &tt, &tdim, mv)?,
                         None => self.out.push_str("{}"),
                     }
                     self.out.push_str("}\n");
@@ -3686,10 +3795,11 @@ impl<'a> Gen<'a> {
                         f.push((res.clone(), res_ct));
                     }
                     self.out.push_str(&format!("if ({}) {{\n", c));
-                    self.emit_arm_copy(then_b, &res)?;
+                    let tdim = self.dim_of(e.id);
+                    self.emit_arm_copy(then_b, &res, &tdim)?;
                     self.out.push_str("} else {\n");
                     match else_b {
-                        Some(b) => self.emit_arm_copy(b, &res)?,
+                        Some(b) => self.emit_arm_copy(b, &res, &tdim)?,
                         None => self.out.push_str("{}"),
                     }
                     self.out.push_str("}\n");
@@ -4102,6 +4212,17 @@ impl<'a> Gen<'a> {
                 let st = self.ty_of(expr.id);
                 cast_expr(&st, target, &inner)
             }
+            ExprKind::AsUnit { expr, .. } => {
+                // Dimension assertion/conversion: numerics are `Copy`, so
+                // borrow and wrap with the scale factor (identity elided).
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let inner = self.emit_expr(expr)?;
+                self.cur_move = saved;
+                let from = self.dim_of(expr.id);
+                let to = self.dim_of(e.id);
+                self.coerce(inner, &from, &to)
+            }
         })
     }
 
@@ -4119,7 +4240,14 @@ impl<'a> Gen<'a> {
     /// String-valued arm: tail assigns into `target`; ownership follows `mv`.
     /// Owned-valued arm: tail transfers into `target` of type `target_ty`.
     /// Moves NULL the source; borrows deep-clone (the arm scope dies).
-    fn emit_arm(&mut self, b: &Block, target: &str, target_ty: &Ty, mv: bool) -> Result<(), Ice> {
+    fn emit_arm(
+        &mut self,
+        b: &Block,
+        target: &str,
+        target_ty: &Ty,
+        target_dim: &Dim,
+        mv: bool,
+    ) -> Result<(), Ice> {
         self.scopes.push(vec![]);
         let depth = self.scopes.len() - 1;
         self.push_frame();
@@ -4130,22 +4258,23 @@ impl<'a> Gen<'a> {
             let saved = self.cur_move;
             self.cur_move = mv;
             let v = self.mat_str(t)?;
+            let vc = self.coerce(v.clone(), &self.dim_of(t.id), target_dim);
             if mv {
                 // Move into the result slot; poison the source.
-                self.out.push_str(&format!("{} = {};\n", target, v));
+                self.out.push_str(&format!("{} = {};\n", target, vc));
                 self.consume(&v);
             } else if *target_ty == Ty::Str {
                 // Borrow position: the result slot needs its own copy.
                 self.out
-                    .push_str(&format!("{} = vstr_clone({});\n", target, v));
+                    .push_str(&format!("{} = vstr_clone({});\n", target, vc));
             } else if let Ty::Struct(n) | Ty::Enum(n) = target_ty {
                 self.out
-                    .push_str(&format!("{} = v_clone_{}({});\n", target, dname(n), v));
+                    .push_str(&format!("{} = v_clone_{}({});\n", target, dname(n), vc));
             } else if let Ty::Generic { base, args } = target_ty {
                 let ct = ctype_inst(base, args);
                 let iname = ct.strip_prefix('V').unwrap_or(&ct);
                 self.out
-                    .push_str(&format!("{} = v_clone_{}({});\n", target, iname, v));
+                    .push_str(&format!("{} = v_clone_{}({});\n", target, iname, vc));
             } else {
                 return Err(Ice("owned arm with unexpected type".into()));
             }
@@ -4354,7 +4483,7 @@ impl<'a> Gen<'a> {
     fn emit_match_body(
         &mut self,
         b: &Block,
-        res: Option<(&str, &Ty, bool)>,
+        res: Option<(&str, &Ty, &Dim, bool)>,
         ret_ty: &Ty,
     ) -> Result<(), Ice> {
         for s in &b.stmts {
@@ -4370,19 +4499,21 @@ impl<'a> Gen<'a> {
                     self.out.push_str(&format!("{};\n", e));
                     self.flush_nulls();
                 }
-                Some((target, ty, mv)) => {
+                Some((target, ty, rdim, mv)) => {
                     let saved = self.cur_move;
                     self.cur_move = mv;
+                    let tdim = self.dim_of(t.id);
                     if self.moves(ty) {
                         let v = self.mat_str(t)?;
+                        let vc = self.coerce(v.clone(), &tdim, rdim);
                         if mv {
                             // Move into res; poison the source.
-                            self.out.push_str(&format!("{} = {};\n", target, v));
+                            self.out.push_str(&format!("{} = {};\n", target, vc));
                             self.consume(&v);
                         } else if *ty == Ty::Str {
                             // Borrow: res outlives the arm temps, so clone.
                             self.out
-                                .push_str(&format!("{} = vstr_clone({});\n", target, v));
+                                .push_str(&format!("{} = vstr_clone({});\n", target, vc));
                         } else if let Ty::Struct(n) | Ty::Enum(n) = ty {
                             self.out.push_str(&format!(
                                 "{} = v_clone_{}({});\n",
@@ -4446,6 +4577,11 @@ impl<'a> Gen<'a> {
             }
         }
         let arms = &arms[..cutoff.min(arms.len())];
+        // Result dimension: first arm's scale wins (later arms convert).
+        let res_dim: Dim = arms
+            .first()
+            .map(|a| self.dim_of(a.body.id))
+            .unwrap_or_else(Dim::dimensionless);
         // Result slot for value matches.
         let res = match res_ty {
             Some(t) => {
@@ -4476,7 +4612,7 @@ impl<'a> Gen<'a> {
             // res context: value matches move tails into res.
             let res_ctx = res.as_ref().map(|r| {
                 let tt: &Ty = res_ty.unwrap_or(&Ty::Unit);
-                (r.as_str(), tt, mv)
+                (r.as_str(), tt, &res_dim, mv)
             });
             if let Some(g) = &arm.guard {
                 let gs = self.cur_move;
@@ -4523,7 +4659,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Copy-valued arm: tail assigns into `target`.
-    fn emit_arm_copy(&mut self, b: &Block, target: &str) -> Result<(), Ice> {
+    fn emit_arm_copy(&mut self, b: &Block, target: &str, target_dim: &Dim) -> Result<(), Ice> {
         self.scopes.push(vec![]);
         let depth = self.scopes.len() - 1;
         self.push_frame();
@@ -4534,6 +4670,7 @@ impl<'a> Gen<'a> {
             let saved = self.cur_move;
             self.cur_move = false;
             let v = self.emit_expr(t)?;
+            let v = self.coerce(v, &self.dim_of(t.id), target_dim);
             self.cur_move = saved;
             self.out.push_str(&format!("{} = {};\n", target, v));
             self.flush_nulls();
