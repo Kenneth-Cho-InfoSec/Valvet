@@ -1714,7 +1714,24 @@ impl Cx {
                         None,
                     );
                 }
+                // Like `loop`/`for`: bodies may `break`/`continue`, so push a
+                // loop context (`break v` is still rejected below).
+                self.loop_stack.push(LoopCtx {
+                    is_expr: false,
+                    breaks: vec![],
+                    plain_break: false,
+                });
                 let (bt, bflow) = self.check_block(body, ret_ty);
+                let ctx = self.loop_stack.pop().expect("loop stack underflow");
+                // `break v` in a statement loop discards the value.
+                if !ctx.breaks.is_empty() {
+                    self.err(
+                        "E0201",
+                        body.span,
+                        "`break` with a value is only allowed in `loop` used as a value",
+                        Some("remove the value or use the `loop` as a tail expression".into()),
+                    );
+                }
                 if matches!(bflow, Flow::Normal) && bt != Ty::Unit {
                     self.err(
                         "E0201",
