@@ -1,0 +1,58 @@
+module std.provenance;
+
+import std::frame::DynamicFrame;
+
+// First-class provenance (K2): frames carry their source hash plus a
+// transform log, so any printed result can cite the exact bytes and
+// operations behind it. Hashes are FNV-1a over content bytes (`hash_str`
+// builtin); the log is append-only. Nothing here is parallel or clever:
+// provenance is metadata discipline, enforced by construction.
+
+pub struct Provenance { source: String, hash: Int64, ops: Vec<String> }
+
+pub struct TracedFrame { frame: DynamicFrame, prov: Provenance }
+
+pub fun provenance_of_text(source: String, content: String): Provenance {
+    val ops: Vec<String> = vec![];
+    return Provenance { source: source, hash: hash_str(content), ops: ops };
+}
+
+pub fun provenance_of_file(path: String): Result<Provenance, String> {
+    val text = read_file(path.clone())?;
+    return Ok(provenance_of_text(path, text));
+}
+
+pub fun provenance_log(p: &Provenance, op: String): Provenance {
+    var ops: Vec<String> = vec![]
+    var i = 0 as Int64
+    while (i < p.ops.len()) {
+        ops.push(p.ops[i]);
+        i += 1 as Int64
+    }
+    ops.push(op);
+    Provenance { source: p.source.clone(), hash: p.hash, ops: ops }
+}
+
+pub fun trace_frame(frame: DynamicFrame, prov: Provenance): TracedFrame {
+    TracedFrame { frame: frame, prov: prov }
+}
+
+pub fun trace_log(t: TracedFrame, op: String): TracedFrame {
+    val np = provenance_log(&t.prov, op);
+    TracedFrame { frame: t.frame, prov: np }
+}
+
+pub fun prov_report(p: &Provenance): String {
+    val h = "source=" + p.source.clone() + " hash=" + to_string(p.hash);
+    var s = h + " ops=[";
+    var i = 0 as Int64
+    while (i < p.ops.len()) {
+        if (i != (0 as Int64)) {
+            s = s + ",";
+        }
+        s = s + p.ops[i];
+        i += 1 as Int64
+    }
+    s = s + "]";
+    s
+}

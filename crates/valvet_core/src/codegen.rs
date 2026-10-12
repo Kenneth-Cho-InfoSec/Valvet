@@ -196,8 +196,17 @@ static void vcsv_free_table(VCsvTable *t) {
     }
     free(t->rows); t->rows = NULL; t->nrows = t->caprows = 0;
 }
-static VFileOut v_read_file(VStr path) {
-    VFileOut o = {{NULL, 0}, {NULL, 0}, 0};
+// K2: FNV-1a 64 over string bytes (content hash for provenance).
+static int64_t v_hash_str(VStr s) {
+    uint64_t h = 14695981039346656037ULL;
+    int64_t n = (s.s && s.len > 0) ? s.len : 0;
+    for (int64_t i = 0; i < n; i++) {
+        h ^= (uint64_t)((unsigned char)s.s[i]);
+        h *= 1099511628211ULL;
+    }
+    return (int64_t)h;
+}
+static VFileOut v_read_file(VStr path) {    VFileOut o = {{NULL, 0}, {NULL, 0}, 0};
     if (!path.s || path.len == 0) { o.err = vstr_from_c("empty path"); o.has_err = 1; return o; }
     FILE *f = fopen(path.s, "rb");
     if (!f) {
@@ -3489,6 +3498,7 @@ impl<'a> Gen<'a> {
                     || name == "csv_bad_rows"
                     || name == "json_rows"
                     || name == "write_file"
+                    || name == "hash_str"
                 {
                     // J2/J6 file/CSV/JSON kernels (sema checked arity/types).
                     // Arguments borrow; owned rvalues materialize into
@@ -3511,6 +3521,7 @@ impl<'a> Gen<'a> {
                         "csv_rows" => format!("v_csv_rows_wrap({})", parts.join(", ")),
                         "csv_bad_rows" => format!("v_csv_bad_rows_wrap({})", parts.join(", ")),
                         "write_file" => format!("v_write_file_wrap({})", parts.join(", ")),
+                        "hash_str" => format!("v_hash_str({})", parts.join(", ")),
                         _ => format!("v_json_rows_wrap({})", parts.join(", ")),
                     }
                 } else if name == "Some" || name == "Ok" || name == "Err" {

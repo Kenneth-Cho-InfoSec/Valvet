@@ -4586,6 +4586,27 @@ impl Cx {
             || name == "json_rows"
         {
             return self.check_io_builtin(span, name, args);
+        } else if name == "hash_str" {
+            // K2: `hash_str(content): Int64` (FNV-1a over bytes).
+            if args.len() != 1 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`hash_str` takes exactly 1 argument, found {}", args.len()),
+                    None,
+                );
+                return Ty::Int64;
+            }
+            let at = self.check_expr(&args[0]);
+            if at != Ty::Str {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!("`hash_str` expects a String, found {}", at.name()),
+                    None,
+                );
+            }
+            return Ty::Int64;
         } else if name == "write_file" {
             // J6: `write_file(path, content): Result<Int64, String>`
             // (bytes written).

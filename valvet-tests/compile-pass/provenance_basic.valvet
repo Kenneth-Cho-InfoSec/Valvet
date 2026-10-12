@@ -1,0 +1,27 @@
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::frame::frame_col;
+import std::frame::frame_group_mean;
+import std::provenance::provenance_of_text;
+import std::provenance::provenance_log;
+import std::provenance::trace_frame;
+import std::provenance::trace_log;
+import std::provenance::prov_report;
+
+fun main() {
+    val csv = "g,v\nx,1.0\nx,3.0\ny,2.0\n";
+    val p = provenance_of_text("inline", csv);
+    println(prov_report(&p));
+    val p2 = provenance_log(&p, "load");
+    println(prov_report(&p2));
+    val lh = vec!["g", "v"];
+    val r0 = vec!["x", "1.0"];
+    val r1 = vec!["x", "3.0"];
+    val r2 = vec!["y", "2.0"];
+    val f = frame_from_table(CsvTable { header: lh, rows: vec![r0, r1, r2] });
+    val t = trace_frame(f, p2);
+    val t2 = trace_log(t, "group_mean(g,v)");
+    println(prov_report(&t2.prov));
+    val m = frame_group_mean(&t2.frame, "g", "v");
+    println(frame_col(&m, "mean"));
+}
