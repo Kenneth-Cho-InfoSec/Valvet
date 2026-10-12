@@ -1,0 +1,484 @@
+// papers/p2_hamt.valvet
+// Hash array mapped trie after Bagwell ("Ideal Hash Trees", 2001) and the
+// FSharpx port from Clojure (papers/p2_hamt.fs: bitmap-indexed nodes with
+// 5-bit chunks, assoc/lookup/remove, HashCollisionNode, ArrayNode).
+//
+// Valvet mapping: persistent HAMT over Int64 keys/values on an arena
+// Vec<Node> threaded through functions by value (empty is index -1; new
+// nodes are pushed, old roots stay valid). Node carries bitmap plus
+// parallel packed slots: `leafbits` marks which occupied positions hold a
+// key/value leaf (else a child index); `keys`/`vals` pack the leaves in
+// position order and `childs` packs the child indices. Valvet has NO
+// bitwise ops, so the 5-bit chunk k of a hash h is extracted with Int64
+// arithmetic as (h / 32^k) % 32, and bitmap tests count via division/mod
+// loops. The hash is the wrapping Knuth MMIX mix
+// h = key * 6364136223846793005 + 1442695040888963407 (Valvet Ints wrap
+// like -fwrapv, verified by probe) folded to non-negative; absence uses
+// the -1 sentinel. Small maps never reach the 16-entry ArrayNode
+// promotion, so only bitmap nodes are implemented (as in the F#
+// BitmapIndexedNode assoc/without paths). Deterministic op script in main
+// (~70 puts/gets/removes); papers/p2_hamt_ref.py mirrors with a dict.
+
+struct Node { bitmap: Int64, leafbits: Int64, keys: Vec<Int64>, vals: Vec<Int64>, childs: Vec<Int64> }
+struct Hamt { arena: Vec<Node>, root: Int64, size: Int64 }
+struct AssocOut { arena: Vec<Node>, idx: Int64, added: Bool }
+struct RemOut { arena: Vec<Node>, idx: Int64, removed: Bool }
+struct MergeOut { arena: Vec<Node>, idx: Int64 }
+
+fun neg1(): Int64 { (0 as Int64) - (1 as Int64) }
+
+fun mkempty(): Node {
+    var k: Vec<Int64> = vec![];
+    var v: Vec<Int64> = vec![];
+    var c: Vec<Int64> = vec![];
+    Node { bitmap: 0 as Int64, leafbits: 0 as Int64, keys: k, vals: v, childs: c }
+}
+
+fun getnode(a: &Vec<Node>, t: Int64): Node {
+    match ((*a).get(t)) {
+        Some(n) -> n,
+        None -> mkempty(),
+    }
+}
+
+fun pow2(p: Int64): Int64 {
+    var r = 1 as Int64;
+    var i = 0 as Int64;
+    while (i < p) {
+        r = r * (2 as Int64);
+        i = i + (1 as Int64);
+    }
+    r
+}
+
+fun pow32(l: Int64): Int64 {
+    var r = 1 as Int64;
+    var i = 0 as Int64;
+    while (i < l) {
+        r = r * (32 as Int64);
+        i = i + (1 as Int64);
+    }
+    r
+}
+
+fun hash_key(k: Int64): Int64 {
+    var h = k * (6364136223846793005 as Int64) + (1442695040888963407 as Int64);
+    if (h < (0 as Int64)) {
+        h = (0 as Int64) - h
+    }
+    h
+}
+
+fun chunk(h: Int64, level: Int64): Int64 {
+    (h / pow32(level)) % (32 as Int64)
+}
+
+fun bit_set(bm: Int64, p: Int64): Bool {
+    ((bm / pow2(p)) % (2 as Int64)) != (0 as Int64)
+}
+
+// Number of leaf slots before position p (F# BitCount.index over leaves).
+fun leaf_rank(bm: Int64, lm: Int64, p: Int64): Int64 {
+    var n = 0 as Int64;
+    var q = 0 as Int64;
+    while (q < p) {
+        if (bit_set(bm, q) && bit_set(lm, q)) {
+            n = n + (1 as Int64)
+        }
+        q = q + (1 as Int64);
+    }
+    n
+}
+
+// Number of child slots before position p.
+fun child_rank(bm: Int64, lm: Int64, p: Int64): Int64 {
+    var n = 0 as Int64;
+    var q = 0 as Int64;
+    while (q < p) {
+        if (bit_set(bm, q) && !bit_set(lm, q)) {
+            n = n + (1 as Int64)
+        }
+        q = q + (1 as Int64);
+    }
+    n
+}
+
+fun vec_ins(v: Vec<Int64>, at: Int64, x: Int64): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < at) {
+        out.push(v[i]);
+        i = i + (1 as Int64);
+    }
+    out.push(x);
+    while (i < v.len()) {
+        out.push(v[i]);
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+fun vec_set_at(v: Vec<Int64>, at: Int64, x: Int64): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (i == at) {
+            out.push(x)
+        } else {
+            out.push(v[i])
+        }
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+fun vec_del_at(v: Vec<Int64>, at: Int64): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (i != at) {
+            out.push(v[i])
+        }
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+// Single-leaf node for chunk c (F# BitmapIndexedNode leaf insert).
+fun leaf_node(c: Int64, key: Int64, vv: Int64): Node {
+    var k: Vec<Int64> = vec![];
+    k.push(key);
+    var v: Vec<Int64> = vec![];
+    v.push(vv);
+    var ch: Vec<Int64> = vec![];
+    Node { bitmap: pow2(c), leafbits: pow2(c), keys: k, vals: v, childs: ch }
+}
+
+// Split two colliding leaves below `level` (F# NodeCreation.createNode).
+fun merge_nodes(a: Vec<Node>, level: Int64, k1: Int64, v1: Int64, h1: Int64, k2: Int64, v2: Int64, h2: Int64): MergeOut {
+    var arena = a;
+    if (level > (12 as Int64)) {
+        // Full-hash collision with distinct keys: 63-bit hashes make this
+        // unreachable for the script (verified: collisions=0 below).
+        arena.push(leaf_node(chunk(h2, 12 as Int64), k2, v2));
+        val midx_163 = arena.len() - (1 as Int64);
+        MergeOut { arena: arena, idx: midx_163 }
+    } else {
+        val c1 = chunk(h1, level);
+        val c2 = chunk(h2, level);
+        if (c1 != c2) {
+            var k: Vec<Int64> = vec![];
+            var v: Vec<Int64> = vec![];
+            if (c1 < c2) {
+                k.push(k1);
+                k.push(k2);
+                v.push(v1);
+                v.push(v2);
+            } else {
+                k.push(k2);
+                k.push(k1);
+                v.push(v2);
+                v.push(v1);
+            }
+            var ch: Vec<Int64> = vec![];
+            arena.push(Node { bitmap: pow2(c1) + pow2(c2), leafbits: pow2(c1) + pow2(c2), keys: k, vals: v, childs: ch });
+            val midx_184 = arena.len() - (1 as Int64);
+            MergeOut { arena: arena, idx: midx_184 }
+        } else {
+            val sub = merge_nodes(arena, level + (1 as Int64), k1, v1, h1, k2, v2, h2);
+            var kk: Vec<Int64> = vec![];
+            var vv: Vec<Int64> = vec![];
+            var ch: Vec<Int64> = vec![];
+            ch.push(sub.idx);
+            var arena2 = sub.arena;
+            arena2.push(Node { bitmap: pow2(c1), leafbits: 0 as Int64, keys: kk, vals: vv, childs: ch });
+            val midx_194 = arena2.len() - (1 as Int64);
+            MergeOut { arena: arena2, idx: midx_194 }
+        }
+    }
+}
+
+// assoc (F# INode.assoc persistent path): returns new child index.
+fun assoc(a: Vec<Node>, t: Int64, level: Int64, h: Int64, key: Int64, vv: Int64): AssocOut {
+    var arena = a;
+    if (t == neg1()) {
+        arena.push(leaf_node(chunk(h, level), key, vv));
+        val midx_205 = arena.len() - (1 as Int64);
+        AssocOut { arena: arena, idx: midx_205, added: true }
+    } else {
+        val n = getnode(&arena, t);
+        val c = chunk(h, level);
+        val pc = pow2(c);
+        if (!bit_set(n.bitmap, c)) {
+            val lr = leaf_rank(n.bitmap, n.leafbits, c);
+            var arena2 = arena;
+            arena2.push(Node {
+                bitmap: n.bitmap + pc,
+                leafbits: n.leafbits + pc,
+                keys: vec_ins(n.keys.clone(), lr, key),
+                vals: vec_ins(n.vals.clone(), lr, vv),
+                childs: n.childs.clone()
+            });
+            val midx_221 = arena2.len() - (1 as Int64);
+            AssocOut { arena: arena2, idx: midx_221, added: true }
+        } else {
+            if (bit_set(n.leafbits, c)) {
+                val lr2 = leaf_rank(n.bitmap, n.leafbits, c);
+                val k0 = n.keys[lr2];
+                val v0 = n.vals[lr2];
+                if (k0 == key) {
+                    if (v0 == vv) {
+                        AssocOut { arena: arena, idx: t, added: false }
+                    } else {
+                        var arena3 = arena;
+                        arena3.push(Node {
+                            bitmap: n.bitmap,
+                            leafbits: n.leafbits,
+                            keys: n.keys.clone(),
+                            vals: vec_set_at(n.vals.clone(), lr2, vv),
+                            childs: n.childs.clone()
+                        });
+                        val midx_240 = arena3.len() - (1 as Int64);
+                        AssocOut { arena: arena3, idx: midx_240, added: false }
+                    }
+                } else {
+                    val m = merge_nodes(arena, level + (1 as Int64), k0, v0, hash_key(k0), key, vv, h);
+                    val m_idx = m.idx;
+                    val cr = child_rank(n.bitmap, n.leafbits, c);
+                    var arena4 = m.arena;
+                    arena4.push(Node {
+                        bitmap: n.bitmap,
+                        leafbits: n.leafbits - pc,
+                        keys: vec_del_at(n.keys.clone(), lr2),
+                        vals: vec_del_at(n.vals.clone(), lr2),
+                        childs: vec_ins(n.childs.clone(), cr, m_idx)
+                    });
+                    val midx_254 = arena4.len() - (1 as Int64);
+                    AssocOut { arena: arena4, idx: midx_254, added: true }
+                }
+            } else {
+                val cr2 = child_rank(n.bitmap, n.leafbits, c);
+                val old = n.childs[cr2];
+                val o = assoc(arena, old, level + (1 as Int64), h, key, vv);
+                val o_idx = o.idx;
+                val o_added = o.added;
+                var arena5 = o.arena;
+                arena5.push(Node {
+                    bitmap: n.bitmap,
+                    leafbits: n.leafbits,
+                    keys: n.keys.clone(),
+                    vals: n.vals.clone(),
+                    childs: vec_set_at(n.childs.clone(), cr2, o_idx)
+                });
+                val midx_269 = arena5.len() - (1 as Int64);
+                AssocOut { arena: arena5, idx: midx_269, added: o_added }
+            }
+        }
+    }
+}
+
+fun lookup(a: &Vec<Node>, t: Int64, level: Int64, h: Int64, key: Int64): Option<Int64> {
+    if (t == neg1()) {
+        return None
+    }
+    val n = getnode(a, t);
+    val c = chunk(h, level);
+    if (!bit_set(n.bitmap, c)) {
+        return None
+    }
+    if (bit_set(n.leafbits, c)) {
+        val lr = leaf_rank(n.bitmap, n.leafbits, c);
+        if (n.keys[lr] == key) {
+            return Some(n.vals[lr])
+        }
+        return None
+    }
+    lookup(a, n.childs[child_rank(n.bitmap, n.leafbits, c)], level + (1 as Int64), h, key)
+}
+
+// without (F# INode.without persistent path).
+fun hremove(a: Vec<Node>, t: Int64, level: Int64, h: Int64, key: Int64): RemOut {
+    var arena = a;
+    if (t == neg1()) {
+        RemOut { arena: arena, idx: t, removed: false }
+    } else {
+        val n = getnode(&arena, t);
+        val c = chunk(h, level);
+        val pc = pow2(c);
+        if (!bit_set(n.bitmap, c)) {
+            RemOut { arena: arena, idx: t, removed: false }
+        } else {
+            if (bit_set(n.leafbits, c)) {
+                val lr = leaf_rank(n.bitmap, n.leafbits, c);
+                if (n.keys[lr] != key) {
+                    RemOut { arena: arena, idx: t, removed: false }
+                } else {
+                    val bm = n.bitmap - pc;
+                    if (bm == (0 as Int64)) {
+                        RemOut { arena: arena, idx: neg1(), removed: true }
+                    } else {
+                        var arena2 = arena;
+                        arena2.push(Node {
+                            bitmap: bm,
+                            leafbits: n.leafbits - pc,
+                            keys: vec_del_at(n.keys.clone(), lr),
+                            vals: vec_del_at(n.vals.clone(), lr),
+                            childs: n.childs.clone()
+                        });
+                        val midx_324 = arena2.len() - (1 as Int64);
+                        RemOut { arena: arena2, idx: midx_324, removed: true }
+                    }
+                }
+            } else {
+                val cr = child_rank(n.bitmap, n.leafbits, c);
+                val o = hremove(arena, n.childs[cr], level + (1 as Int64), h, key);
+                val o_idx = o.idx;
+                if (!o.removed) {
+                    RemOut { arena: o.arena, idx: t, removed: false }
+                } else {
+                    if (o_idx == neg1()) {
+                        val bm2 = n.bitmap - pc;
+                        if (bm2 == (0 as Int64)) {
+                            RemOut { arena: o.arena, idx: neg1(), removed: true }
+                        } else {
+                            var arena3 = o.arena;
+                            arena3.push(Node {
+                                bitmap: bm2,
+                                leafbits: n.leafbits,
+                                keys: n.keys.clone(),
+                                vals: n.vals.clone(),
+                                childs: vec_del_at(n.childs.clone(), cr)
+                            });
+                            val midx_347 = arena3.len() - (1 as Int64);
+                            RemOut { arena: arena3, idx: midx_347, removed: true }
+                        }
+                    } else {
+                        var arena4 = o.arena;
+                        arena4.push(Node {
+                            bitmap: n.bitmap,
+                            leafbits: n.leafbits,
+                            keys: n.keys.clone(),
+                            vals: n.vals.clone(),
+                            childs: vec_set_at(n.childs.clone(), cr, o_idx)
+                        });
+                        val midx_359 = arena4.len() - (1 as Int64);
+                        RemOut { arena: arena4, idx: midx_359, removed: true }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fun hamt_empty(): Hamt {
+    var arena: Vec<Node> = vec![];
+    Hamt { arena: arena, root: neg1(), size: 0 as Int64 }
+}
+
+fun hamt_get(h: &Hamt, key: Int64): Option<Int64> {
+    lookup(&(*h).arena, (*h).root, 0 as Int64, hash_key(key), key)
+}
+
+fun hamt_put(h: Hamt, key: Int64, vv: Int64): Hamt {
+    val hsize = h.size;
+    val hroot = h.root;
+    val o = assoc(h.arena, hroot, 0 as Int64, hash_key(key), key, vv);
+    val o_added = o.added;
+    val o_idx = o.idx;
+    val ns = if (o_added) { hsize + (1 as Int64) } else { hsize };
+    Hamt { arena: o.arena, root: o_idx, size: ns }
+}
+
+fun hamt_remove(h: Hamt, key: Int64): Hamt {
+    val hsize = h.size;
+    val hroot = h.root;
+    val o = hremove(h.arena, hroot, 0 as Int64, hash_key(key), key);
+    if (!o.removed) {
+        Hamt { arena: o.arena, root: hroot, size: hsize }
+    } else {
+        val o_idx = o.idx;
+        Hamt { arena: o.arena, root: o_idx, size: hsize - (1 as Int64) }
+    }
+}
+
+// Counts distinct-key full-hash collisions in a key set (must be 0: the
+// merge fallback above is then dead code).
+fun count_collisions(keys: &Vec<Int64>): Int64 {
+    var n = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < (*keys).len()) {
+        var j = i + (1 as Int64);
+        while (j < (*keys).len()) {
+            if ((*keys)[i] != (*keys)[j] && hash_key((*keys)[i]) == hash_key((*keys)[j])) {
+                n = n + (1 as Int64)
+            }
+            j = j + (1 as Int64);
+        }
+        i = i + (1 as Int64);
+    }
+    n
+}
+
+fun print_opt(o: Option<Int64>) {
+    val v = match (o) {
+        Some(x) -> x,
+        None -> (0 as Int64) - (1 as Int64),
+    };
+    println(v);
+}
+
+fun main() {
+    // Op script: flat triples (op, key, vv). 0 = put, 1 = get, 2 = remove.
+    val ops: Vec<Int64> = vec![
+        (0 as Int64), (5 as Int64), (50 as Int64), (0 as Int64), (-3 as Int64), (33 as Int64), (0 as Int64), (17 as Int64), (170 as Int64), (0 as Int64), (42 as Int64), (420 as Int64), (0 as Int64), (0 as Int64), (7 as Int64),
+        (0 as Int64), (99 as Int64), (990 as Int64), (0 as Int64), (7 as Int64), (70 as Int64), (0 as Int64), (1001 as Int64), (11 as Int64), (0 as Int64), (-1001 as Int64), (22 as Int64), (0 as Int64), (13 as Int64), (130 as Int64),
+        (0 as Int64), (29 as Int64), (290 as Int64), (0 as Int64), (55 as Int64), (550 as Int64), (0 as Int64), (71 as Int64), (710 as Int64), (0 as Int64), (3 as Int64), (30 as Int64), (0 as Int64), (8 as Int64), (80 as Int64),
+        (0 as Int64), (100 as Int64), (1000 as Int64), (0 as Int64), (-100 as Int64), (2000 as Int64), (0 as Int64), (1000000 as Int64), (5 as Int64), (0 as Int64), (-1000000 as Int64), (6 as Int64), (0 as Int64), (123456789 as Int64), (7 as Int64),
+        (1 as Int64), (5 as Int64), (0 as Int64), (1 as Int64), (42 as Int64), (0 as Int64), (1 as Int64), (999 as Int64), (0 as Int64), (1 as Int64), (-3 as Int64), (0 as Int64), (1 as Int64), (0 as Int64), (0 as Int64), (1 as Int64), (-1000000 as Int64), (0 as Int64), (1 as Int64), (123456789 as Int64), (0 as Int64), (1 as Int64), (64 as Int64), (0 as Int64),
+        (0 as Int64), (5 as Int64), (51 as Int64), (0 as Int64), (42 as Int64), (421 as Int64), (0 as Int64), (0 as Int64), (8 as Int64),
+        (1 as Int64), (5 as Int64), (0 as Int64), (1 as Int64), (42 as Int64), (0 as Int64), (1 as Int64), (0 as Int64), (0 as Int64),
+        (2 as Int64), (17 as Int64), (0 as Int64), (2 as Int64), (999 as Int64), (0 as Int64), (2 as Int64), (-3 as Int64), (0 as Int64), (2 as Int64), (0 as Int64), (0 as Int64),
+        (1 as Int64), (17 as Int64), (0 as Int64), (1 as Int64), (0 as Int64), (0 as Int64),
+        (0 as Int64), (17 as Int64), (171 as Int64), (1 as Int64), (17 as Int64), (0 as Int64),
+        (2 as Int64), (5 as Int64), (0 as Int64), (2 as Int64), (42 as Int64), (0 as Int64), (2 as Int64), (99 as Int64), (0 as Int64), (2 as Int64), (7 as Int64), (0 as Int64),
+        (1 as Int64), (5 as Int64), (0 as Int64), (0 as Int64), (5 as Int64), (52 as Int64), (1 as Int64), (5 as Int64), (0 as Int64),
+        (0 as Int64), (200 as Int64), (600 as Int64), (0 as Int64), (201 as Int64), (603 as Int64), (0 as Int64), (202 as Int64), (606 as Int64), (0 as Int64), (203 as Int64), (609 as Int64), (0 as Int64), (204 as Int64), (612 as Int64),
+        (0 as Int64), (205 as Int64), (615 as Int64), (0 as Int64), (206 as Int64), (618 as Int64), (0 as Int64), (207 as Int64), (621 as Int64), (0 as Int64), (208 as Int64), (624 as Int64), (0 as Int64), (209 as Int64), (627 as Int64),
+        (1 as Int64), (200 as Int64), (0 as Int64), (1 as Int64), (205 as Int64), (0 as Int64), (1 as Int64), (209 as Int64), (0 as Int64), (1 as Int64), (211 as Int64), (0 as Int64),
+        (2 as Int64), (200 as Int64), (0 as Int64), (2 as Int64), (202 as Int64), (0 as Int64), (2 as Int64), (204 as Int64), (0 as Int64), (2 as Int64), (206 as Int64), (0 as Int64), (2 as Int64), (208 as Int64), (0 as Int64),
+        (1 as Int64), (200 as Int64), (0 as Int64), (1 as Int64), (201 as Int64), (0 as Int64), (1 as Int64), (202 as Int64), (0 as Int64), (1 as Int64), (203 as Int64), (0 as Int64), (1 as Int64), (210 as Int64), (0 as Int64)
+    ];
+    var h = hamt_empty();
+    var t = 0 as Int64;
+    while (t < ops.len()) {
+        val op = ops[t];
+        val key = ops[t + (1 as Int64)];
+        val val_ = ops[t + (2 as Int64)];
+        if (op == (0 as Int64)) {
+            h = hamt_put(h, key, val_);
+            println(h.size);
+        } else {
+            if (op == (1 as Int64)) {
+                print_opt(hamt_get(&h, key));
+            } else {
+                val before = h.size;
+                h = hamt_remove(h, key);
+                println(boolint(h.size != before));
+            }
+        }
+        t = t + (3 as Int64);
+    }
+    println(h.size);
+    var probes: Vec<Int64> = vec![(5 as Int64), (17 as Int64), (42 as Int64), (0 as Int64), (29 as Int64), (200 as Int64), (201 as Int64), (210 as Int64)];
+    var pi = 0 as Int64;
+    while (pi < probes.len()) {
+        print_opt(hamt_get(&h, probes[pi]));
+        pi = pi + (1 as Int64);
+    }
+    var allkeys: Vec<Int64> = vec![(5 as Int64), (-3 as Int64), (17 as Int64), (42 as Int64), (0 as Int64), (99 as Int64), (7 as Int64), (1001 as Int64), (-1001 as Int64), (13 as Int64), (29 as Int64), (55 as Int64), (71 as Int64), (3 as Int64), (8 as Int64), (100 as Int64), (-100 as Int64), (1000000 as Int64), (-1000000 as Int64), (123456789 as Int64), (200 as Int64), (201 as Int64), (202 as Int64), (203 as Int64), (204 as Int64), (205 as Int64), (206 as Int64), (207 as Int64), (208 as Int64), (209 as Int64)]
+    println(count_collisions(&allkeys));
+}
+
+fun boolint(b: Bool): Int64 {
+    if (b) { 1 as Int64 } else { 0 as Int64 }
+}

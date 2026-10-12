@@ -1,0 +1,352 @@
+// papers/p2_mcts.valvet
+// Monte-Carlo tree search with UCT after Coulom ("Efficient Selectivity
+// and Backup Operators in Monte-Carlo Tree Search", 2006) and Kocsis &
+// Szepesvari ("Bandit Based Monte-Carlo Planning", 2006; UCB1 exploration),
+// following papers/p2_mcts.fs (spider-solitaire MonteCarloTreeSearch:
+// select / expand / simulate / backpropagate). Game: tic-tac-toe, X=1 to
+// move first, O=2, empty=0; win=that side, draw=0.
+//
+// Valvet mapping (first-order): arena tree (Vec<MNode>, Int64 links);
+// node value from the side-to-move's perspective (win=1, draw=0.5);
+// UCB1 = w/n + C*sqrt(ln(N)/n) with C=sqrt(2) literal; sqrt/log are the
+// stdlib iterative approximations, mirrored op-for-op in the oracle so the
+// trees agree bit-for-bit. Playout RNG is a shared LCG (a=1664525,
+// c=1013904223, m=2^32; products < 2^63 so Int64 is exact), also mirrored.
+// Mirrored by papers/p2_mcts_ref.py.
+
+import std::math::sqrt;
+import std::math::log;
+
+struct MNode {
+    board: Vec<Int32>,
+    player: Int64,
+    visits: Int64,
+    wins: Float64,
+    parent: Int64,
+    kids: Vec<Int64>,
+    tries: Vec<Int64>
+}
+
+struct Lcg { st: Int64 }
+
+fun vec_empty_i64(): Vec<Int64> {
+    val out: Vec<Int64> = vec![];
+    out
+}
+
+fun vec_empty_i32(): Vec<Int32> {
+    val out: Vec<Int32> = vec![];
+    out
+}
+
+fun rng_next(r: Lcg): Lcg {
+    val ns = (r.st * (1664525 as Int64) + (1013904223 as Int64)) % (4294967296 as Int64);
+    Lcg { st: ns }
+}
+
+fun rng_val(r: Lcg): Int64 {
+    r.st
+}
+
+fun board_win(b: &Vec<Int32>): Int64 {
+    var lines: Vec<Vec<Int32>> = vec![];
+    var r0: Vec<Int32> = vec![(0 as Int32), (1 as Int32), (2 as Int32)];
+    var r1: Vec<Int32> = vec![(3 as Int32), (4 as Int32), (5 as Int32)];
+    var r2: Vec<Int32> = vec![(6 as Int32), (7 as Int32), (8 as Int32)];
+    var c0: Vec<Int32> = vec![(0 as Int32), (3 as Int32), (6 as Int32)];
+    var c1: Vec<Int32> = vec![(1 as Int32), (4 as Int32), (7 as Int32)];
+    var c2: Vec<Int32> = vec![(2 as Int32), (5 as Int32), (8 as Int32)];
+    var d0: Vec<Int32> = vec![(0 as Int32), (4 as Int32), (8 as Int32)];
+    var d1: Vec<Int32> = vec![(2 as Int32), (4 as Int32), (6 as Int32)];
+    lines.push(r0);
+    lines.push(r1);
+    lines.push(r2);
+    lines.push(c0);
+    lines.push(c1);
+    lines.push(c2);
+    lines.push(d0);
+    lines.push(d1);
+    var i = 0 as Int64;
+    while (i < lines.len()) {
+        val a = (*b)[lines[i][(0 as Int64)]];
+        val bb = (*b)[lines[i][(1 as Int64)]];
+        val c = (*b)[lines[i][(2 as Int64)]];
+        if (a != (0 as Int32) && a == bb && bb == c) {
+            return a as Int64
+        }
+        i = i + (1 as Int64);
+    }
+    // full board = draw
+    var full = true;
+    i = 0 as Int64;
+    while (i < (9 as Int64)) {
+        if ((*b)[i] == (0 as Int32)) {
+            full = false;
+        }
+        i = i + (1 as Int64);
+    }
+    if (full) { (0 as Int64) } else { ((0 as Int64) - (1 as Int64)) }
+}
+
+fun legal_moves(b: &Vec<Int32>): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < (9 as Int64)) {
+        if ((*b)[i] == (0 as Int32)) {
+            out.push(i);
+        }
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+fun board_set(b: Vec<Int32>, i: Int64, v: Int32): Vec<Int32> {
+    var out: Vec<Int32> = vec![];
+    var j = 0 as Int64;
+    while (j < (9 as Int64)) {
+        if (j == i) {
+            out.push(v)
+        } else {
+            out.push(b[j])
+        }
+        j = j + (1 as Int64);
+    }
+    out
+}
+
+fun other(p: Int64): Int64 {
+    if (p == (1 as Int64)) { (2 as Int64) } else { (1 as Int64) }
+}
+
+struct SelOut { tree: Vec<MNode>, leaf: Int64, rng: Lcg }
+
+fun ucb(w: Float64, n: Int64, npar: Int64): Float64 {
+    w / (n as Float64) + 1.4142135623730951 * sqrt(log(npar as Float64) / (n as Float64))
+}
+
+// descend while fully expanded and nonterminal
+fun select(t: Vec<MNode>, idx: Int64, r: Lcg): SelOut {
+    var tree = t;
+    var cur = idx;
+    var rng = r;
+    var leaf = idx;
+    var done = false;
+    while (!done) {
+        val nd = tget(&tree, cur);
+        if (board_win(&nd.board) != ((0 as Int64) - (1 as Int64))) {
+            leaf = cur;
+            done = true;
+        } else {
+            if (nd.tries.len() > (0 as Int64)) {
+                leaf = cur;
+                done = true;
+            } else {
+                cur = best_child(&tree, nd);
+            }
+        }
+    }
+    SelOut { tree: tree, leaf: leaf, rng: rng }
+}
+
+fun best_child(tree: &Vec<MNode>, nd: MNode): Int64 {
+    // best UCB1 child (first unvisited wins ties by strict >)
+    var best = nd.kids[(0 as Int64)];
+    var bestu = (0.0 - 1.0);
+    var i = 0 as Int64;
+    while (i < nd.kids.len()) {
+        val k = nd.kids[i];
+        val ck = tget(tree, k);
+        val u = if (ck.visits == (0 as Int64)) {
+            1000000.0
+        } else {
+            ucb(ck.wins, ck.visits, nd.visits)
+        };
+        if (u > bestu) {
+            bestu = u;
+            best = k;
+        }
+        i = i + (1 as Int64);
+    }
+    best
+}
+
+fun tget(t: &Vec<MNode>, i: Int64): MNode {
+    match ((*t).get(i)) {
+        Some(n) -> n,
+        None -> MNode {
+            board: vec_empty_i32(), player: 0 as Int64, visits: 0 as Int64, wins: 0.0,
+            parent: (0 as Int64) - (1 as Int64), kids: vec_empty_i64(), tries: vec_empty_i64()
+        },
+    }
+}
+
+fun tset(t: Vec<MNode>, i: Int64, n: MNode): Vec<MNode> {
+    var out: Vec<MNode> = vec![];
+    var j = 0 as Int64;
+    while (j < t.len()) {
+        if (j == i) {
+            out.push(MNode {
+                board: n.board.clone(), player: n.player, visits: n.visits, wins: n.wins,
+                parent: n.parent, kids: n.kids.clone(), tries: n.tries.clone()
+            })
+        } else {
+            out.push(tget(&t, j))
+        }
+        j = j + (1 as Int64);
+    }
+    out
+}
+
+// expand one untried move; returns (tree, child idx)
+struct ExpOut { tree: Vec<MNode>, child: Int64 }
+
+fun expand(t: Vec<MNode>, idx: Int64): ExpOut {
+    var tree = t;
+    val nd = tget(&tree, idx);
+    val nplayer = nd.player;
+    val nvisits = nd.visits;
+    val nwins = nd.wins;
+    val nparent = nd.parent;
+    val kc = nd.kids.clone();
+    val ob = nd.board.clone();
+    val mv = nd.tries[(0 as Int64)];
+    var rest: Vec<Int64> = vec![];
+    var i = 1 as Int64;
+    while (i < nd.tries.len()) {
+        rest.push(nd.tries[i]);
+        i = i + (1 as Int64);
+    }
+    val nb = board_set(nd.board, mv, nplayer as Int32);
+    val nkids = vec_push_i(kc, tree.len());
+    val ntr = legal_moves(&nb);
+    var nnd = MNode {
+        board: ob, player: nplayer, visits: nvisits, wins: nwins,
+        parent: nparent, kids: nkids, tries: rest
+    };
+    tree = tset(tree, idx, nnd);
+    tree.push(MNode {
+        board: nb, player: other(nplayer), visits: 0 as Int64, wins: 0.0,
+        parent: idx, kids: vec_empty_i64(), tries: ntr
+    });
+    // hmm: child tries must be empty if terminal; legal_moves of terminal is empty anyway
+    val nlen = tree.len();
+    ExpOut { tree: tree, child: nlen - (1 as Int64) }
+}
+
+fun vec_push_i(v: Vec<Int64>, x: Int64): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        out.push(v[i]);
+        i = i + (1 as Int64);
+    }
+    out.push(x);
+    out
+}
+
+// random playout from node idx; returns winner (1/2/0 draw)
+struct SimOut { winner: Int64, rng: Lcg }
+
+fun simulate(t: &Vec<MNode>, idx: Int64, r: Lcg): SimOut {
+    val nd = tget(t, idx);
+    var b = nd.board.clone();
+    var p = nd.player;
+    var rng = r;
+    loop {
+        val w = board_win(&b);
+        if (w != ((0 as Int64) - (1 as Int64))) {
+            break SimOut { winner: w, rng: rng }
+        }
+        val ms = legal_moves(&b);
+        rng = rng_next(rng);
+        val pick = rng_val(rng) % ms.len();
+        // LCG state may be negative? st in [0, 2^32): nonneg. pick >= 0.
+        b = board_set(b, ms[pick], p as Int32);
+        p = other(p);
+    }
+}
+
+fun backprop(t: Vec<MNode>, idx: Int64, winner: Int64): Vec<MNode> {
+    var tree = t;
+    var cur = idx;
+    while (cur != ((0 as Int64) - (1 as Int64))) {
+        var nd = tget(&tree, cur);
+        nd.visits = nd.visits + (1 as Int64);
+        if (winner == (0 as Int64)) {
+            nd.wins = nd.wins + 0.5;
+        } else {
+            if (winner == nd.player) {
+                nd.wins = nd.wins + 1.0;
+            }
+        }
+        val par = nd.parent;
+        tree = tset(tree, cur, nd);
+        cur = par;
+    }
+    tree
+}
+
+fun main() {
+    var bd: Vec<Int32> = vec![];
+    var i = 0 as Int64;
+    while (i < (9 as Int64)) {
+        bd.push(0 as Int32);
+        i = i + (1 as Int64);
+    }
+    var tree: Vec<MNode> = vec![];
+    var tk: Vec<Int64> = vec![];
+    val tr0 = legal_moves(&bd);
+    tree.push(MNode { board: bd, player: 1 as Int64, visits: 0 as Int64, wins: 0.0, parent: (0 as Int64) - (1 as Int64), kids: tk, tries: tr0 });
+    var rng = Lcg { st: 12345 as Int64 };
+    var it = 0 as Int64;
+    while (it < (2000 as Int64)) {
+        val s = select(tree, 0 as Int64, rng);
+        val sleaf = s.leaf;
+        val srng = s.rng;
+        tree = s.tree;
+        rng = srng;
+        val leaf = tget(&tree, sleaf);
+        if (board_win(&leaf.board) == ((0 as Int64) - (1 as Int64)) && leaf.tries.len() > (0 as Int64)) {
+            val e = expand(tree, sleaf);
+            val echild = e.child;
+            tree = e.tree;
+            val sm = simulate(&tree, echild, rng);
+            val smw = sm.winner;
+            rng = sm.rng;
+            tree = backprop(tree, echild, smw);
+        } else {
+            val sm = simulate(&tree, sleaf, rng);
+            val smw = sm.winner;
+            rng = sm.rng;
+            tree = backprop(tree, sleaf, smw);
+        }
+        it = it + (1 as Int64);
+    }
+    // best move = most visits
+    val root = tget(&tree, 0 as Int64);
+    var best = root.kids[(0 as Int64)];
+    var bestv = (0 as Int64) - (1 as Int64);
+    i = 0 as Int64;
+    while (i < root.kids.len()) {
+        val k = root.kids[i];
+        val ck = tget(&tree, k);
+        if (ck.visits > bestv) {
+            bestv = ck.visits;
+            best = k;
+        }
+        i = i + (1 as Int64);
+    }
+    // recover the move: which cell differs from empty board
+    val bn = tget(&tree, best);
+    var mv = 0 as Int64;
+    i = 0 as Int64;
+    while (i < (9 as Int64)) {
+        if (bn.board[i] != (0 as Int32)) {
+            mv = i;
+        }
+        i = i + (1 as Int64);
+    }
+    println(mv);
+    println(root.visits);
+    println(root.wins);
+}

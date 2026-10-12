@@ -1,0 +1,183 @@
+// papers/p2_pairheap.valvet
+// Pairing heap after Fredman, Sleator, Tarjan, Thurston ("Pairing Heaps: A
+// New Variant of Heaps", 1986) in Okasaki's presentation, following
+// papers/p2_pairheap.fs (FSharpx PriorityQueue: HeapData T(x, children),
+// meld smaller-root-wins with loser prepended to the winner's children,
+// delete-min via two-pass pairing). Min-heap over Int64.
+//
+// Valvet mapping (first-order, no closures): arena Vec<PNode> with Int64
+// child/next indices (-1 = none); Heap { arena, root }. delete_min does
+// the classic two passes: pair children left-to-right, then accumulate the
+// paired results right-to-left. Deterministic op script below is mirrored
+// by papers/p2_pairheap_ref.py (heapq).
+
+struct PNode { key: Int64, child: Int64, next: Int64 }
+
+struct Heap { arena: Vec<PNode>, root: Int64 }
+
+
+fun pget(a: &Vec<PNode>, t: Int64): PNode {
+    match ((*a).get(t)) {
+        Some(n) -> n,
+        None -> PNode { key: (0 as Int64), child: (0 as Int64) - (1 as Int64), next: (0 as Int64) - (1 as Int64) },
+    }
+}
+
+fun pset(a: Vec<PNode>, t: Int64, n: PNode): Vec<PNode> {
+    var out: Vec<PNode> = vec![];
+    var i = 0 as Int64;
+    while (i < a.len()) {
+        if (i == t) {
+            out.push(PNode { key: n.key, child: n.child, next: n.next });
+        } else {
+            out.push(pget(&a, i));
+        }
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+struct HOut { heap: Heap, idx: Int64 }
+
+fun heap_empty(): Heap {
+    var a: Vec<PNode> = vec![];
+    Heap { arena: a, root: (0 as Int64) - (1 as Int64) }
+}
+
+fun meld_into(h: Heap, a: Int64, b: Int64): HOut {
+    if (a == (0 as Int64) - (1 as Int64)) {
+        meld_setroot(h, b)
+    } else {
+        if (b == (0 as Int64) - (1 as Int64)) {
+            meld_setroot(h, a)
+        } else {
+            meld_rest(h, a, b)
+        }
+    }
+}
+
+fun meld_setroot(h: Heap, r: Int64): HOut {
+    val arena = h.arena;
+    HOut { heap: Heap { arena: arena, root: r }, idx: r }
+}
+
+fun meld_rest(h: Heap, a: Int64, b: Int64): HOut {
+    var arena = h.arena.clone();
+    val ka = pget(&arena, a).key;
+    val kb = pget(&arena, b).key;
+    if (ka <= kb) {
+        var nb = pget(&arena, b);
+        var na = pget(&arena, a);
+        nb.next = na.child;
+        arena = pset(arena, b, nb);
+        na.child = b;
+        arena = pset(arena, a, na);
+        HOut { heap: Heap { arena: arena, root: a }, idx: a }
+    } else {
+        var nb = pget(&arena, b);
+        var na = pget(&arena, a);
+        na.next = nb.child;
+        arena = pset(arena, a, na);
+        nb.child = a;
+        arena = pset(arena, b, nb);
+        HOut { heap: Heap { arena: arena, root: b }, idx: b }
+    }
+}
+
+fun heap_insert(h: Heap, key: Int64): Heap {
+    var arena = h.arena.clone();
+    arena.push(PNode { key: key, child: (0 as Int64) - (1 as Int64), next: (0 as Int64) - (1 as Int64) });
+    val idx = arena.len() - (1 as Int64);
+    val o = meld_into(Heap { arena: arena, root: h.root }, h.root, idx);
+    val oidx = o.idx;
+    val oarena = o.heap.arena;
+    Heap { arena: oarena, root: oidx }
+}
+
+fun heap_min(h: &Heap): Int64 {
+    if ((*h).root == (0 as Int64) - (1 as Int64)) {
+        return (0 as Int64) - (1 as Int64)
+    }
+    pget(&(*h).arena, (*h).root).key
+}
+
+// Pair a sibling list left-to-right into melded pairs.
+fun pair_all(h: Heap, first: Int64): HOut {
+    if (first == (0 as Int64) - (1 as Int64)) {
+        HOut { heap: h, idx: (0 as Int64) - (1 as Int64) }
+    } else {
+        val ar = h.arena.clone();
+        val second = pget(&ar, first).next;
+        if (second == (0 as Int64) - (1 as Int64)) {
+            HOut { heap: h, idx: first }
+        } else {
+            pair_rest(h, ar, first, second)
+        }
+    }
+}
+
+fun pair_rest(h: Heap, ar: Vec<PNode>, first: Int64, second: Int64): HOut {
+    val rest = pget(&ar, second).next;
+    // detach the pair
+    var arena = h.arena.clone();
+    var n1 = pget(&arena, first);
+    n1.next = (0 as Int64) - (1 as Int64);
+    arena = pset(arena, first, n1);
+    var n2 = pget(&arena, second);
+    n2.next = (0 as Int64) - (1 as Int64);
+    arena = pset(arena, second, n2);
+    val o = meld_into(Heap { arena: arena, root: (0 as Int64) - (1 as Int64) }, first, second);
+    val oidx = o.idx;
+    val r = pair_all(o.heap, rest);
+    val ridx = r.idx;
+    val rheap = r.heap;
+    meld_into(rheap, oidx, ridx)
+}
+
+struct ExtOut { heap: Heap, min: Int64 }
+
+fun heap_pop(h: Heap): ExtOut {
+    if (h.root == (0 as Int64) - (1 as Int64)) {
+        ExtOut { heap: h, min: (0 as Int64) - (1 as Int64) }
+    } else {
+        heap_pop_nonempty(h)
+    }
+}
+
+fun heap_pop_nonempty(h: Heap): ExtOut {
+    val min = pget(&h.arena, h.root).key;
+    val kids = pget(&h.arena, h.root).child;
+    val o = pair_all(h, kids);
+    val oidx = o.idx;
+    val oarena = o.heap.arena;
+    ExtOut { heap: Heap { arena: oarena, root: oidx }, min: min }
+}
+
+fun main() {
+    // op script: positive = insert, -1 = pop-min, -2 = peek-min.
+    val ops: Vec<Int64> = vec![
+        (5 as Int64), (3 as Int64), (8 as Int64), (-2 as Int64), (1 as Int64), (9 as Int64),
+        (-1 as Int64), (-1 as Int64), (4 as Int64), (7 as Int64), (2 as Int64), (-2 as Int64),
+        (-1 as Int64), (-1 as Int64), (-1 as Int64), (-1 as Int64), (-1 as Int64), (-1 as Int64),
+        (10 as Int64), (-2 as Int64), (-1 as Int64), (-1 as Int64), (6 as Int64), (6 as Int64),
+        (-1 as Int64), (-1 as Int64), (-1 as Int64)
+    ];
+    var h = heap_empty();
+    var i = 0 as Int64;
+    while (i < ops.len()) {
+        val op = ops[i];
+        if (op == (0 as Int64) - (1 as Int64)) {
+            val o = heap_pop(h);
+            val omin = o.min;
+            h = o.heap;
+            println(omin);
+        } else {
+            if (op == (0 as Int64) - (2 as Int64)) {
+                println(heap_min(&h));
+            } else {
+                h = heap_insert(h, op);
+            }
+        }
+        i = i + (1 as Int64);
+    }
+}

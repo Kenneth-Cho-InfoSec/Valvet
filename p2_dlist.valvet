@@ -1,0 +1,170 @@
+// papers/p2_dlist.valvet
+// Difference lists after Hughes ("A Novel Representation of Lists and its
+// Application to the Function 'reverse'", 1984) and FSharpx
+// (papers/p2_dlist.fs: DListData Nil/Unit/Join, O(1) append via Join,
+// toList via foldBack).
+//
+// Valvet has no function values, so the Hughes function-composition
+// representation is specialised to first-order data: struct DList holds
+// two Vecs. `front` keeps the head side REVERSED (its end is the head, so
+// cons is Vec push) and `back` keeps the tail side in order (its end is
+// the tail, so snoc is Vec push); logical contents are
+// reverse(front) ++ back. (A literal front ++ reverse(back) with
+// push-based snoc would prepend instead of append, so the deque-style
+// orientation from papers/deque.valvet is used; append still amortises
+// the snoc-side pushes.) Hughes laws (append associativity, empty
+// identity, cons/snoc vs append agreement) are checked by the
+// deterministic script in main and mirrored by papers/p2_dlist_ref.py.
+
+struct DList { front: Vec<Int64>, back: Vec<Int64> }
+
+fun dlist_empty(): DList {
+    var f: Vec<Int64> = vec![];
+    var b: Vec<Int64> = vec![];
+    DList { front: f, back: b }
+}
+
+fun dlist_singleton(x: Int64): DList {
+    var f: Vec<Int64> = vec![];
+    f.push(x);
+    var b: Vec<Int64> = vec![];
+    DList { front: f, back: b }
+}
+
+fun dlist_clone(d: &DList): DList {
+    DList { front: (*d).front.clone(), back: (*d).back.clone() }
+}
+
+fun dlist_len(d: &DList): Int64 {
+    (*d).front.len() + (*d).back.len()
+}
+
+fun dlist_is_empty(d: &DList): Bool {
+    dlist_len(d) == (0 as Int64)
+}
+
+fun reverse_vec(v: Vec<Int64>): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var j = v.len();
+    while (j > (0 as Int64)) {
+        j = j - (1 as Int64);
+        out.push(v[j]);
+    }
+    out
+}
+
+// toList (F# `toList` via foldBack): reverse(front) ++ back.
+fun dlist_tolist(d: &DList): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var j = (*d).front.len();
+    while (j > (0 as Int64)) {
+        j = j - (1 as Int64);
+        out.push((*d).front[j]);
+    }
+    var i = 0 as Int64;
+    while (i < (*d).back.len()) {
+        out.push((*d).back[i]);
+        i = i + (1 as Int64);
+    }
+    out
+}
+
+// cons (F# `cons`): O(1) push onto the reversed head side.
+fun dlist_cons(x: Int64, d: DList): DList {
+    var nf = d.front.clone();
+    nf.push(x);
+    DList { front: nf, back: d.back.clone() }
+}
+
+// snoc (F# `conj`): O(1) amortised push onto the tail side.
+fun dlist_snoc(d: DList, x: Int64): DList {
+    var nb = d.back.clone();
+    nb.push(x);
+    DList { front: d.front.clone(), back: nb }
+}
+
+// append (F# `append`/`appendLists`): logical concatenation; the head
+// part stays reversed-head, the tail part stays ordered-tail.
+fun dlist_append(a: DList, b: DList): DList {
+    val la = dlist_tolist(&a);
+    val lb = dlist_tolist(&b);
+    DList { front: reverse_vec(la), back: lb }
+}
+
+fun veceq(a: &Vec<Int64>, b: &Vec<Int64>): Bool {
+    if ((*a).len() != (*b).len()) {
+        return false
+    }
+    var i = 0 as Int64;
+    while (i < (*a).len()) {
+        if ((*a)[i] != (*b)[i]) {
+            return false
+        }
+        i = i + (1 as Int64);
+    }
+    true
+}
+
+fun boolint(b: Bool): Int64 {
+    if (b) { 1 as Int64 } else { 0 as Int64 }
+}
+
+fun main() {
+    // a = [1,2,3] via snoc, b = [4,5,6] via cons, c = [7,8] mixed.
+    var a = dlist_empty();
+    a = dlist_snoc(a, 1 as Int64);
+    a = dlist_snoc(a, 2 as Int64);
+    a = dlist_snoc(a, 3 as Int64);
+    var b = dlist_singleton(6 as Int64);
+    b = dlist_cons(5 as Int64, b);
+    b = dlist_cons(4 as Int64, b);
+    var c = dlist_singleton(7 as Int64);
+    c = dlist_snoc(c, 8 as Int64);
+    println(dlist_tolist(&a));
+    println(dlist_tolist(&b));
+    println(dlist_tolist(&c));
+    println(to_string(dlist_len(&a)) + " " + to_string(dlist_len(&b)) + " " + to_string(dlist_len(&c)));
+    // Hughes law 1: append associativity ((a+b)+c == a+(b+c)).
+    val ab = dlist_append(dlist_clone(&a), dlist_clone(&b));
+    val bc = dlist_append(dlist_clone(&b), dlist_clone(&c));
+    val lhs = dlist_append(ab, dlist_clone(&c));
+    val rhs = dlist_append(dlist_clone(&a), bc);
+    val lt = dlist_tolist(&lhs);
+    val rt = dlist_tolist(&rhs);
+    println(lt);
+    println(boolint(veceq(&lt, &rt)));
+    // Hughes law 2: empty identity (a+empty == a, empty+a == a).
+    val e = dlist_empty();
+    val t1 = dlist_append(dlist_clone(&a), dlist_empty());
+    val l1 = dlist_tolist(&t1);
+    val t2 = dlist_append(dlist_empty(), dlist_clone(&a));
+    val l2 = dlist_tolist(&t2);
+    val la = dlist_tolist(&a);
+    println(boolint(veceq(&l1, &la) && veceq(&l2, &la)));
+    println(boolint(dlist_is_empty(&e)));
+    // cons/snoc agree with singleton-append (F# cons/conj laws).
+    val tc = dlist_cons(0 as Int64, dlist_clone(&a));
+    val lc = dlist_tolist(&tc);
+    val rc0 = dlist_append(dlist_singleton(0 as Int64), dlist_clone(&a));
+    val rc = dlist_tolist(&rc0);
+    println(boolint(veceq(&lc, &rc)));
+    val ts = dlist_snoc(dlist_clone(&a), 9 as Int64);
+    val ls = dlist_tolist(&ts);
+    val rs0 = dlist_append(dlist_clone(&a), dlist_singleton(9 as Int64));
+    val rs = dlist_tolist(&rs0);
+    println(boolint(veceq(&ls, &rs)));
+    // Longer scripted snoc build 1..10 then append.
+    var d = dlist_empty();
+    var k = 1 as Int64;
+    while (k <= (10 as Int64)) {
+        d = dlist_snoc(d, k);
+        k = k + (1 as Int64);
+    }
+    println(dlist_tolist(&d));
+    println(to_string(dlist_len(&d)));
+    val ab2 = dlist_append(dlist_clone(&a), dlist_clone(&b));
+    val cd = dlist_append(dlist_clone(&c), d);
+    val big = dlist_append(ab2, cd);
+    println(dlist_tolist(&big));
+    println(to_string(dlist_len(&big)));
+}

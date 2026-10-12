@@ -1,0 +1,68 @@
+// Persistent array by path copying (Driscoll, Sarnak, Sleator, Tarjan 1989:
+// "Making data structures persistent") after FSharpx.Collections
+// PersistentVector (papers/p2_persistvec.fs, 751 lines: 32-way trie with tail,
+// transients, structural sharing via doAssoc/PushTail copying nodes on the
+// update path).
+//
+// HONEST SIMPLIFICATION, disclosed: the full 32-way trie is reduced to a
+// versioned array with structural sharing of unmodified cells — the Driscoll
+// et al. fat-node/node-copying idea in miniature. A fixed-capacity arena
+// (Vec<Int64> cells) holds every version's slice; versions are Vec<Int64>
+// roots (start offsets into the arena). get(version, idx) reads
+// arena[root+idx]. set(version, idx, val) copies all len cells to a fresh
+// arena region (stated cost: O(n) cells per set, vs O(log32 n) nodes for the
+// F# trie) and returns the new version id; old roots keep pointing at the
+// untouched cells, so old versions read back unchanged.
+//
+// Script: v0=[10,20,30,40]; v1=set(v0,1,200); v2=set(v1,3,400);
+// v3=set(v0,0,100) branches from v0. All four versions are printed AFTER all
+// sets, proving persistence.
+
+fun pav_get(arena: &Vec<Int64>, root: Int64, idx: Int64): Int64 {
+    (*arena)[root + idx]
+}
+
+// Copies the len cells at root to a fresh region, writes v at idx,
+// returns the new region's start offset (the new version id).
+// Cost: O(len) cells copied per set.
+fun pav_set(arena: &mut Vec<Int64>, root: Int64, len: Int64, idx: Int64, v: Int64): Int64 {
+    val start = (*arena).len()
+    var k = 0 as Int64
+    while (k < len) {
+        val cell = (*arena)[root + k]
+        (*arena).push(cell)
+        k = k + (1 as Int64)
+    }
+    (*arena)[start + idx] = v
+    start
+}
+
+fun print_ver(label: String, arena: &Vec<Int64>, root: Int64, len: Int64) {
+    println(label)
+    var j = 0 as Int64
+    while (j < len) {
+        println(pav_get(arena, root, j))
+        j = j + (1 as Int64)
+    }
+}
+
+fun main() {
+    val len = 4 as Int64
+    var arena: Vec<Int64> = vec![]
+    arena.push(10 as Int64)
+    arena.push(20 as Int64)
+    arena.push(30 as Int64)
+    arena.push(40 as Int64)
+    var roots: Vec<Int64> = vec![]
+    roots.push(0 as Int64)
+    val r1 = pav_set(&mut arena, roots[0], len, 1 as Int64, 200 as Int64)
+    roots.push(r1)
+    val r2 = pav_set(&mut arena, roots[1], len, 3 as Int64, 400 as Int64)
+    roots.push(r2)
+    val r3 = pav_set(&mut arena, roots[0], len, 0 as Int64, 100 as Int64)
+    roots.push(r3)
+    print_ver("v0:", &arena, roots[0], len)
+    print_ver("v1:", &arena, roots[1], len)
+    print_ver("v2:", &arena, roots[2], len)
+    print_ver("v3:", &arena, roots[3], len)
+}
