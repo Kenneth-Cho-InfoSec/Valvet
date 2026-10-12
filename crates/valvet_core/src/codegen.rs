@@ -4150,9 +4150,12 @@ impl<'a> Gen<'a> {
                     self.nulls
                         .push((ok_path.replace(".u.v0.", ".u.v1."), ety.clone()));
                     self.flush_nulls();
-                    while !self.tmp_frames.is_empty() {
-                        self.pop_frame();
-                    }
+                    // Free without popping: popping here would orphan the
+                    // success path's statement-end cleanup (same bug class
+                    // as `return` before `destroy_all_temps` existed —
+                    // a `?` call with materialized arg temps leaked them
+                    // on success). Exactly one runtime path runs.
+                    self.destroy_all_temps();
                     self.emit_all_frees();
                     let frct = self.cty(&fret);
                     let emember = cmember(1);
@@ -4163,9 +4166,8 @@ impl<'a> Gen<'a> {
                     ));
                 } else {
                     // Option: no payload to move; return None of fn type.
-                    while !self.tmp_frames.is_empty() {
-                        self.pop_frame();
-                    }
+                    // (Free without popping, as above.)
+                    self.destroy_all_temps();
                     self.emit_all_frees();
                     let frct = self.cty(&fret);
                     self.out

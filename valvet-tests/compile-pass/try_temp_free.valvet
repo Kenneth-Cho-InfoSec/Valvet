@@ -1,0 +1,24 @@
+// `?` on a call with a materialized argument temp (`csv.clone()`)
+// must free the temp on the success path (was a leak: the `Try`
+// emitter popped all frames at compile time on the Err branch,
+// orphaning success-path cleanup).
+fun need_two(v: Vec<String>): Result<String, String> {
+    if (v.len() < (2 as Int64)) {
+        return Err("need two");
+    }
+    return Ok(v[1]);
+}
+
+fun second_of(csv: String): Result<String, String> {
+    val rows = csv_rows(csv.clone(), true)?;
+    return Ok(need_two(rows[0])?);
+}
+
+fun show(csv: String): String {
+    match (second_of(csv)) { Ok(v) -> v, Err(e) -> "err", }
+}
+
+fun main() {
+    println(show("a,b\nc,d\n"));
+    println(show("a\n"));
+}
