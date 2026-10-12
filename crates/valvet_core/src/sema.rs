@@ -5131,19 +5131,3 @@ fn can_cast(from: &Ty, to: &Ty) -> bool {
             | (Float64, Int64)
     )
 }
-
-fn stmt_span(s: &Stmt) -> Span {
-    match s {
-        Stmt::Val { span, .. }
-        | Stmt::Var { span, .. }
-        | Stmt::Expr { span, .. }
-        | Stmt::If { span, .. }
-        | Stmt::While { span, .. }
-        | Stmt::For { span, .. }
-        | Stmt::Loop { span, .. }
-        | Stmt::Break { span, .. }
-        | Stmt::Continue { span, .. }
-        | Stmt::Match { span, .. }
-        | Stmt::Return { span, .. } => *span,
-    }
-}

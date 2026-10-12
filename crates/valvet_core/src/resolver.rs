@@ -72,6 +72,10 @@ impl Crate {
             funs,
             structs,
             enums,
+            // Script synthesis already ran per unit in `load_unit`
+            // (entry `top` became `main`; anything else errored).
+            top: vec![],
+            mode: crate::ast::Mode::Auto,
             span,
         }
     }
@@ -228,6 +232,36 @@ impl Loader {
                 }
             }
         };
+        // Script mode is entry-only. Imported files hold items; a mode
+        // header or top-level statements there is E0604. The entry's
+        // top-level statements become a synthesized `fun main` (dummy
+        // ids — `renumber` reassigns every id before sema).
+        if !expected.is_empty() {
+            if program.mode != crate::ast::Mode::Auto {
+                self.errs.push(
+                    Diagnostic::error(
+                        "E0604",
+                        program.span,
+                        "only the entry file may declare `mode`",
+                    )
+                    .with_file(display),
+                );
+                return Err(());
+            }
+            if !program.top.is_empty() {
+                self.errs.push(
+                    Diagnostic::error(
+                        "E0604",
+                        crate::ast::stmt_span(&program.top[0]),
+                        "top-level statements are entry-only (imported files hold items)",
+                    )
+                    .with_file(display),
+                );
+                return Err(());
+            }
+        } else if !apply_entry_script(&mut program, display, &mut self.errs) {
+            return Err(());
+        }
         // Stamp ownership before recursing (sema reads these, not the parser).
         for f in program.funs.iter_mut() {
             f.module = module.clone();
@@ -327,6 +361,261 @@ fn normalize(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// Validate one entry program's script mode and synthesize `fun main`
+/// from its top-level statements (dummy ids — the caller runs `renumber`
+/// before sema). Returns false with an `E0604` diagnostic when statements
+/// meet a user `main`.
+pub fn apply_entry_script(
+    program: &mut Program,
+    display: &str,
+    errs: &mut Vec<Diagnostic>,
+) -> bool {
+    if program.top.is_empty() {
+        return true;
+    }
+    if let Some(m) = program.funs.iter().find(|f| f.name == "main") {
+        errs.push(
+            Diagnostic::error(
+                "E0604",
+                m.name_span,
+                "entry has both top-level statements and `fun main` (ambiguous entry)",
+            )
+            .with_help("delete one: statements run as the program, or keep `fun main` alone")
+            .with_file(display),
+        );
+        return false;
+    }
+    let ret = script_ret(&program.top);
+    let span = program.span;
+    // Result carriers need a value on fallthrough: scripts end with an
+    // implicit `return Ok(0)` (skipped when the last statement already
+    // returns). Int32/Unit mains fall through to `return 0` in codegen.
+    if matches!(
+        ret,
+        crate::ast::Ty::Generic { ref base, .. } if base == "Result"
+    ) && !matches!(program.top.last(), Some(crate::ast::Stmt::Return { .. }))
+    {
+        program.top.push(crate::ast::Stmt::Return {
+            id: 0,
+            value: Some(crate::ast::Expr {
+                id: 0,
+                kind: crate::ast::ExprKind::Call {
+                    name: "Ok".to_string(),
+                    args: vec![crate::ast::Expr {
+                        id: 0,
+                        kind: crate::ast::ExprKind::Int(0),
+                        span,
+                    }],
+                },
+                span,
+            }),
+            span,
+        });
+    }
+    program.funs.push(crate::ast::FunDecl {
+        id: 0,
+        name: "main".to_string(),
+        name_span: span,
+        params: vec![],
+        ret,
+        ret_span: span,
+        ret_unit: None,
+        body: crate::ast::Block {
+            id: 0,
+            stmts: std::mem::take(&mut program.top),
+            tail: None,
+            span,
+        },
+        span,
+        module: String::new(),
+        is_pub: false,
+    });
+    true
+}
+
+/// Synthesized `main` return for top-level statements: `Result<Int32,
+/// String>` when any `?` occurs (propagation needs a matching carrier),
+/// else `Int32` for a valued `return`, else `Unit` (bare `return;` and
+/// plain statements; fallthrough exits 0 like a Unit main).
+fn script_ret(top: &[crate::ast::Stmt]) -> crate::ast::Ty {
+    let mut saw_try = false;
+    let mut saw_ret_val = false;
+    for s in top {
+        scan_stmt(s, &mut saw_try, &mut saw_ret_val);
+    }
+    if saw_try {
+        crate::ast::Ty::Generic {
+            base: "Result".to_string(),
+            args: vec![crate::ast::Ty::Int32, crate::ast::Ty::Str],
+        }
+    } else if saw_ret_val {
+        crate::ast::Ty::Int32
+    } else {
+        crate::ast::Ty::Unit
+    }
+}
+
+fn scan_block(b: &crate::ast::Block, saw_try: &mut bool, saw_ret_val: &mut bool) {
+    for s in &b.stmts {
+        scan_stmt(s, saw_try, saw_ret_val);
+    }
+    if let Some(t) = &b.tail {
+        scan_expr(t, saw_try, saw_ret_val);
+    }
+}
+
+fn scan_stmt(s: &crate::ast::Stmt, saw_try: &mut bool, saw_ret_val: &mut bool) {
+    use crate::ast::Stmt::*;
+    match s {
+        Val { init, .. } | Var { init, .. } => scan_expr(init, saw_try, saw_ret_val),
+        Expr { expr, .. } => scan_expr(expr, saw_try, saw_ret_val),
+        If {
+            cond,
+            then_b,
+            else_b,
+            ..
+        } => {
+            scan_expr(cond, saw_try, saw_ret_val);
+            scan_block(then_b, saw_try, saw_ret_val);
+            if let Some(b) = else_b {
+                scan_block(b, saw_try, saw_ret_val);
+            }
+        }
+        Match {
+            scrutinee, arms, ..
+        } => {
+            scan_expr(scrutinee, saw_try, saw_ret_val);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    scan_expr(g, saw_try, saw_ret_val);
+                }
+                scan_block(&a.body, saw_try, saw_ret_val);
+            }
+        }
+        While { cond, body, .. } => {
+            scan_expr(cond, saw_try, saw_ret_val);
+            scan_block(body, saw_try, saw_ret_val);
+        }
+        For { iter, body, .. } => {
+            match iter {
+                crate::ast::ForIter::Range { lo, hi, .. } => {
+                    scan_expr(lo, saw_try, saw_ret_val);
+                    scan_expr(hi, saw_try, saw_ret_val);
+                }
+                crate::ast::ForIter::Each { vec, .. } => scan_expr(vec, saw_try, saw_ret_val),
+            }
+            scan_block(body, saw_try, saw_ret_val);
+        }
+        Loop { body, .. } => scan_block(body, saw_try, saw_ret_val),
+        Break { value, .. } => {
+            if let Some(v) = value {
+                scan_expr(v, saw_try, saw_ret_val);
+            }
+        }
+        Continue { .. } => {}
+        Return { value, .. } => {
+            if value.is_some() {
+                *saw_ret_val = true;
+            }
+            if let Some(v) = value {
+                scan_expr(v, saw_try, saw_ret_val);
+            }
+        }
+    }
+}
+
+fn scan_expr(e: &crate::ast::Expr, saw_try: &mut bool, saw_ret_val: &mut bool) {
+    use crate::ast::ExprKind::*;
+    match &e.kind {
+        Int(_) | Float(_) | Bool(_) | Str(_) | Var(_) => {}
+        Call { args, .. } => {
+            for a in args {
+                scan_expr(a, saw_try, saw_ret_val);
+            }
+        }
+        Binary { lhs, rhs, .. } => {
+            scan_expr(lhs, saw_try, saw_ret_val);
+            scan_expr(rhs, saw_try, saw_ret_val);
+        }
+        Unary { expr, .. }
+        | Cast { expr, .. }
+        | AsUnit { expr, .. }
+        | AddrOf { expr, .. }
+        | Field { base: expr, .. }
+        | OptField { base: expr, .. } => scan_expr(expr, saw_try, saw_ret_val),
+        Index { base, idx, .. } => {
+            scan_expr(base, saw_try, saw_ret_val);
+            scan_expr(idx, saw_try, saw_ret_val);
+        }
+        Assign { target, value, .. } => {
+            scan_place(target, saw_try, saw_ret_val);
+            scan_expr(value, saw_try, saw_ret_val);
+        }
+        If {
+            cond,
+            then_b,
+            else_b,
+            ..
+        } => {
+            scan_expr(cond, saw_try, saw_ret_val);
+            scan_block(then_b, saw_try, saw_ret_val);
+            if let Some(b) = else_b {
+                scan_block(b, saw_try, saw_ret_val);
+            }
+        }
+        Match {
+            scrutinee, arms, ..
+        } => {
+            scan_expr(scrutinee, saw_try, saw_ret_val);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    scan_expr(g, saw_try, saw_ret_val);
+                }
+                scan_block(&a.body, saw_try, saw_ret_val);
+            }
+        }
+        Loop { body, .. } => scan_block(body, saw_try, saw_ret_val),
+        Try { expr } => {
+            *saw_try = true;
+            scan_expr(expr, saw_try, saw_ret_val);
+        }
+        StructLit { fields, .. } => {
+            for (_, _, f) in fields {
+                scan_expr(f, saw_try, saw_ret_val);
+            }
+        }
+        VecMacro { elems, .. } => {
+            for el in elems {
+                scan_expr(el, saw_try, saw_ret_val);
+            }
+        }
+        Method { receiver, args, .. } => {
+            scan_expr(receiver, saw_try, saw_ret_val);
+            for a in args {
+                scan_expr(a, saw_try, saw_ret_val);
+            }
+        }
+        Variant { args, .. } => {
+            for a in args {
+                scan_expr(a, saw_try, saw_ret_val);
+            }
+        }
+    }
+}
+
+fn scan_place(p: &crate::ast::Place, saw_try: &mut bool, saw_ret_val: &mut bool) {
+    match p {
+        crate::ast::Place::Var(_, _) => {}
+        crate::ast::Place::Field { base, .. } | crate::ast::Place::Deref { inner: base, .. } => {
+            scan_place(base, saw_try, saw_ret_val)
+        }
+        crate::ast::Place::Index { base, idx, .. } => {
+            scan_place(base, saw_try, saw_ret_val);
+            scan_expr(idx, saw_try, saw_ret_val);
+        }
+    }
 }
 
 /// Assign globally-unique `NodeId`s across a joint program. Each source unit

@@ -22,7 +22,15 @@ pub fn parse_unit(source: &Source) -> Result<Program, Vec<Diagnostic>> {
 /// Single-source mode: `import` declarations are rejected (E0701 — imports
 /// need file-based compilation via `front_end_file`).
 pub fn front_end(source: &Source) -> Result<Checked, Vec<Diagnostic>> {
-    let prog = parse_unit(source)?;
+    let mut prog = parse_unit(source)?;
+    // Single-source is always the entry: same script-mode synthesis as
+    // the file pipeline, then the same id renumbering (synthesis uses
+    // placeholder ids).
+    let mut derrs = vec![];
+    if !crate::resolver::apply_entry_script(&mut prog, &source.name, &mut derrs) {
+        return Err(derrs);
+    }
+    crate::resolver::renumber(&mut prog);
     if !prog.imports.is_empty() {
         let imp = &prog.imports[0];
         return Err(vec![Diagnostic::error(

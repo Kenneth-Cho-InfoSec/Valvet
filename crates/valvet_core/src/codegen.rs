@@ -2805,7 +2805,16 @@ impl<'a> Gen<'a> {
             self.out.push_str("} else {\n");
             // Err payload (if any) must be destroyed before exiting — but only
             // when it needs dropping (all-Copy instantiations emit no helper).
+            // String payloads also print to stderr first, so `?`-to-exit in
+            // scripts (and `main` generally) shows the message instead of
+            // failing silently.
             if self.type_needs_drop(&f.ret) {
+                if matches!(&f.ret, Ty::Generic { base, args } if base == "Result" && args.len() == 2 && args[1] == Ty::Str)
+                {
+                    self.out.push_str(
+                        "if (_vr.u.v1.v___0.s && _vr.u.v1.v___0.len > 0) { fprintf(stderr, \"%.*s\\n\", (int)_vr.u.v1.v___0.len, _vr.u.v1.v___0.s); }\n",
+                    );
+                }
                 self.out.push_str(&format!(
                     "v_drop_{}(&_vr); return 1; }}\n}}\n",
                     rct.strip_prefix('V').unwrap_or(&rct)

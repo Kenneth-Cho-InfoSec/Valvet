@@ -1,0 +1,4 @@
+println(1);
+fun main() {
+    println(2);
+}

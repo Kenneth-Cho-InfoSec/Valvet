@@ -109,7 +109,8 @@ fn cmd_new(name: Option<&str>) -> i32 {
         return 1;
     }
     let main = dir.join("main.valvet");
-    let template = "fun main() {
+    let template = "mode exp;
+fun main() {
     print(42)
 }
 ";

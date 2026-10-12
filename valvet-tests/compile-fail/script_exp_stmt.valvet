@@ -1,0 +1,2 @@
+mode exp;
+println(1);

@@ -849,3 +849,20 @@ fn recursive_type_through_vec_rejected() {
     let codes = check_codes("struct S { v: Vec<S> }\nfun main() {\n println(1)\n}\n");
     assert!(codes.contains(&"E0201"), "{:?}", codes);
 }
+
+#[test]
+fn script_top_level_accepted_single_source() {
+    check_ok("val x = 40 + 2;\nprintln(x);\n");
+}
+
+#[test]
+fn script_exp_header_rejects_statements() {
+    let codes = check_codes("mode exp;\nprintln(1);\n");
+    assert!(codes.contains(&"E0604"), "{:?}", codes);
+}
+
+#[test]
+fn script_statements_and_main_clash() {
+    let codes = check_codes("println(1);\nfun main() {\n println(2)\n}\n");
+    assert!(codes.contains(&"E0604"), "{:?}", codes);
+}

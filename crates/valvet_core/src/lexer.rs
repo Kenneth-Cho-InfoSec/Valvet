@@ -23,8 +23,16 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn run(&mut self) {
-        // UTF-8 validity is guaranteed by Rust String; validate scalars below.
+        // Script shebang: a leading `#!...` line is skipped so Valvet
+        // files can be direct executables (`chmod +x`).
         let mut i = 0;
+        if self.text.len() >= 2 && self.text[0] == b'#' && self.text[1] == b'!' {
+            i = 2;
+            while i < self.text.len() && self.text[i] != b'\n' {
+                i += 1;
+            }
+        }
+        // UTF-8 validity is guaranteed by Rust String; validate scalars below.
         while i < self.text.len() {
             let c = self.text[i];
             match c {

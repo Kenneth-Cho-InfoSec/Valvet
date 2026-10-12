@@ -28,6 +28,30 @@ impl Parser {
 
     pub fn parse(mut self) -> (Option<Program>, Vec<Diagnostic>) {
         self.skip_nls();
+        // Optional `mode imp;` / `mode exp;` header (script vs strict entry
+        // rules). Contextual: only the file's first two tokens count, so
+        // `mode` stays a legal identifier everywhere else.
+        let mut mode = Mode::Auto;
+        if self.at_ident("mode")
+            && matches!(
+                self.toks.get(self.pos + 1).map(|t| &t.kind),
+                Some(Tok::Ident(n)) if n == "imp" || n == "exp"
+            )
+        {
+            let mspan = self.cur_span();
+            self.bump();
+            mode = if self.at_ident("exp") {
+                Mode::Exp
+            } else {
+                Mode::Imp
+            };
+            self.bump();
+            if self.expect_semi("mode header").is_none() {
+                return (None, self.errs);
+            }
+            let _ = mspan;
+            self.skip_nls();
+        }
         // Optional `module a.b.c;`
         let mut module = None;
         if self.at_ident("module") {
@@ -65,6 +89,7 @@ impl Parser {
         let mut structs = vec![];
         let mut enums = vec![];
         let mut imports = vec![];
+        let mut top = vec![];
         let prog_start = module
             .as_ref()
             .map(|_| 0)
@@ -75,16 +100,78 @@ impl Parser {
                 break;
             }
             let entry = self.pos;
+            let saved_errs = self.errs.len();
+            // Item-start is judged at the entry token (before the speculative
+            // item parse moves `pos` into the broken construct).
+            let entry_is_item = self.at_item_start();
             match self.parse_item() {
                 Some(Item::Fun(f)) => funs.push(f),
                 Some(Item::Struct(d)) => structs.push(d),
                 Some(Item::Enum(d)) => enums.push(d),
                 Some(Item::Import(i)) => imports.push(i),
                 None => {
-                    self.recover();
-                    if self.pos == entry {
-                        // Recovery made no progress; force-advance to avoid stalling.
-                        self.bump();
+                    // Not an item: maybe a top-level script statement — but
+                    // only when the token cannot start an item. A broken
+                    // `fun`/`struct`/`enum`/`import`/etc must recover as a
+                    // broken item (baseline); rewinding those to entry would
+                    // re-parse their fragments as statements and swallow the
+                    // real error (e.g. `if (x = 2)` inside a broken `fun`).
+                    if entry_is_item {
+                        self.recover();
+                        if self.pos == entry {
+                            // Recovery made no progress; force-advance to avoid stalling.
+                            self.bump();
+                        }
+                        // Keep the item's own diagnostics (do not fall through
+                        // to statement parsing).
+                    } else {
+                        // Rewind past the speculative item parse (its generic
+                        // E0005 is discarded) and try a statement instead.
+                        self.pos = entry;
+                        self.errs.truncate(saved_errs);
+                        let stmt_pos = self.pos;
+                        let stmt_errs = self.errs.len();
+                        match self.parse_stmt() {
+                            Some(ParsedStmt::Stmt(s)) => {
+                                if mode == Mode::Exp {
+                                    self.err_at(
+                                    "E0604",
+                                    stmt_span(&s),
+                                    "top-level statements need imp mode (this file declares `mode exp`)",
+                                );
+                                }
+                                top.push(s);
+                            }
+                            Some(ParsedStmt::Bare(e, espan)) => {
+                                if mode == Mode::Exp {
+                                    self.err_at(
+                                    "E0604",
+                                    espan,
+                                    "top-level statements need imp mode (this file declares `mode exp`)",
+                                );
+                                }
+                                // Bare tail: consume a `;` like block bodies do;
+                                // newlines are skipped by the loop head.
+                                self.skip_nls();
+                                if matches!(self.cur(), Tok::Semi) {
+                                    self.bump();
+                                }
+                                top.push(Stmt::Expr {
+                                    id: self.fresh(),
+                                    expr: e,
+                                    span: espan,
+                                });
+                            }
+                            None => {
+                                self.pos = stmt_pos;
+                                self.errs.truncate(stmt_errs);
+                                self.recover();
+                                if self.pos == entry {
+                                    // Recovery made no progress; force-advance to avoid stalling.
+                                    self.bump();
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -101,6 +188,8 @@ impl Parser {
                 funs,
                 structs,
                 enums,
+                top,
+                mode,
                 span: Span::new(prog_start, end),
             }),
             vec![],
@@ -2243,6 +2332,31 @@ impl Parser {
 
     fn at_ident(&self, w: &str) -> bool {
         matches!(self.cur(), Tok::Ident(n) if n == w)
+    }
+
+    /// True when the current token can start an item (mirrors `parse_item`'s
+    /// dispatch). The top-level loop only attempts script-statement parsing
+    /// when this is false, so broken items keep their own diagnostics.
+    fn at_item_start(&self) -> bool {
+        match self.cur() {
+            Tok::Fun
+            | Tok::Struct
+            | Tok::Enum
+            | Tok::Pub
+            | Tok::Unsafe
+            | Tok::Extern
+            | Tok::Trait
+            | Tok::Impl
+            | Tok::Type
+            | Tok::Const
+            | Tok::Static
+            | Tok::Defer
+            | Tok::Use
+            | Tok::Where
+            | Tok::LBracket => true,
+            Tok::Ident(w) if w == "import" || w == "module" => true,
+            _ => false,
+        }
     }
 
     fn bump(&mut self) {

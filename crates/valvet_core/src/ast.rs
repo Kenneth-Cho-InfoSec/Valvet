@@ -12,7 +12,25 @@ pub struct Program {
     pub funs: Vec<FunDecl>,
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
+    /// Script mode: top-level statements of the entry file (empty for
+    /// classic `fun main` programs and for imported modules). The resolver
+    /// validates ownership and synthesizes `main` from these.
+    pub top: Vec<Stmt>,
+    /// Entry mode header (`mode imp;` / `mode exp;`); `Auto` when absent.
+    /// `mode` is contextual (first two tokens only), never a keyword.
+    pub mode: Mode,
     pub span: Span,
+}
+
+/// Entry mode: script (top-level statements run) vs strict classic
+/// (`fun main` required, statements rejected). Default is `Auto`, which
+/// behaves as imp; `mode imp;` is an explicit no-op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    #[default]
+    Auto,
+    Imp,
+    Exp,
 }
 
 /// One `import` declaration: `import a::b::load;`, `import a::b::{x, y as z};`.
@@ -291,6 +309,23 @@ pub enum Stmt {
         value: Option<Expr>,
         span: Span,
     },
+}
+
+/// Span of any statement (all variants carry one).
+pub fn stmt_span(s: &Stmt) -> Span {
+    match s {
+        Stmt::Val { span, .. }
+        | Stmt::Var { span, .. }
+        | Stmt::Expr { span, .. }
+        | Stmt::If { span, .. }
+        | Stmt::While { span, .. }
+        | Stmt::For { span, .. }
+        | Stmt::Loop { span, .. }
+        | Stmt::Break { span, .. }
+        | Stmt::Continue { span, .. }
+        | Stmt::Match { span, .. }
+        | Stmt::Return { span, .. } => *span,
+    }
 }
 
 #[derive(Debug, Clone)]

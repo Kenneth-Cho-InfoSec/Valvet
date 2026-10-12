@@ -58,6 +58,20 @@ fun main() {
 
 ## Language tour
 
+Script mode: the entry file runs top-level statements directly (imp is the
+default; `mode imp;` states it explicitly, `mode exp;` opts back into the
+strict classic rule). A shebang line works for direct execution:
+
+```valvet
+#!/usr/bin/env valvet
+val x = 40 + 2;
+println(x);
+```
+
+Top-level `return n;` sets the exit status; `?` propagates through a
+synthesized `Result<Int32, String>` main whose message prints to stderr on
+failure. Statements clash with `fun main` (E0604, entry-only like that).
+
 Functions, `if` expressions, loops, structs, vectors, `Option` matching:
 
 ```valvet
