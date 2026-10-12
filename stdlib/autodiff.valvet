@@ -1,0 +1,71 @@
+module std.autodiff;
+
+import std::math::exp;
+import std::math::log;
+
+// Forward-mode automatic differentiation (K3) via dual numbers.
+// No closures or function values exist, so there is no `grad(f)`
+// operator: write the loss once over `Dual`, then seed each input
+// dimension and read `.d`. The worked pattern:
+//
+//   fun loss(p: Vec<Dual>): Dual { ... }
+//   fun grad_0(x0: Float64, x1: Float64): Float64 {
+//       loss(seed2(x0, x1, 0)).d
+//   }
+//
+// `seed` builds the input vector with `d = 1` at position `k`.
+
+pub struct Dual { v: Float64, d: Float64 }
+
+pub fun dual(v: Float64, d: Float64): Dual {
+    return Dual { v: v, d: d };
+}
+
+pub fun dual_const(x: Float64): Dual {
+    return Dual { v: x, d: 0.0 };
+}
+
+pub fun seed(x: Vec<Float64>, k: Int64): Vec<Dual> {
+    var out: Vec<Dual> = vec![]
+    var i = 0 as Int64
+    while (i < x.len()) {
+        val d = if (i == k) { 1.0 } else { 0.0 };
+        out.push(Dual { v: x[i], d: d });
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun dual_add(a: Dual, b: Dual): Dual {
+    return Dual { v: a.v + b.v, d: a.d + b.d };
+}
+
+pub fun dual_sub(a: Dual, b: Dual): Dual {
+    return Dual { v: a.v - b.v, d: a.d - b.d };
+}
+
+pub fun dual_neg(a: Dual): Dual {
+    return Dual { v: 0.0 - a.v, d: 0.0 - a.d };
+}
+
+pub fun dual_mul(a: Dual, b: Dual): Dual {
+    return Dual { v: a.v * b.v, d: a.d * b.v + a.v * b.d };
+}
+
+pub fun dual_div(a: Dual, b: Dual): Dual {
+    return Dual { v: a.v / b.v, d: (a.d * b.v - a.v * b.d) / (b.v * b.v) };
+}
+
+pub fun dual_exp(a: Dual): Dual {
+    val e = exp(a.v);
+    return Dual { v: e, d: a.d * e };
+}
+
+pub fun dual_log(a: Dual): Dual {
+    return Dual { v: log(a.v), d: a.d / a.v };
+}
+
+pub fun dual_sigmoid(a: Dual): Dual {
+    val s = 1.0 / (1.0 + exp(0.0 - a.v));
+    return Dual { v: s, d: a.d * s * (1.0 - s) };
+}

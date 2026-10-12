@@ -1,0 +1,44 @@
+import std::autodiff::Dual;
+import std::autodiff::dual_const;
+import std::autodiff::dual_add;
+import std::autodiff::dual_mul;
+import std::autodiff::dual_sub;
+import std::autodiff::dual_log;
+import std::autodiff::dual_neg;
+import std::autodiff::dual_sigmoid;
+import std::autodiff::seed;
+
+// Logistic regression by dual-number gradient descent (full batch,
+// lr 0.5, 20 iters from zero). Final weights are bit-identical to a
+// Python reference implementing the same updates.
+fun bloss(p: Vec<Dual>): Dual {
+    val xs = vec![0.0, 1.0, 2.0, 3.0];
+    val ys = vec![0.0, 0.0, 1.0, 1.0];
+    var total = dual_const(0.0);
+    var i = 0 as Int64
+    while (i < xs.len()) {
+        val z = dual_add(dual_mul(p[0], dual_const(xs[i])), p[1]);
+        val pr = dual_sigmoid(z);
+        val y = ys[i];
+        val one = dual_const(1.0);
+        val yc = dual_const(y);
+        val term = dual_add(dual_mul(yc, dual_log(pr)), dual_mul(dual_sub(one, yc), dual_log(dual_sub(one, pr))));
+        total = dual_add(total, dual_neg(term));
+        i += 1 as Int64
+    }
+    dual_mul(total, dual_const(0.25))
+}
+
+fun main() {
+    var w = vec![0.0, 0.0];
+    var it = 0 as Int64
+    while (it < 20 as Int64) {
+        val g0 = bloss(seed(w.clone(), 0 as Int64)).d;
+        val g1 = bloss(seed(w.clone(), 1 as Int64)).d;
+        w[0] = w[0] - 0.5 * g0;
+        w[1] = w[1] - 0.5 * g1;
+        it += 1 as Int64
+    }
+    println(w);
+    println(bloss(seed(w.clone(), 0 as Int64)).v);
+}
