@@ -370,6 +370,21 @@ fn describe_place(root: &str, path: &[String]) -> String {
     }
 }
 
+/// Field type through a borrow (`&S` -> field type of `S`); `None` when
+/// the root is not a borrowed struct with a known field.
+fn borrowed_field_ty(ty: &Ty, field: &str, checked: &Checked) -> Option<Ty> {
+    if let Ty::Reference { inner, .. } = ty {
+        if let Ty::Struct(n) = inner.as_ref() {
+            return checked
+                .structs
+                .get(n)
+                .and_then(|d| d.fields.iter().find(|(f, _)| f == field))
+                .map(|(_, t)| t.clone());
+        }
+    }
+    None
+}
+
 /// Statement node id (mirrors the pre-pass helper).
 fn stmt_id(s: &Stmt) -> NodeId {
     match s {
@@ -781,6 +796,28 @@ impl<'a> Cx<'a> {
                 .with_help("the field was moved out earlier".to_string()),
             );
             return;
+        }
+        // Moving a non-Copy field out of a shared borrow is corruption
+        // (shallow copy plus free); Copy fields (e.g. `f.nrows`) stay
+        // legal, and reads stay legal — moves must clone first.
+        if move_ctx {
+            if let Ty::Reference { mutable: false, .. } = st.ty {
+                let moves = match borrowed_field_ty(&st.ty, field, self.checked) {
+                    Some(t) => !is_copy_ty(&t, &self.checked.structs, &self.checked.enums),
+                    None => false,
+                };
+                if moves {
+                    self.errs.push(
+                        Diagnostic::error(
+                            "E0301",
+                            span,
+                            format!("cannot move `{}.{}` out of borrowed content", var, field),
+                        )
+                        .with_help("clone the value out instead".to_string()),
+                    );
+                    return;
+                }
+            }
         }
         if !move_ctx {
             return;
@@ -1617,8 +1654,46 @@ impl<'a> Cx<'a> {
                         }
                     }
                     _ => {
-                        // Field of a temporary (e.g. `make_point().x`): fresh value.
+                        // Field of a field chain (`l.inner.x`) or a temporary
+                        // (`make_point().x`): walk to the root variable; a move
+                        // out of a shared borrow is E0301 at any depth.
                         self.check_expr(base, false);
+                        if move_ctx {
+                            let mut root = base;
+                            while let ExprKind::Field { base: b, .. } = &root.kind {
+                                root = b;
+                            }
+                            if let ExprKind::Var(name) = &root.kind {
+                                let bad_root = match self.find(name).map(|s| s.ty) {
+                                    Some(rt) => match borrowed_field_ty(&rt, field, self.checked) {
+                                        Some(ft)
+                                            if !is_copy_ty(
+                                                &ft,
+                                                &self.checked.structs,
+                                                &self.checked.enums,
+                                            ) =>
+                                        {
+                                            matches!(rt, Ty::Reference { mutable: false, .. })
+                                        }
+                                        _ => false,
+                                    },
+                                    None => false,
+                                };
+                                if bad_root {
+                                    self.errs.push(
+                                        Diagnostic::error(
+                                            "E0301",
+                                            e.span,
+                                            format!(
+                                                "cannot move `{}` out of borrowed content",
+                                                describe_place(name, std::slice::from_ref(field))
+                                            ),
+                                        )
+                                        .with_help("clone the value out instead".to_string()),
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -238,3 +238,168 @@ pub fun frame_group_mean(f: &DynamicFrame, key: String, value: String): DynamicF
     val n = keys.len()
     DynamicFrame { names: vec![keyname, "mean"], cols: vec![keys, scells], nrows: n }
 }
+
+// ----- Audited joins (K1): no silent row loss. Every join returns its
+// audit (matched / left-only / right-only / row counts); a missing key
+// column is `Err`, never an empty frame. Output order is deterministic:
+// left rows in order, right matches in right-table order. Duplicate keys
+// produce the cartesian product (documented, counted in `matched`).
+// Output columns are the left columns plus the right non-key columns.
+
+pub struct JoinAudit {
+    matched: Int64,
+    left_only: Int64,
+    right_only: Int64,
+    left_rows: Int64,
+    right_rows: Int64,
+    out_rows: Int64,
+}
+
+pub struct JoinResult { frame: DynamicFrame, audit: JoinAudit }
+
+fun col_index(names: Vec<String>, want: String): Int64 {
+    var i = 0 as Int64
+    while (i < names.len()) {
+        if (names[i] == want) {
+            return i;
+        }
+        i += 1 as Int64
+    }
+    return (0 - 1) as Int64
+}
+
+pub fun audit_summary(a: &JoinAudit): String {
+    val s1 = "matched=" + to_string(a.matched) + " left_only=" + to_string(a.left_only);
+    val s2 = s1 + " right_only=" + to_string(a.right_only) + " out=" + to_string(a.out_rows);
+    s2
+}
+
+fun join_core(left: &DynamicFrame, lkey: String, right: &DynamicFrame, rkey: String, keep_left: Bool): Result<JoinResult, String> {
+    // NOTE: `.clone()` is load-bearing: passing a field out of a
+    // borrowed struct by value would move (and corrupt); clone first.
+    val li = col_index(left.names.clone(), lkey.clone());
+    val ri = col_index(right.names.clone(), rkey.clone());
+    if (li < (0 as Int64)) {
+        return Err("join: left frame has no column " + lkey);
+    }
+    if (ri < (0 as Int64)) {
+        return Err("join: right frame has no column " + rkey);
+    }
+    // Output schema: left columns, then right non-key columns.
+    var onames: Vec<String> = vec![]
+    var c = 0 as Int64
+    while (c < left.names.len()) {
+        onames.push(left.names[c]);
+        c += 1 as Int64
+    }
+    var rc = 0 as Int64
+    while (rc < right.names.len()) {
+        if (rc != ri) {
+            onames.push(right.names[rc]);
+        }
+        rc += 1 as Int64
+    }
+    // Rows first (dynamic width), transposed into columns at the end
+    // (nested index stores are rejected, so columns cannot grow in place).
+    var orows: Vec<Vec<String>> = vec![]
+    var matched = 0 as Int64
+    var left_only = 0 as Int64
+    var r = 0 as Int64
+    while (r < left.nrows) {
+        val lval = left.cols[li][r]
+        var hits = 0 as Int64
+        var q = 0 as Int64
+        while (q < right.nrows) {
+            if (right.cols[ri][q] == lval) {
+                var row: Vec<String> = vec![]
+                var lc = 0 as Int64
+                while (lc < left.names.len()) {
+                    row.push(left.cols[lc][r]);
+                    lc += 1 as Int64
+                }
+                var rc2 = 0 as Int64
+                while (rc2 < right.names.len()) {
+                    if (rc2 != ri) {
+                        row.push(right.cols[rc2][q]);
+                    }
+                    rc2 += 1 as Int64
+                }
+                orows.push(row);
+                hits += 1 as Int64
+            }
+            q += 1 as Int64
+        }
+        if (hits == (0 as Int64)) {
+            left_only += 1 as Int64
+            if (keep_left) {
+                var row: Vec<String> = vec![]
+                var lc = 0 as Int64
+                while (lc < left.names.len()) {
+                    row.push(left.cols[lc][r]);
+                    lc += 1 as Int64
+                }
+                var rc3 = 0 as Int64
+                while (rc3 < right.names.len()) {
+                    if (rc3 != ri) {
+                        row.push("");
+                    }
+                    rc3 += 1 as Int64
+                }
+                orows.push(row);
+            }
+        } else {
+            matched += hits
+        }
+        r += 1 as Int64
+    }
+    // Right-only rows: right keys no left row carries.
+    var right_only = 0 as Int64
+    var q2 = 0 as Int64
+    while (q2 < right.nrows) {
+        var hit = false
+        var r3 = 0 as Int64
+        while (r3 < left.nrows) {
+            if (left.cols[li][r3] == right.cols[ri][q2]) {
+                hit = true;
+            }
+            r3 += 1 as Int64
+        }
+        if (!hit) {
+            right_only += 1 as Int64
+        }
+        q2 += 1 as Int64
+    }
+    var ocols: Vec<Vec<String>> = vec![]
+    var c2 = 0 as Int64
+    while (c2 < onames.len()) {
+        var col: Vec<String> = vec![]
+        var r2 = 0 as Int64
+        while (r2 < orows.len()) {
+            col.push(orows[r2][c2]);
+            r2 += 1 as Int64
+        }
+        ocols.push(col);
+        c2 += 1 as Int64
+    }
+    val n = orows.len()
+    val audit = JoinAudit {
+        matched: matched,
+        left_only: left_only,
+        right_only: right_only,
+        left_rows: left.nrows,
+        right_rows: right.nrows,
+        out_rows: n,
+    }
+    return Ok(JoinResult {
+        frame: DynamicFrame { names: onames, cols: ocols, nrows: n },
+        audit: audit,
+    });
+}
+
+pub fun frame_join_inner(left: &DynamicFrame, lkey: String, right: &DynamicFrame, rkey: String): Result<JoinResult, String> {
+    join_core(left, lkey, right, rkey, false)
+}
+
+pub fun frame_join_left(left: &DynamicFrame, lkey: String, right: &DynamicFrame, rkey: String): Result<JoinResult, String> {
+    join_core(left, lkey, right, rkey, true)
+}
