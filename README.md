@@ -110,6 +110,35 @@ Dimensionless literals coerce (`d + 5.0` is meters); mismatched dimensions
 are `E0201`, unknown units `E0401` (see `stdlib/units.valvet` for the known
 units). `expr as @unit` asserts and converts explicitly.
 
+Audited joins never silently drop rows: `frame_join_inner` / `frame_join_left`
+return the frame plus its audit (matched / left-only / right-only counts),
+and a missing key column is `Err`, not an empty frame:
+
+```valvet
+val s = match (frame_join_inner(&l, "id", &r, "id")) { Ok(j) -> audit_summary(&j.audit), Err(e) -> e, };
+println(s)  // matched=1 left_only=0 right_only=0 out=1
+```
+
+Frames can carry provenance: source hash plus transform log, printable
+with any result (`stdlib/provenance.valvet`):
+
+```valvet
+val p = provenance_of_text("demo", "a,b\n");
+println(prov_report(&p))  // source=demo hash=6376667723524501508 ops=[]
+```
+
+Forward-mode autodiff via dual numbers (`stdlib/autodiff.valvet`): write the
+loss once over `Dual`, seed each dimension, read `.d`. A logistic-regression
+gradient descent in the suite is bit-identical to its Python reference:
+
+```valvet
+println(sq(seed(vec![3.0], 0 as Int64)).d)  // d(x^2)/dx at 3 = 6
+```
+
+Deterministic parallelism: `par_sum(v, nthreads)` sums `Vec<Float64>` on a
+thread pool with fixed blocks and ordered combining, so every thread count
+gives bit-identical results (a fixture pins 1/2/3/4/8-thread agreement).
+
 Multi-file projects: the root is the entry file's directory:
 
 ```valvet
