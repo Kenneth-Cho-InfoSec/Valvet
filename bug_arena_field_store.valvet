@@ -1,0 +1,18 @@
+// Minimal repro: field store through an indexed borrow crashes the backend.
+// `(*a)[t].red = true` panics codegen with:
+//   "internal error: entered unreachable code: nested index store reached codegen"
+// Whole-element store (`a[t] = Node {...}`) and read-modify-write via a
+// local (`var n = (*a)[t]; n.red = true; (*a)[t] = n`) both work.
+
+struct Node { red: Bool, key: Int32 }
+
+fun paint(a: &mut Vec<Node>, t: Int64) {
+    (*a)[t].red = true
+}
+
+fun main() {
+    var a: Vec<Node> = vec![]
+    a.push(Node { red: false, key: 1 })
+    paint(&mut a, 0 as Int64)
+    println(a[0].red)
+}

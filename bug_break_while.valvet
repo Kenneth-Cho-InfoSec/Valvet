@@ -1,0 +1,14 @@
+// Minimal repro: `break` inside a `while` body is rejected with E0005
+// "outside of a loop", though it is inside a loop. The identical pattern
+// (break nested in `if`) is accepted in `loop` (valvet-tests/compile-pass/
+// loop_break.valvet) and in `for` (verified: runs, prints 2).
+fun main() {
+    var x = 5
+    while (x > 0) {
+        x = x - 1
+        if (x == 2) {
+            break
+        }
+    }
+    println(x)
+}

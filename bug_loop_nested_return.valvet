@@ -1,0 +1,24 @@
+// Minimal repro: `return <value>` inside a doubly-nested `if` whose OUTER `if`
+// has an `else` branch, inside a `loop`, is rejected with a bogus
+// "function returns ()" error (E0201). Variants that compile fine:
+//   - same nesting with the outer `if` lacking `else`  -> OK
+//   - same nesting inside `while` instead of `loop`    -> OK
+//   - single-nested `return` inside `loop`              -> OK
+// Not a documented limitation (README/SPECIFICATION_GAPS list no
+// return-in-loop restriction). Hit while writing papers/parsec_arith.valvet.
+fun g(n: Int32): Int32 {
+    loop {
+        if (n > 0) {
+            if (n > 1) {
+                return 7
+            }
+        } else {
+            break
+        }
+    }
+    1
+}
+
+fun main() {
+    println(g(3));
+}
