@@ -1,0 +1,35 @@
+import std::dist::erf;
+import std::dist::normal_pdf;
+import std::dist::normal_cdf;
+import std::dist::normal_quantile;
+import std::dist::exp_pdf;
+import std::dist::exp_cdf;
+import std::dist::exp_quantile;
+import std::dist::uniform_pdf;
+import std::dist::uniform_cdf;
+import std::dist::uniform_quantile;
+
+fun main() {
+    // Continuous pdf/cdf/quantile pinned vs Python math/statistics to 1e-9.
+    println(erf(0.0));
+    println(erf(1.0));
+    println(erf(2.0));
+    println(erf(0.0 - 0.5));
+    println(normal_pdf(0.0, 0.0, 1.0));
+    println(normal_cdf(0.0, 0.0, 1.0));
+    println(normal_cdf(1.0, 0.0, 1.0));
+    println(normal_cdf(0.0 - 1.0, 0.0, 1.0));
+    println(normal_quantile(0.975, 0.0, 1.0));
+    println(normal_quantile(0.5, 0.0, 1.0));
+    println(normal_quantile(0.025, 0.0, 1.0));
+    println(exp_pdf(1.0, 2.0));
+    println(exp_cdf(1.0, 2.0));
+    println(exp_quantile(0.5, 2.0));
+    println(uniform_pdf(0.5, 0.0, 1.0));
+    println(uniform_cdf(0.5, 0.0, 1.0));
+    println(uniform_quantile(0.25, 0.0, 2.0));
+    // Out-of-domain parameters are NaN, never traps.
+    println(normal_pdf(0.0, 0.0, 0.0 - 1.0));
+    println(exp_cdf(1.0, 0.0 - 1.0));
+    println(uniform_pdf(0.5, 1.0, 1.0));
+}
