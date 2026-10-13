@@ -1,0 +1,43 @@
+import std::frame::DynamicFrame;
+import std::model::ModelFrame;
+import std::model::GlmFit;
+import std::model::formula_new;
+import std::model::formula_parse;
+import std::model::model_frame;
+import std::model::glm_binomial;
+
+fun no_mf(): ModelFrame {
+    return ModelFrame { x: mat_identity(1 as Int64), y: vec![0.0], names: vec![""] };
+}
+
+fun no_fit(): GlmFit {
+    return GlmFit { coef: vec![0.0], se: vec![0.0], iters: 0 as Int64, converged: false, names: vec![""] };
+}
+
+fun main() {
+    // Challenger-style 0/1 data embedded (23 rows). IRLS converges to the
+    // MLE, verified against an independent multi-start Python IRLS to
+    // 1e-13 (published R numbers belong to different data; not claimed).
+    val temps = vec!["53", "57", "58", "63", "66", "67", "67", "67", "68", "69", "70", "70", "70", "70", "72", "73", "75", "75", "76", "76", "78", "79", "81"];
+    val fails = vec!["1", "1", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0", "1", "1", "0", "0", "0", "1", "0", "0", "0", "0", "0"];
+    val f = DynamicFrame { names: vec!["temp", "fail"], cols: vec![temps, fails], nrows: 23 as Int64 };
+    val fo = match (formula_parse("fail ~ temp")) { Some(v) -> v, None -> formula_new("?", vec!["?"]), };
+    val mf = match (model_frame(&f, fo)) { Ok(v) -> v, Err(_) -> no_mf(), };
+    println(mf.y.len());
+    val g = match (glm_binomial(mf, 25 as Int64)) { Ok(v) -> v, Err(_) -> no_fit(), };
+    println(g.coef);
+    println(g.se);
+    println(g.iters);
+    println(g.converged);
+    println(g.names);
+    // Non-0/1 responses and bad iteration budgets are Err.
+    val h = DynamicFrame { names: vec!["x", "y"], cols: vec![vec!["1", "2"], vec!["0", "2"]], nrows: 2 as Int64 };
+    val fo2 = match (formula_parse("y ~ x")) { Some(v) -> v, None -> formula_new("?", vec!["?"]), };
+    val mf2 = match (model_frame(&h, fo2)) { Ok(v) -> v, Err(_) -> no_mf(), };
+    val e1 = match (glm_binomial(mf2, 25 as Int64)) { Ok(_) -> "ok", Err(e) -> e, };
+    println(e1);
+    val fo3 = match (formula_parse("fail ~ temp")) { Some(v) -> v, None -> formula_new("?", vec!["?"]), };
+    val mf3 = match (model_frame(&f, fo3)) { Ok(v) -> v, Err(_) -> no_mf(), };
+    val e2 = match (glm_binomial(mf3, 0 as Int64)) { Ok(_) -> "ok", Err(e) -> e, };
+    println(e2);
+}

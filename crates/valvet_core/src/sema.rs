@@ -4606,6 +4606,81 @@ impl Cx {
                     args: vec![want, shape_err.clone()],
                 }
             }
+            "mat_vec" => {
+                // S1: matrix-vector product (IRLS needs `X'Wz` without
+                // forming diagonals; `m.cols == v.len` else `Err`).
+                if args.len() != 1 {
+                    self.err("E0201", span, "`mat_vec` takes exactly 1 argument", None);
+                    return Ty::Generic {
+                        base: "Result".to_string(),
+                        args: vec![
+                            Ty::Generic {
+                                base: "Vec".to_string(),
+                                args: vec![Ty::Float64],
+                            },
+                            shape_err.clone(),
+                        ],
+                    };
+                }
+                let at = self.check_expr(&args[0]);
+                let want = Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![Ty::Float64],
+                };
+                if at != want {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`mat_vec` expects Vec<Float64>, found {}", at.name()),
+                        None,
+                    );
+                }
+                self.record_vec_inst(&Ty::Float64);
+                Ty::Generic {
+                    base: "Result".to_string(),
+                    args: vec![want, shape_err.clone()],
+                }
+            }
+            "mat_scale_rows" => {
+                // S1: scale each row `i` by `w[i]` (weighted design rows;
+                // `m.rows == w.len` else `Err`).
+                if args.len() != 1 {
+                    self.err(
+                        "E0201",
+                        span,
+                        "`mat_scale_rows` takes exactly 1 argument",
+                        None,
+                    );
+                    return res_mat();
+                }
+                let at = self.check_expr(&args[0]);
+                let want = Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![Ty::Float64],
+                };
+                if at != want {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`mat_scale_rows` expects Vec<Float64>, found {}", at.name()),
+                        None,
+                    );
+                }
+                self.record_vec_inst(&Ty::Float64);
+                res_mat()
+            }
+            "mat_diag" => {
+                // S1: main diagonal as a vector (always total: length is
+                // `min(rows, cols)`, so covariance diagonals read cleanly).
+                if !args.is_empty() {
+                    self.err("E0201", span, "`mat_diag` takes no arguments", None);
+                }
+                self.record_vec_inst(&Ty::Float64);
+                Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![Ty::Float64],
+                }
+            }
             "det" => {
                 if !args.is_empty() {
                     self.err("E0201", span, "`det` takes no arguments", None);
@@ -4635,7 +4710,7 @@ impl Cx {
                 self.err(
                     "E0401",
                     method_span,
-                    format!("unknown method `{}` (available on Mat: rows, cols, transpose, matmul, lu_solve, det, inverse, cholesky, clone)", method),
+                    format!("unknown method `{}` (available on Mat: rows, cols, transpose, matmul, mat_vec, mat_scale_rows, mat_diag, lu_solve, det, inverse, cholesky, clone)", method),
                     None,
                 );
                 Ty::Unit

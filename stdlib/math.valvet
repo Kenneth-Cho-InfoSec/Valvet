@@ -7,6 +7,14 @@ pub fun sqrt(x: Float64): Float64 {
     if (x == 0.0) {
         return 0.0;
     }
+    // Non-finite inputs skip Newton (which would spin or drift):
+    // NaN propagates, +inf is its own root.
+    if (x != x) {
+        return x;
+    }
+    if (x >= 1.0 / 0.0) {
+        return x;
+    }
     var guess = x
     var i = 0
     while (i < 1000) {
@@ -26,6 +34,16 @@ pub fun sqrt(x: Float64): Float64 {
 }
 
 pub fun exp(x: Float64): Float64 {
+    // Non-finite inputs skip range reduction (which would spin on inf).
+    if (x != x) {
+        return x;
+    }
+    if (x >= 1.0 / 0.0) {
+        return x;
+    }
+    if (x <= 0.0 - 1.0 / 0.0) {
+        return 0.0;
+    }
     if (x < 0.0) {
         return 1.0 / exp(0.0 - x);
     }
@@ -63,6 +81,13 @@ pub fun log(x: Float64): Float64 {
     }
     if (x < 0.0) {
         return 0.0 / 0.0;
+    }
+    // Non-finite inputs skip range reduction (which would spin on inf).
+    if (x != x) {
+        return x;
+    }
+    if (x >= 1.0 / 0.0) {
+        return x;
     }
     var k = 0
     var y = x

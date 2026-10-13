@@ -1,0 +1,371 @@
+// S1 formulas + lm/glm: R-style modeling over frames, in pure Valvet on
+// the M1 matrix kernels. `Formula` is data (constructor or `"y ~ x1+x2"`
+// strings via split/trim); `model_frame` builds the intercept design
+// matrix, dropping rows with unparseable cells (R `na.omit` semantics;
+// wholly missing COLUMNS are `Err`). `lm` solves the normal equations
+// with `lu_solve`; `glm_binomial` runs IRLS. Standard errors come from
+// the covariance diagonal; p-values are z-approximations through D3
+// (R uses t for lm; documented, conservative for large n).
+//
+// Fallible kernels return `Result`, and `return` is rejected inside
+// match value-arms, so every unwrap below is check-then-unwrap: probe
+// the result with a bool match, early-return on failure, then unwrap
+// with a provably-dead dummy arm.
+
+module std.model;
+
+import std::frame::DynamicFrame;
+import std::frame::frame_col;
+import std::math::sqrt;
+import std::math::exp;
+import std::dist::normal_cdf;
+
+pub struct Formula { response: String, terms: Vec<String> }
+
+pub fun formula_new(response: String, terms: Vec<String>): Formula {
+    return Formula { response: response, terms: terms };
+}
+
+pub fun formula_parse(s: String): Option<Formula> {
+    val sides = s.split("~");
+    if (sides.len() != (2 as Int64)) {
+        return None;
+    }
+    val lhs = sides[0 as Int64].trim();
+    if (lhs == "") {
+        return None;
+    }
+    val rhs = sides[1 as Int64].clone();
+    val parts = rhs.split("+");
+    var terms: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < parts.len()) {
+        val t = parts[i].trim();
+        if (t == "") {
+            return None;
+        }
+        terms.push(t);
+        i = i + (1 as Int64);
+    }
+    if (terms.len() == (0 as Int64)) {
+        return None;
+    }
+    return Some(Formula { response: lhs, terms: terms });
+}
+
+pub struct ModelFrame { x: Mat, y: Vec<Float64>, names: Vec<String> }
+
+fun no_mat(): Mat {
+    return mat_zeros(0 as Int64, 0 as Int64);
+}
+
+fun no_vec(): Vec<Float64> {
+    return vec![0.0];
+}
+
+fun no_strs(): Vec<String> {
+    return vec![""];
+}
+
+fun need_col(f: &DynamicFrame, name: String): Vec<String> {
+    return match (frame_col(f, name)) { Some(v) -> v, None -> no_strs(), };
+}
+
+fun has_col(f: &DynamicFrame, name: String): Bool {
+    return match (frame_col(f, name)) { Some(_) -> true, None -> false, };
+}
+
+pub fun model_frame(f: &DynamicFrame, fo: Formula): Result<ModelFrame, String> {
+    if (!has_col(f, fo.response.clone())) {
+        return Err("missing column: " + fo.response.clone());
+    }
+    val yc = need_col(f, fo.response.clone());
+    var tcs: Vec<Vec<String>> = vec![];
+    var ti = 0 as Int64;
+    while (ti < fo.terms.len()) {
+        if (!has_col(f, fo.terms[ti].clone())) {
+            return Err("missing column: " + fo.terms[ti].clone());
+        }
+        tcs.push(need_col(f, fo.terms[ti].clone()));
+        ti = ti + (1 as Int64);
+    }
+    // na.omit: keep rows where response and every term parse.
+    var rows: Vec<Vec<Float64>> = vec![];
+    var ys: Vec<Float64> = vec![];
+    var r = 0 as Int64;
+    while (r < f.nrows) {
+        val yv = match (yc[r].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+        if (yv == yv) {
+            var row: Vec<Float64> = vec![];
+            row.push(1.0);
+            var ok = true;
+            var k = 0 as Int64;
+            while (k < tcs.len()) {
+                val xv = match (tcs[k][r].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+                if (xv != xv) {
+                    ok = false;
+                }
+                row.push(xv);
+                k = k + (1 as Int64);
+            }
+            if (ok) {
+                rows.push(row);
+                ys.push(yv);
+            }
+        }
+        r = r + (1 as Int64);
+    }
+    if (rows.len() == (0 as Int64)) {
+        return Err("no complete rows");
+    }
+    var names: Vec<String> = vec![];
+    names.push("(Intercept)");
+    var ni = 0 as Int64;
+    while (ni < fo.terms.len()) {
+        names.push(fo.terms[ni]);
+        ni = ni + (1 as Int64);
+    }
+    var ragged = false;
+    var w = rows[0 as Int64].len();
+    var ri = 1 as Int64;
+    while (ri < rows.len()) {
+        if (rows[ri].len() != w) {
+            ragged = true;
+        }
+        ri = ri + (1 as Int64);
+    }
+    if (ragged) {
+        return Err("design matrix failed");
+    }
+    val m = match (mat_from_rows(rows)) { Ok(v) -> v, Err(_) -> no_mat(), };
+    return Ok(ModelFrame { x: m, y: ys, names: names });
+}
+
+pub struct LmFit {
+    coef: Vec<Float64>,
+    se: Vec<Float64>,
+    fitted: Vec<Float64>,
+    resid: Vec<Float64>,
+    r2: Float64,
+    sigma: Float64,
+    names: Vec<String>,
+}
+
+fun vec_sub(a: Vec<Float64>, b: Vec<Float64>): Vec<Float64> {
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < a.len() && i < b.len()) {
+        out.push(a[i] - b[i]);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun vec_mean(v: Vec<Float64>): Float64 {
+    if (v.len() == (0 as Int64)) {
+        return 0.0 / 0.0;
+    }
+    var s = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        s = s + v[i];
+        i = i + (1 as Int64);
+    }
+    return s / (v.len() as Float64);
+}
+
+fun sum_sq(v: Vec<Float64>, c: Float64): Float64 {
+    var s = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        val d = v[i] - c;
+        s = s + d * d;
+        i = i + (1 as Int64);
+    }
+    return s;
+}
+
+pub fun lm(mf: ModelFrame): Result<LmFit, String> {
+    val xt = mf.x.transpose();
+    if (xt.cols() != mf.x.rows()) {
+        return Err("X'X failed");
+    }
+    val xtx = match (xt.clone().matmul(mf.x.clone())) { Ok(v) -> v, Err(_) -> no_mat(), };
+    if (xt.cols() != mf.y.len()) {
+        return Err("X'y failed");
+    }
+    val xty = match (xt.clone().mat_vec(mf.y.clone())) { Ok(v) -> v, Err(_) -> no_vec(), };
+    if (xtx.rows() != xtx.cols() || xtx.rows() != xty.len() || xtx.det() == 0.0) {
+        return Err("singular design");
+    }
+    val beta = match (xtx.clone().lu_solve(xty)) { Ok(v) -> v, Err(_) -> no_vec(), };
+    if (mf.x.cols() != beta.len()) {
+        return Err("fitted failed");
+    }
+    val fitted = match (mf.x.clone().mat_vec(beta.clone())) { Ok(v) -> v, Err(_) -> no_vec(), };
+    val resid = vec_sub(mf.y.clone(), fitted.clone());
+    val n = mf.y.len();
+    val p = beta.len();
+    val rss = sum_sq(resid.clone(), 0.0);
+    val tss = sum_sq(mf.y.clone(), vec_mean(mf.y.clone()));
+    var r2 = 0.0 / 0.0;
+    if (tss != 0.0) {
+        r2 = 1.0 - rss / tss;
+    }
+    var sigma = 0.0;
+    if (n > p) {
+        sigma = sqrt(rss / ((n - p) as Float64));
+    }
+    if (xtx.rows() != xtx.cols() || xtx.det() == 0.0) {
+        return Err("singular design");
+    }
+    val xtx_inv = match (xtx.clone().inverse()) { Ok(v) -> v, Err(_) -> no_mat(), };
+    val dg = xtx_inv.mat_diag();
+    var se: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < dg.len()) {
+        se.push(sigma * sqrt(dg[i]));
+        i = i + (1 as Int64);
+    }
+    return Ok(LmFit { coef: beta, se: se, fitted: fitted, resid: resid, r2: r2, sigma: sigma, names: mf.names.clone() });
+}
+
+pub fun lm_p(fit: &LmFit, j: Int64): Float64 {
+    if (j < (0 as Int64) || j >= fit.coef.len() || j >= fit.se.len()) {
+        return 0.0 / 0.0;
+    }
+    val z = fit.coef[j] / fit.se[j];
+    val az = if (z < 0.0) { 0.0 - z } else { z };
+    return 2.0 * (1.0 - normal_cdf(az, 0.0, 1.0));
+}
+
+pub struct GlmFit {
+    coef: Vec<Float64>,
+    se: Vec<Float64>,
+    iters: Int64,
+    converged: Bool,
+    names: Vec<String>,
+}
+
+fun sigmoid(x: Float64): Float64 {
+    return 1.0 / (1.0 + exp(0.0 - x));
+}
+
+pub fun glm_binomial(mf: ModelFrame, max_iter: Int64): Result<GlmFit, String> {
+    if (max_iter < (1 as Int64)) {
+        return Err("max_iter must be positive");
+    }
+    var i = 0 as Int64;
+    while (i < mf.y.len()) {
+        if (mf.y[i] != 0.0 && mf.y[i] != 1.0) {
+            return Err("response must be 0/1");
+        }
+        i = i + (1 as Int64);
+    }
+    val n = mf.y.len();
+    val p = mf.x.cols();
+    var beta: Vec<Float64> = vec![];
+    var b = 0 as Int64;
+    while (b < p) {
+        beta.push(0.0);
+        b = b + (1 as Int64);
+    }
+    var it = 0 as Int64;
+    var done = 0 as Int64;
+    var converged = false;
+    while (it < max_iter) {
+        if (mf.x.cols() != beta.len()) {
+            return Err("eta failed");
+        }
+        val eta = match (mf.x.clone().mat_vec(beta.clone())) { Ok(v) -> v, Err(_) -> no_vec(), };
+        var w: Vec<Float64> = vec![];
+        var wz: Vec<Float64> = vec![];
+        var k = 0 as Int64;
+        while (k < n) {
+            var m = sigmoid(eta[k]);
+            if (m < 0.000000000001) {
+                m = 0.000000000001;
+            }
+            if (m > 0.999999999999) {
+                m = 0.999999999999;
+            }
+            val wk = m * (1.0 - m);
+            w.push(wk);
+            wz.push(wk * eta[k] + (mf.y[k] - m));
+            k = k + (1 as Int64);
+        }
+        val xt = mf.x.transpose();
+        if (mf.x.rows() != w.len()) {
+            return Err("X'WX failed");
+        }
+        val xw = match (mf.x.clone().mat_scale_rows(w.clone())) { Ok(v) -> v, Err(_) -> no_mat(), };
+        if (xt.cols() != xw.rows()) {
+            return Err("X'WX failed");
+        }
+        val xtwx = match (xt.clone().matmul(xw)) { Ok(v) -> v, Err(_) -> no_mat(), };
+        if (xt.cols() != wz.len()) {
+            return Err("X'Wz failed");
+        }
+        val xtwz = match (xt.clone().mat_vec(wz)) { Ok(v) -> v, Err(_) -> no_vec(), };
+        if (xtwx.rows() != xtwx.cols() || xtwx.rows() != xtwz.len() || xtwx.det() == 0.0) {
+            return Err("singular IRLS step");
+        }
+        val fresh = match (xtwx.clone().lu_solve(xtwz)) { Ok(v) -> v, Err(_) -> no_vec(), };
+        var delta = 0.0;
+        var q = 0 as Int64;
+        while (q < p) {
+            val d = fresh[q] - beta[q];
+            val ad = if (d < 0.0) { 0.0 - d } else { d };
+            if (ad > delta) {
+                delta = ad;
+            }
+            q = q + (1 as Int64);
+        }
+        beta = fresh;
+        done = done + (1 as Int64);
+        it = it + (1 as Int64);
+        if (delta < 0.00000001) {
+            converged = true;
+            it = max_iter;
+        }
+    }
+    // Standard errors from the final IRLS weights.
+    if (mf.x.cols() != beta.len()) {
+        return Err("eta failed");
+    }
+    val eta2 = match (mf.x.clone().mat_vec(beta.clone())) { Ok(v) -> v, Err(_) -> no_vec(), };
+    var w2: Vec<Float64> = vec![];
+    var k2 = 0 as Int64;
+    while (k2 < n) {
+        var m = sigmoid(eta2[k2]);
+        if (m < 0.000000000001) {
+            m = 0.000000000001;
+        }
+        if (m > 0.999999999999) {
+            m = 0.999999999999;
+        }
+        w2.push(m * (1.0 - m));
+        k2 = k2 + (1 as Int64);
+    }
+    val xt2 = mf.x.transpose();
+    if (mf.x.rows() != w2.len()) {
+        return Err("X'WX failed");
+    }
+    val xw2 = match (mf.x.clone().mat_scale_rows(w2)) { Ok(v) -> v, Err(_) -> no_mat(), };
+    if (xt2.cols() != xw2.rows()) {
+        return Err("X'WX failed");
+    }
+    val xtwx2 = match (xt2.clone().matmul(xw2)) { Ok(v) -> v, Err(_) -> no_mat(), };
+    if (xtwx2.rows() != xtwx2.cols() || xtwx2.det() == 0.0) {
+        return Err("singular IRLS step");
+    }
+    val cov = match (xtwx2.clone().inverse()) { Ok(v) -> v, Err(_) -> no_mat(), };
+    val dg = cov.mat_diag();
+    var se: Vec<Float64> = vec![];
+    var s2 = 0 as Int64;
+    while (s2 < dg.len()) {
+        se.push(sqrt(dg[s2]));
+        s2 = s2 + (1 as Int64);
+    }
+    return Ok(GlmFit { coef: beta, se: se, iters: done, converged: converged, names: mf.names.clone() });
+}

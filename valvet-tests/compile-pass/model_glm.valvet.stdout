@@ -1,0 +1,8 @@
+23
+[11.649481073512941, -0.18649550852227664]
+[6.2210578981593443, 0.092120605712538758]
+6
+true
+[(Intercept), temp]
+response must be 0/1
+max_iter must be positive

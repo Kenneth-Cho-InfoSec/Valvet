@@ -2682,6 +2682,10 @@ impl<'a> Gen<'a> {
             self.out.push_str(&format!(
             "static {rvct} vmat_lu_solve({ct} *v, {vct} *b) {{\nif (v->rows != v->cols || b->len != v->rows) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->rows, .v_found = b->len }} }} }} }};\nreturn o;\n}}\nint64_t n = v->rows;\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nint64_t *piv = (int64_t *)malloc((size_t)(n + 1) * sizeof(int64_t));\nif (!piv) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *y = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!y) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nint ok = vmat_lu(a, n, piv);\n{rvct} o;\nif (!ok) {{\no = ({rvct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\n}} else {{\nfor (int64_t i = 0; i < n; ++i) {{\ndouble s = b->data[piv[i]];\nfor (int64_t j = 0; j < i; ++j) {{ s -= a[piv[i] * n + j] * y[j]; }}\ny[i] = s;\n}}\n{vct} x = {{NULL, 0, 0}};\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\n}}\nfor (int64_t i = n - 1; i >= 0; --i) {{\ndouble s = y[i];\nfor (int64_t j = i + 1; j < n; ++j) {{ s -= a[piv[i] * n + j] * x.data[j]; }}\nx.data[i] = s / a[piv[i] * n + i];\nif (i == 0) {{ break; }}\n}}\no = ({rvct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\n}}\nfree(a); free(piv); free(y);\nreturn o;\n}}\n"
         ));
+            // S1 matrix-vector product (same Vec-result gate as lu_solve).
+            self.out.push_str(&format!(
+            "static {rvct} vmat_vec({ct} *v, {vct} *b) {{\nif (v->cols != b->len) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->cols, .v_found = b->len }} }} }} }};\nreturn o;\n}}\n{vct} x = {{NULL, 0, 0}};\nif (v->rows > 0) {{\nx.data = (double *)malloc((size_t)v->rows * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = v->rows; x.cap = v->rows;\nfor (int64_t i = 0; i < v->rows; ++i) {{\ndouble s = 0.0;\nfor (int64_t j = 0; j < v->cols; ++j) {{ s += v->data[i * v->cols + j] * b->data[j]; }}\nx.data[i] = s;\n}}\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
+        ));
         }
         if want_mm && want_sol {
             self.out.push_str(&format!(
@@ -2697,6 +2701,18 @@ impl<'a> Gen<'a> {
             shape = shape_lit(&rct, "v->rows", "v->cols")
         ));
         }
+        // S1 row scaling (same Mat-result gate as cholesky).
+        if want_mm {
+            self.out.push_str(&format!(
+            "static {rct} vmat_scale_rows({ct} *v, {vct} *w) {{\nif (v->rows != w->len) {{ return {shape}; }}\n{ct} m = vmat_zeros(v->rows, v->cols);\nfor (int64_t i = 0; i < v->rows; ++i) {{\ndouble s = w->data[i];\nfor (int64_t j = 0; j < v->cols; ++j) {{ m.data[i * v->cols + j] = v->data[i * v->cols + j] * s; }}\n}}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n",
+            shape = shape_lit(&rct, "v->rows", "w->len")
+        ));
+        }
+        // S1 diagonal (total; needs only the Vec layout, always recorded
+        // alongside any Mat use through the method checker).
+        self.out.push_str(&format!(
+            "static {vct} vmat_diag({ct} *v) {{\n{vct} x = {{NULL, 0, 0}};\nint64_t n = v->rows < v->cols ? v->rows : v->cols;\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\nfor (int64_t i = 0; i < n; ++i) {{ x.data[i] = v->data[i * v->cols + i]; }}\n}}\nreturn x;\n}}\n"
+        ));
         let _ = (rct, rvct, rsct, vvct, vct, ct);
         Ok(())
     }
@@ -2803,6 +2819,23 @@ impl<'a> Gen<'a> {
                 self.cur_move = saved;
                 Ok(format!("vmat_lu_solve({}, &{})", rptr, o))
             }
+            "mat_vec" => {
+                let a = args.first().ok_or_else(|| Ice("method arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let o = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vmat_vec({}, &{})", rptr, o))
+            }
+            "mat_scale_rows" => {
+                let a = args.first().ok_or_else(|| Ice("method arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let o = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vmat_scale_rows({}, &{})", rptr, o))
+            }
+            "mat_diag" => Ok(format!("vmat_diag({})", rptr)),
             _ => Err(Ice("unknown Mat method".into())),
         }
     }

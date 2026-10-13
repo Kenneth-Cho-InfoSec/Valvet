@@ -52,6 +52,11 @@ fun erf_taylor(x: Float64): Float64 {
 }
 
 fun erfc_lentz(x: Float64): Float64 {
+    // erfc(27) is ~1e-318: beyond this the true value is zero to Float64
+    // (and the fraction converges poorly), so cut off exactly.
+    if (x > 27.0) {
+        return 0.0;
+    }
     val tiny = 0.000000000000000000000000000001;
     var f = x;
     if (f == 0.0) {
