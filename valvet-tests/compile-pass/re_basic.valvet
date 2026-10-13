@@ -1,0 +1,42 @@
+import std::re::re_detect;
+import std::re::re_extract;
+
+fun show(pat: String, s: String) {
+    println(re_detect(pat.clone(), s.clone()));
+    val e = match (re_extract(pat, s)) {
+        Some(v) -> v,
+        None -> "<none>",
+    };
+    println(e);
+}
+
+fun main() {
+    // Literals, dot, counted classes and negation.
+    show("a", "abc");
+    show("z", "abc");
+    show("a.c", "abc");
+    show("[a-z]+", "abc123");
+    show("[^0-9]+", "abc123");
+    show("a[0-9]b", "a5b");
+    // Greedy quantifiers, groups, alternation (leftmost-LONGEST: `a|ab`
+    // on "ab" is "ab", unlike PCRE's leftmost-first "a"; pinned here).
+    show("a.*c", "axyzc");
+    show("ab+c", "abbbc");
+    show("ab?c", "ac");
+    show("ab?c", "abbc");
+    show("(ab|cd)e", "cde");
+    show("a|ab", "ab");
+    show("(a|aa)*", "aa");
+    // Anchors (first/last byte only) and escapes.
+    show("^[0-9]+$", "123");
+    show("^[0-9]+$", "12a");
+    show("[0-9]+", "ab12cd34");
+    show("a\\.c", "a.c");
+    show("a\\.c", "axc");
+    // Malformed patterns are false/None, never traps.
+    show("(", "abc");
+    show("a**", "aa");
+    show("[z-a]", "abc");
+    // Empty matches: `b*` matches empty at position 0.
+    show("b*", "aaab");
+}

@@ -1,0 +1,803 @@
+// F2 Phase 2: regex via Thompson NFA over explicit tables (first-order,
+// proven portable by the Parsec port). Restricted syntax: literals,
+// `.` (any byte), `*`/`+`/`?`, `[...]` (ranges, `[^...]` negation),
+// `(...)` (grouping, no captures), `|` alternation, `^`/`$` anchors
+// (only as first/last byte; elsewhere literal), backslash escapes any
+// byte (extension, documented). Semantics: leftmost match, greedy
+// quantifiers take the longest match from that start (documented).
+// Malformed patterns are total: compile is `Option`, so `re_detect` is
+// false and `re_extract` is `None` on bad patterns (never traps).
+
+module std.re;
+
+// Opcodes.
+fun op_lit(): Int64 {
+    return 0 as Int64;
+}
+
+fun op_any(): Int64 {
+    return 1 as Int64;
+}
+
+fun op_match(): Int64 {
+    return 2 as Int64;
+}
+
+fun op_split(): Int64 {
+    return 3 as Int64;
+}
+
+fun op_jmp(): Int64 {
+    return 4 as Int64;
+}
+
+fun op_class(): Int64 {
+    return 5 as Int64;
+}
+
+// AST node kinds.
+fun nk_lit(): Int64 {
+    return 0 as Int64;
+}
+
+fun nk_any(): Int64 {
+    return 1 as Int64;
+}
+
+fun nk_class(): Int64 {
+    return 2 as Int64;
+}
+
+fun nk_seq(): Int64 {
+    return 3 as Int64;
+}
+
+fun nk_alt(): Int64 {
+    return 4 as Int64;
+}
+
+fun nk_star(): Int64 {
+    return 5 as Int64;
+}
+
+fun nk_plus(): Int64 {
+    return 6 as Int64;
+}
+
+fun nk_quest(): Int64 {
+    return 7 as Int64;
+}
+
+fun nk_empty(): Int64 {
+    return 8 as Int64;
+}
+
+pub struct ReProg {
+    op: Vec<Int64>,
+    x: Vec<Int64>,
+    y: Vec<Int64>,
+    cls_c: Vec<Int64>,
+    cls_lo: Vec<Int64>,
+    cls_hi: Vec<Int64>,
+    cls_neg: Vec<Int64>,
+    anchored_start: Bool,
+    anchored_end: Bool,
+}
+
+struct ReParser {
+    pat: String,
+    pos: Int64,
+    ok: Bool,
+    kind: Vec<Int64>,
+    left: Vec<Int64>,
+    right: Vec<Int64>,
+    ch: Vec<Int64>,
+    cls: Vec<Int64>,
+    cls_c: Vec<Int64>,
+    cls_lo: Vec<Int64>,
+    cls_hi: Vec<Int64>,
+    cls_neg: Vec<Int64>,
+}
+
+// Threading discipline (borrow checker is flow-insensitive): every helper
+// takes `&` and clones what it keeps; callers thread whole vars with
+// `q = f(&q)` (move plus reassign, always legal); fields are only ever
+// borrowed or cloned, never moved out; `return` carries fresh values or
+// Copies only (mid-function returns of owned state are forbidden).
+
+fun new_parser(pat: String): ReParser {
+    val k: Vec<Int64> = vec![];
+    val l: Vec<Int64> = vec![];
+    val r: Vec<Int64> = vec![];
+    val c: Vec<Int64> = vec![];
+    val cl: Vec<Int64> = vec![];
+    val cc: Vec<Int64> = vec![];
+    val clo: Vec<Int64> = vec![];
+    val chi: Vec<Int64> = vec![];
+    val cn: Vec<Int64> = vec![];
+    return ReParser { pat: pat.clone(), pos: 0 as Int64, ok: true, kind: k, left: l, right: r, ch: c, cls: cl, cls_c: cc, cls_lo: clo, cls_hi: chi, cls_neg: cn };
+}
+
+// Byte reads take an owned pattern clone: methods and Copies never
+// create extending loans, so results store freely across `q` updates
+// (stored `&`-borrows would freeze reassignment for the whole scope).
+fun peek_at(pos: Int64, pat: String): Int64 {
+    if (pos >= pat.len()) {
+        return 0 as Int64 - 1 as Int64;
+    }
+    return pat.byte_at(pos);
+}
+
+fun peek2_at(pos: Int64, pat: String): Int64 {
+    if (pos + (1 as Int64) >= pat.len()) {
+        return 0 as Int64 - 1 as Int64;
+    }
+    return pat.byte_at(pos + (1 as Int64));
+}
+
+fun mk_node(p: ReParser, k: Int64, l: Int64, r: Int64, c: Int64, cl: Int64): ReParser {
+    var kind = p.kind.clone();
+    var left = p.left.clone();
+    var right = p.right.clone();
+    var ch = p.ch.clone();
+    var cls = p.cls.clone();
+    kind.push(k);
+    left.push(l);
+    right.push(r);
+    ch.push(c);
+    cls.push(cl);
+    return ReParser { pat: p.pat.clone(), pos: p.pos, ok: p.ok, kind: kind, left: left, right: right, ch: ch, cls: cls, cls_c: p.cls_c.clone(), cls_lo: p.cls_lo.clone(), cls_hi: p.cls_hi.clone(), cls_neg: p.cls_neg.clone() };
+}
+
+// NOTE: this helper is named `poison_p` (not `fail`) because eleven
+// call sites to a function literally named `fail` in this module trigger
+// a spurious E0800 in nested `if`s (verified by rename; root cause in
+// sema name handling is untriaged)."
+fun poison_p(p: ReParser): ReParser {
+    return ReParser { pat: p.pat.clone(), pos: p.pos, ok: false, kind: p.kind.clone(), left: p.left.clone(), right: p.right.clone(), ch: p.ch.clone(), cls: p.cls.clone(), cls_c: p.cls_c.clone(), cls_lo: p.cls_lo.clone(), cls_hi: p.cls_hi.clone(), cls_neg: p.cls_neg.clone() };
+}
+
+fun adv(p: ReParser): ReParser {
+    return ReParser { pat: p.pat.clone(), pos: p.pos + (1 as Int64), ok: p.ok, kind: p.kind.clone(), left: p.left.clone(), right: p.right.clone(), ch: p.ch.clone(), cls: p.cls.clone(), cls_c: p.cls_c.clone(), cls_lo: p.cls_lo.clone(), cls_hi: p.cls_hi.clone(), cls_neg: p.cls_neg.clone() };
+}
+
+fun parse_alt(p: ReParser): ReParser {
+    return parse_alt_inner(p);
+}
+
+fun parse_alt_inner(p: ReParser): ReParser {
+    var q = parse_seq(p);
+    var root = 0 as Int64 - 1 as Int64;
+    if (q.ok) {
+        root = q.kind.len() - (1 as Int64);
+    }
+    var more = q.ok && peek_at(q.pos, q.pat.clone()) == (124 as Int64);
+    while (more) {
+        q = adv(q);
+        q = parse_seq(q);
+        if (q.ok) {
+            val r = q.kind.len() - (1 as Int64);
+            q = mk_node(q, nk_alt(), root, r, 0 as Int64, 0 as Int64);
+            root = q.kind.len() - (1 as Int64);
+        }
+        more = q.ok && peek_at(q.pos, q.pat.clone()) == (124 as Int64);
+    }
+    return q;
+}
+
+fun is_atom_end(b: Int64): Bool {
+    if (b == (0 as Int64 - 1 as Int64)) {
+        return true;
+    }
+    if (b == (124 as Int64)) {
+        return true;
+    }
+    if (b == (41 as Int64)) {
+        return true;
+    }
+    return false;
+}
+
+fun parse_seq(p: ReParser): ReParser {
+    var q = p;
+    var empty = true;
+    var root = 0 as Int64 - 1 as Int64;
+    var more = q.ok && !is_atom_end(peek_at(q.pos, q.pat.clone()));
+    while (more) {
+        q = parse_rep(q);
+        if (q.ok) {
+            val r = q.kind.len() - (1 as Int64);
+            if (empty) {
+                root = r;
+                empty = false;
+            } else {
+                q = mk_node(q, nk_seq(), root, r, 0 as Int64, 0 as Int64);
+                root = q.kind.len() - (1 as Int64);
+            }
+        }
+        more = q.ok && !is_atom_end(peek_at(q.pos, q.pat.clone()));
+    }
+    if (q.ok && empty) {
+        q = mk_node(q, nk_empty(), 0 as Int64, 0 as Int64, 0 as Int64, 0 as Int64);
+    }
+    return q;
+}
+
+fun parse_rep(p: ReParser): ReParser {
+    var q = parse_atom(p);
+    if (q.ok) {
+        val b = peek_at(q.pos, q.pat.clone());
+        if (b == (42 as Int64) || b == (43 as Int64) || b == (63 as Int64)) {
+            q = adv(q);
+            val inner = q.kind.len() - (1 as Int64);
+            if (b == (42 as Int64)) {
+                q = mk_node(q, nk_star(), inner, 0 as Int64, 0 as Int64, 0 as Int64);
+            }
+            if (b == (43 as Int64)) {
+                q = mk_node(q, nk_plus(), inner, 0 as Int64, 0 as Int64, 0 as Int64);
+            }
+            if (b == (63 as Int64)) {
+                q = mk_node(q, nk_quest(), inner, 0 as Int64, 0 as Int64, 0 as Int64);
+            }
+        }
+    }
+    return q;
+}
+
+// Branches share `p` under an if/else-expression (arms join moves, so
+// each arm moves freely; tails carry values, never `return`).
+fun parse_atom(p: ReParser): ReParser {
+    val b = peek_at(p.pos, p.pat.clone());
+    return if (b == (40 as Int64)) {
+        var q = adv(p);
+        q = parse_alt(q);
+        if (q.ok && peek_at(q.pos, q.pat.clone()) != (41 as Int64)) {
+            q = poison_p(q);
+        }
+        if (q.ok) {
+            q = adv(q);
+        }
+        q
+    } else if (b == (91 as Int64)) {
+        var q = adv(p);
+        parse_class(q)
+    } else if (b == (46 as Int64)) {
+        var q = adv(p);
+        q = mk_node(q, nk_any(), 0 as Int64, 0 as Int64, 0 as Int64, 0 as Int64);
+        q
+    } else if (b == (92 as Int64)) {
+        val e = peek2_at(p.pos, p.pat.clone());
+        if (e == (0 as Int64 - 1 as Int64)) {
+            poison_p(p)
+        } else {
+            var q = adv(p);
+            q = adv(q);
+            q = mk_node(q, nk_lit(), 0 as Int64, 0 as Int64, e, 0 as Int64);
+            q
+        }
+    } else if (b == (42 as Int64) || b == (43 as Int64) || b == (63 as Int64)) {
+        poison_p(p)
+    } else if (b == (0 as Int64 - 1 as Int64)) {
+        poison_p(p)
+    } else if (b == (41 as Int64) || b == (124 as Int64)) {
+        poison_p(p)
+    } else {
+        var q = adv(p);
+        q = mk_node(q, nk_lit(), 0 as Int64, 0 as Int64, b, 0 as Int64);
+        q
+    };
+}
+
+fun parse_class(p: ReParser): ReParser {
+    var q = p;
+    var neg = false;
+    if (peek_at(q.pos, q.pat.clone()) == (94 as Int64)) {
+        neg = true;
+        q = adv(q);
+    }
+    val cid = q.cls_neg.len();
+    var negv: Vec<Int64> = vec![];
+    var ni = 0 as Int64;
+    while (ni < q.cls_neg.len()) {
+        negv.push(q.cls_neg[ni]);
+        ni = ni + (1 as Int64);
+    }
+    if (neg) {
+        negv.push(1 as Int64);
+    } else {
+        negv.push(0 as Int64);
+    }
+    q = ReParser { pat: q.pat.clone(), pos: q.pos, ok: q.ok, kind: q.kind.clone(), left: q.left.clone(), right: q.right.clone(), ch: q.ch.clone(), cls: q.cls.clone(), cls_c: q.cls_c.clone(), cls_lo: q.cls_lo.clone(), cls_hi: q.cls_hi.clone(), cls_neg: negv };
+    var first = true;
+    var has_any = false;
+    var done = false;
+    // No mid-function returns below (only the tail): failures poison
+    // `ok` and every later step gates on it.
+    while (q.ok && !done) {
+        val b = peek_at(q.pos, q.pat.clone());
+        if (b == (0 as Int64 - 1 as Int64)) {
+            q = poison_p(q);
+        }
+        if (q.ok && b == (93 as Int64) && !first) {
+            q = adv(q);
+            if (!has_any) {
+                q = poison_p(q);
+            }
+            if (q.ok) {
+                q = mk_node(q, nk_class(), 0 as Int64, 0 as Int64, 0 as Int64, cid);
+                done = true;
+            }
+        }
+        if (q.ok && !done) {
+            var lo = b;
+            if (b == (92 as Int64)) {
+                val e = peek2_at(q.pos, q.pat.clone());
+                if (e == (0 as Int64 - 1 as Int64)) {
+                    q = poison_p(q);
+                }
+                if (q.ok) {
+                    lo = e;
+                    q = adv(q);
+                }
+            }
+            if (q.ok) {
+                q = adv(q);
+                first = false;
+                val is_range = peek_at(q.pos, q.pat.clone()) == (45 as Int64) && peek2_at(q.pos, q.pat.clone()) != (93 as Int64) && peek2_at(q.pos, q.pat.clone()) != (0 as Int64 - 1 as Int64);
+                if (is_range) {
+                    q = adv(q);
+                    var hi = peek_at(q.pos, q.pat.clone());
+                    if (hi == (92 as Int64)) {
+                        hi = peek2_at(q.pos, q.pat.clone());
+                        if (hi == (0 as Int64 - 1 as Int64)) {
+                            q = poison_p(q);
+                        }
+                        if (q.ok) {
+                            q = adv(q);
+                        }
+                    }
+                    if (q.ok) {
+                        q = adv(q);
+                        if (lo > hi) {
+                            q = poison_p(q);
+                        }
+                        if (q.ok) {
+                            var cc = q.cls_c.clone();
+                            var clo = q.cls_lo.clone();
+                            var chi = q.cls_hi.clone();
+                            cc.push(cid);
+                            clo.push(lo);
+                            chi.push(hi);
+                            q = ReParser { pat: q.pat.clone(), pos: q.pos, ok: q.ok, kind: q.kind.clone(), left: q.left.clone(), right: q.right.clone(), ch: q.ch.clone(), cls: q.cls.clone(), cls_c: cc, cls_lo: clo, cls_hi: chi, cls_neg: q.cls_neg.clone() };
+                            has_any = true;
+                        }
+                    }
+                } else {
+                    var cc = q.cls_c.clone();
+                    var clo = q.cls_lo.clone();
+                    var chi = q.cls_hi.clone();
+                    cc.push(cid);
+                    clo.push(lo);
+                    chi.push(lo);
+                    q = ReParser { pat: q.pat.clone(), pos: q.pos, ok: q.ok, kind: q.kind.clone(), left: q.left.clone(), right: q.right.clone(), ch: q.ch.clone(), cls: q.cls.clone(), cls_c: cc, cls_lo: clo, cls_hi: chi, cls_neg: q.cls_neg.clone() };
+                    has_any = true;
+                }
+            }
+        }
+    }
+    return q;
+}
+
+// ---------- Thompson construction (fragments by value) ----------
+
+struct ReFrag { start: Int64, outs: Vec<Int64> }
+
+struct ReBuild { op: Vec<Int64>, x: Vec<Int64>, y: Vec<Int64> }
+
+struct EmitOut { b: ReBuild, idx: Int64 }
+
+struct BuildOut { b: ReBuild, f: ReFrag }
+
+fun new_build(): ReBuild {
+    val o: Vec<Int64> = vec![];
+    val x: Vec<Int64> = vec![];
+    val y: Vec<Int64> = vec![];
+    return ReBuild { op: o, x: x, y: y };
+}
+
+fun emit_state(b: &ReBuild, o: Int64, x: Int64, y: Int64): EmitOut {
+    var op = b.op.clone();
+    var xx = b.x.clone();
+    var yy = b.y.clone();
+    op.push(o);
+    xx.push(x);
+    yy.push(y);
+    val idx = op.len() - (1 as Int64);
+    return EmitOut { b: ReBuild { op: op, x: xx, y: yy }, idx: idx };
+}
+
+fun patch_outs(b: &ReBuild, outs: Vec<Int64>, target: Int64): ReBuild {
+    var xx = b.x.clone();
+    var yy = b.y.clone();
+    var i = 0 as Int64;
+    while (i < outs.len()) {
+        val e = outs[i];
+        val idx = e / (2 as Int64);
+        if (e - idx * (2 as Int64) == (0 as Int64)) {
+            xx[idx] = target;
+        } else {
+            yy[idx] = target;
+        }
+        i = i + (1 as Int64);
+    }
+    return ReBuild { op: b.op.clone(), x: xx, y: yy };
+}
+
+fun concat_outs(a: Vec<Int64>, b: Vec<Int64>): Vec<Int64> {
+    var o: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < a.len()) {
+        o.push(a[i]);
+        i = i + (1 as Int64);
+    }
+    var j = 0 as Int64;
+    while (j < b.len()) {
+        o.push(b[j]);
+        j = j + (1 as Int64);
+    }
+    return o;
+}
+
+fun eps_frag(): ReFrag {
+    val o: Vec<Int64> = vec![];
+    return ReFrag { start: 0 as Int64 - 1 as Int64, outs: o };
+}
+
+fun clone_build(b: &ReBuild): ReBuild {
+    return ReBuild { op: b.op.clone(), x: b.x.clone(), y: b.y.clone() };
+}
+
+// Per-arm names are unique: sequential `if`s share the function scope,
+// so reusing `l`/`r`/`e` would rebind (E0401) and moves would leak.
+// One joining if/else-expression (tails only, never `return`): every
+// arm moves `b`/`p` freely and the join forgives, exactly like `match`.
+fun build_node(b: &ReBuild, p: &ReParser, node: Int64): BuildOut {
+    val k = p.kind[node];
+    return if (k == nk_lit()) {
+        val e0 = emit_state(b, op_lit(), p.ch[node], 0 as Int64 - 1 as Int64);
+        var o0: Vec<Int64> = vec![];
+        o0.push(e0.idx * (2 as Int64) + (1 as Int64));
+        val i0 = e0.idx;
+        BuildOut { b: e0.b, f: ReFrag { start: i0, outs: o0 } }
+    } else if (k == nk_any()) {
+        val e1 = emit_state(b, op_any(), 0 as Int64 - 1 as Int64, 0 as Int64 - 1 as Int64);
+        var o1: Vec<Int64> = vec![];
+        o1.push(e1.idx * (2 as Int64));
+        val i1 = e1.idx;
+        BuildOut { b: e1.b, f: ReFrag { start: i1, outs: o1 } }
+    } else if (k == nk_class()) {
+        val e2 = emit_state(b, op_class(), p.cls[node], 0 as Int64 - 1 as Int64);
+        var o2: Vec<Int64> = vec![];
+        o2.push(e2.idx * (2 as Int64) + (1 as Int64));
+        val i2 = e2.idx;
+        BuildOut { b: e2.b, f: ReFrag { start: i2, outs: o2 } }
+    } else if (k == nk_empty()) {
+        BuildOut { b: clone_build(b), f: eps_frag() }
+    } else if (k == nk_seq()) {
+        val l3 = build_node(b, p, p.left[node]);
+        val r3 = build_node(&l3.b, p, p.right[node]);
+        val ls = l3.f.start;
+        val rs = r3.f.start;
+        val lo = l3.f.outs.clone();
+        val ro = r3.f.outs.clone();
+        if (ls == (0 as Int64 - 1 as Int64)) {
+            BuildOut { b: clone_build(&r3.b), f: ReFrag { start: rs, outs: ro } }
+        } else if (rs == (0 as Int64 - 1 as Int64)) {
+            BuildOut { b: clone_build(&r3.b), f: ReFrag { start: ls, outs: lo } }
+        } else {
+            val b4 = patch_outs(&r3.b, lo, rs);
+            BuildOut { b: b4, f: ReFrag { start: ls, outs: ro } }
+        }
+    } else if (k == nk_alt()) {
+        val l5 = build_node(b, p, p.left[node]);
+        val r5 = build_node(&l5.b, p, p.right[node]);
+        val le = l5.f.start == (0 as Int64 - 1 as Int64);
+        val re = r5.f.start == (0 as Int64 - 1 as Int64);
+        if (le && re) {
+            BuildOut { b: r5.b, f: eps_frag() }
+        } else if (le) {
+            val e6 = emit_state(&r5.b, op_split(), r5.f.start, 0 as Int64 - 1 as Int64);
+            var o6: Vec<Int64> = vec![];
+            o6.push(e6.idx * (2 as Int64) + (1 as Int64));
+            val i6 = e6.idx;
+            BuildOut { b: e6.b, f: ReFrag { start: i6, outs: o6 } }
+        } else if (re) {
+            val e7 = emit_state(&r5.b, op_split(), l5.f.start, 0 as Int64 - 1 as Int64);
+            var o7: Vec<Int64> = vec![];
+            o7.push(e7.idx * (2 as Int64) + (1 as Int64));
+            val i7 = e7.idx;
+            BuildOut { b: e7.b, f: ReFrag { start: i7, outs: o7 } }
+        } else {
+            val e8 = emit_state(&r5.b, op_split(), l5.f.start, r5.f.start);
+            val i8 = e8.idx;
+            BuildOut { b: e8.b, f: ReFrag { start: i8, outs: concat_outs(l5.f.outs.clone(), r5.f.outs.clone()) } }
+        }
+    } else if (k == nk_star()) {
+        val l9 = build_node(b, p, p.left[node]);
+        if (l9.f.start == (0 as Int64 - 1 as Int64)) {
+            BuildOut { b: l9.b, f: eps_frag() }
+        } else {
+            val e10 = emit_state(&l9.b, op_split(), l9.f.start, 0 as Int64 - 1 as Int64);
+            val b11 = patch_outs(&e10.b, l9.f.outs.clone(), e10.idx);
+            var o10: Vec<Int64> = vec![];
+            o10.push(e10.idx * (2 as Int64) + (1 as Int64));
+            val i10 = e10.idx;
+            BuildOut { b: b11, f: ReFrag { start: i10, outs: o10 } }
+        }
+    } else if (k == nk_plus()) {
+        val l12 = build_node(b, p, p.left[node]);
+        if (l12.f.start == (0 as Int64 - 1 as Int64)) {
+            BuildOut { b: l12.b, f: eps_frag() }
+        } else {
+            val e13 = emit_state(&l12.b, op_split(), l12.f.start, 0 as Int64 - 1 as Int64);
+            val b14 = patch_outs(&e13.b, l12.f.outs.clone(), e13.idx);
+            var o13: Vec<Int64> = vec![];
+            o13.push(e13.idx * (2 as Int64) + (1 as Int64));
+            val i13 = e13.idx;
+            BuildOut { b: b14, f: ReFrag { start: l12.f.start, outs: o13 } }
+        }
+    } else {
+        // nk_quest.
+        val l15 = build_node(b, p, p.left[node]);
+        if (l15.f.start == (0 as Int64 - 1 as Int64)) {
+            BuildOut { b: l15.b, f: eps_frag() }
+        } else {
+            val e16 = emit_state(&l15.b, op_split(), l15.f.start, 0 as Int64 - 1 as Int64);
+            var o16: Vec<Int64> = vec![];
+            o16.push(e16.idx * (2 as Int64) + (1 as Int64));
+            val i16 = e16.idx;
+            BuildOut { b: e16.b, f: ReFrag { start: i16, outs: concat_outs(l15.f.outs.clone(), o16) } }
+        }
+    };
+}
+
+fun re_compile(pat: String): Option<ReProg> {
+    var body = pat;
+    var anchored_start = false;
+    var anchored_end = false;
+    if (body.len() > (0 as Int64) && body.byte_at(0 as Int64) == (94 as Int64)) {
+        anchored_start = true;
+        body = body.slice(1 as Int64, body.len());
+    }
+    if (body.len() > (0 as Int64) && body.byte_at(body.len() - (1 as Int64)) == (36 as Int64)) {
+        anchored_end = true;
+        body = body.slice(0 as Int64, body.len() - (1 as Int64));
+    }
+    val blen = body.len();
+    val pp = new_parser(body);
+    var p = parse_alt(pp);
+    if (!p.ok) {
+        return None;
+    }
+    if (p.pos != blen) {
+        return None;
+    }
+    val root = p.kind.len() - (1 as Int64);
+    val nb = new_build();
+    val ccc = p.cls_c.clone();
+    val clo = p.cls_lo.clone();
+    val chi = p.cls_hi.clone();
+    val cng = p.cls_neg.clone();
+    // Entry JMP comes first so state 0 is always the entry (the old
+    // append-at-end order left alternations unreachable from state 0).
+    val en0 = emit_state(&nb, op_jmp(), 0 as Int64 - 1 as Int64, 0 as Int64);
+    val out = build_node(&en0.b, &p, root);
+    val me = emit_state(&out.b, op_match(), 0 as Int64, 0 as Int64);
+    val b2 = patch_outs(&me.b, out.f.outs.clone(), me.idx);
+    var start = out.f.start;
+    if (start == (0 as Int64 - 1 as Int64)) {
+        start = me.idx;
+    }
+    var eo = b2.op.clone();
+    var ex = b2.x.clone();
+    var ey = b2.y.clone();
+    ex[0 as Int64] = start;
+    return Some(ReProg { op: eo, x: ex, y: ey, cls_c: ccc, cls_lo: clo, cls_hi: chi, cls_neg: cng, anchored_start: anchored_start, anchored_end: anchored_end });
+}
+
+// ---------- NFA simulation (leftmost, greedy-longest per start) ----------
+
+fun class_hit(prog: &ReProg, cid: Int64, b: Int64): Bool {
+    var hit = false;
+    var i = 0 as Int64;
+    while (i < prog.cls_c.len()) {
+        if (prog.cls_c[i] == cid && prog.cls_lo[i] <= b && b <= prog.cls_hi[i]) {
+            hit = true;
+        }
+        i = i + (1 as Int64);
+    }
+    // Negation is stored once per class id, index-aligned by creation.
+    if (cid >= (0 as Int64) && cid < prog.cls_neg.len() && prog.cls_neg[cid] == (1 as Int64)) {
+        return !hit;
+    }
+    return hit;
+}
+
+struct NfaState {
+    clist: Vec<Int64>,
+    gen: Vec<Int64>,
+    cur: Int64,
+}
+
+fun nfa_add(prog: &ReProg, st: NfaState, s: Int64): NfaState {
+    var clist = st.clist.clone();
+    var gen = st.gen.clone();
+    var stack: Vec<Int64> = vec![];
+    stack.push(s);
+    while (stack.len() > (0 as Int64)) {
+        val t = stack[stack.len() - (1 as Int64)];
+        var ns: Vec<Int64> = vec![];
+        var i = 0 as Int64;
+        while (i < stack.len() - (1 as Int64)) {
+            ns.push(stack[i]);
+            i = i + (1 as Int64);
+        }
+        stack = ns;
+        if (t < (0 as Int64) || t >= prog.op.len()) {
+            continue;
+        }
+        if (gen[t] == st.cur) {
+            continue;
+        }
+        gen[t] = st.cur;
+        val o = prog.op[t];
+        if (o == op_split()) {
+            stack.push(prog.x[t]);
+            stack.push(prog.y[t]);
+        } else {
+            if (o == op_jmp()) {
+                stack.push(prog.x[t]);
+            } else {
+                clist.push(t);
+            }
+        }
+    }
+    return NfaState { clist: clist, gen: gen, cur: st.cur };
+}
+
+fun nfa_start(prog: &ReProg, from: Int64): NfaState {
+    var gen: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < prog.op.len()) {
+        gen.push(0 as Int64);
+        i = i + (1 as Int64);
+    }
+    val cl: Vec<Int64> = vec![];
+    val st = NfaState { clist: cl, gen: gen, cur: 1 as Int64 };
+    return nfa_add(prog, st, from);
+}
+
+fun nfa_next_gen(st: NfaState): NfaState {
+    val cl: Vec<Int64> = vec![];
+    return NfaState { clist: cl, gen: st.gen.clone(), cur: st.cur + (1 as Int64) };
+}
+
+fun nfa_step(prog: &ReProg, st: NfaState, b: Int64): NfaState {
+    val items = st.clist.clone();
+    var nx = nfa_next_gen(st);
+    var i = 0 as Int64;
+    while (i < items.len()) {
+        val s = items[i];
+        val o = prog.op[s];
+        if (o == op_lit() && prog.x[s] == b) {
+            nx = nfa_add(prog, nx, prog.y[s]);
+        }
+        if (o == op_any()) {
+            nx = nfa_add(prog, nx, prog.x[s]);
+        }
+        if (o == op_class() && class_hit(prog, prog.x[s], b)) {
+            nx = nfa_add(prog, nx, prog.y[s]);
+        }
+        i = i + (1 as Int64);
+    }
+    return nx;
+}
+
+fun nfa_accepts(prog: &ReProg, st: &NfaState): Bool {
+    var i = 0 as Int64;
+    while (i < st.clist.len()) {
+        if (prog.op[st.clist[i]] == op_match()) {
+            return true;
+        }
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+// Match end position from `from`, or -1 (greedy: longest end wins).
+fun re_match_at(prog: &ReProg, s: String, from: Int64): Int64 {
+    val n = s.len();
+    var best = 0 as Int64 - 1 as Int64;
+    var st = nfa_start(prog, 0 as Int64);
+    if (nfa_accepts(prog, &st)) {
+        if (!prog.anchored_end || from == n) {
+            best = from;
+        }
+    }
+    var pos = from;
+    while (pos < n) {
+        val b = s.byte_at(pos);
+        st = nfa_step(prog, st, b);
+        pos = pos + (1 as Int64);
+        if (nfa_accepts(prog, &st)) {
+            if (!prog.anchored_end || pos == n) {
+                best = pos;
+            }
+        }
+        if (st.clist.len() == (0 as Int64)) {
+            pos = n;
+        }
+    }
+    return best;
+}
+
+struct ReOut { ok: Bool, prog: ReProg }
+
+fun empty_prog(): ReProg {
+    val o: Vec<Int64> = vec![];
+    val x: Vec<Int64> = vec![];
+    val y: Vec<Int64> = vec![];
+    val c: Vec<Int64> = vec![];
+    val lo: Vec<Int64> = vec![];
+    val hi: Vec<Int64> = vec![];
+    val ng: Vec<Int64> = vec![];
+    return ReProg { op: o, x: x, y: y, cls_c: c, cls_lo: lo, cls_hi: hi, cls_neg: ng, anchored_start: false, anchored_end: false };
+}
+
+fun re_try(pat: String): ReOut {
+    return match (re_compile(pat)) { Some(v) -> ReOut { ok: true, prog: v }, None -> ReOut { ok: false, prog: empty_prog() }, };
+}
+
+pub fun re_detect(pat: String, s: String): Bool {
+    val c = re_try(pat);
+    if (!c.ok) {
+        return false;
+    }
+    val prog = c.prog;
+    if (prog.anchored_start) {
+        return re_match_at(&prog, s.clone(), 0 as Int64) != (0 as Int64 - 1 as Int64);
+    }
+    var st = 0 as Int64;
+    while (st <= s.len()) {
+        if (re_match_at(&prog, s.clone(), st) != (0 as Int64 - 1 as Int64)) {
+            return true;
+        }
+        st = st + (1 as Int64);
+    }
+    return false;
+}
+
+pub fun re_extract(pat: String, s: String): Option<String> {
+    val c = re_try(pat);
+    if (!c.ok) {
+        return None;
+    }
+    val prog = c.prog;
+    if (prog.anchored_start) {
+        val e = re_match_at(&prog, s.clone(), 0 as Int64);
+        if (e == (0 as Int64 - 1 as Int64)) {
+            return None;
+        }
+        return Some(s.slice(0 as Int64, e));
+    }
+    var st = 0 as Int64;
+    while (st <= s.len()) {
+        val e = re_match_at(&prog, s.clone(), st);
+        if (e != (0 as Int64 - 1 as Int64)) {
+            return Some(s.slice(st, e));
+        }
+        st = st + (1 as Int64);
+    }
+    return None;
+}
+

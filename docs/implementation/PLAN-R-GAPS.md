@@ -67,7 +67,19 @@ codes: Vec<Int32> }` (level 0 = missing). Constructors
 level order preserved. Layouts + drop/clone in codegen; everything else
 pure Valvet. Fixtures vs R `factor()` semantics on level ordering and NA
 handling.
-**F2. Strings.** SHIPPED Phase 1: three `String` byte primitives (`len`,
+**F2. Strings.** SHIPPED Phase 2 as pure `std::re`: Thompson NFA over
+explicit tables (literals, `.`, `*`/`+`/`?`, `[...]` ranges and `[^...]`,
+groups, `|` alternation, edge `^`/`$`, backslash escapes) with
+leftmost-longest greedy semantics (the one pinned divergence from PCRE:
+`a|ab` on "ab" is "ab"). Bad patterns are total (`false`/`None`).
+Writing it mapped the borrow rules precisely (stored `&`-borrows freeze
+reassignment scope-wide; methods/Copies never extend; `q = f(q)`
+move-plus-reassign is always legal; mid-returns must carry fresh values;
+if/else-expression arms join moves) and found one untriaged sema quirk
+(eleven call sites to a helper literally named `fail` misreport E0800;
+renamed `poison_p`). Differential-tested vs Python `re` plus
+termination probes on nested quantifiers. 1 fixture, 183/183 green,
+ASan-clean. SHIPPED Phase 1: three `String` byte primitives (`len`,
 `byte_at` with OOB trap, `slice` with OOB trap) plus `std::str` verbs
 (`str_contains`, `str_starts_with`/`str_ends_with`, literal `str_replace`,
 `str_substring`), all differential-tested vs Python (empty-needle
