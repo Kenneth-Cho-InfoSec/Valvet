@@ -96,7 +96,15 @@ Fixtures vs Python `datetime` including leap years and epoch boundaries.
 
 ## P2: verbs, plots, distributions (needs P0 sort only)
 
-**D1. dplyr verbs + pipe.** New `|>` operator (pure sugar: `x |> f(y)`
+**D1. dplyr verbs + pipe.** SHIPPED: `|>` lowers in the parser to
+`f(x, args)` (bare `x |> f` to `f(x)`); verbs as move-by-value frame funs
+in `std::frame` (`frame_arrange` numeric-aware via M2 `order`,
+`frame_mutate`/`frame_summarise` over a flat `ColExpr` ADT: `Col`, `Lit`,
+`Count`, `Add/Sub/Mul/Div`, `MeanOf/SumOf/MinOf/MaxOf`; missing columns
+follow the silent-empty precedent, unparseable cells are NaN-skipped like
+`frame_group_sum`). ColExpr is flat (no Box exists, so nesting goes
+through intermediate columns). 2 fixtures vs pure-Python oracles,
+171/171 green, ASan-clean. New `|>` operator (pure sugar: `x |> f(y)`
 lowers to `f(x, y)`). Verbs as frame methods (builder chaining needs no
 closures): `arrange(col, dir)` on M2, `mutate`/`summarise` over a
 **`ColExpr` ADT** instead of closures: first-order combinators

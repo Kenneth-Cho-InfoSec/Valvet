@@ -1639,7 +1639,55 @@ impl Parser {
     // ---------- expressions (precedence climbing) ----------
 
     fn parse_expr(&mut self) -> Option<Expr> {
-        self.parse_or()
+        self.parse_pipe()
+    }
+
+    /// D1 pipe (loosest precedence, left-associative): `x |> f(args)`
+    /// lowers to `f(x, args)`; bare `x |> f` lowers to `f(x)`. Pure sugar:
+    /// the desugared call typechecks like a written call (so arity and
+    /// ownership errors point at the call, never at `|>` itself).
+    fn parse_pipe(&mut self) -> Option<Expr> {
+        let mut lhs = self.parse_or()?;
+        loop {
+            if !matches!(self.peek_next(), Tok::Pipe) {
+                break;
+            }
+            self.skip_nls();
+            self.bump();
+            self.skip_nls();
+            let (name, _nspan) = self.expect_ident("function name after `|>`")?;
+            let start = lhs.span.start;
+            let mut args = vec![lhs];
+            if matches!(self.cur(), Tok::LParen) {
+                self.bump();
+                loop {
+                    self.skip_nls();
+                    if matches!(self.cur(), Tok::RParen) {
+                        self.bump();
+                        break;
+                    }
+                    args.push(self.parse_expr()?);
+                    self.skip_nls();
+                    match self.cur() {
+                        Tok::Comma => {
+                            self.bump();
+                        }
+                        Tok::RParen => {}
+                        _ => {
+                            self.err("E0005", "expected `,` or `)` in pipe call arguments");
+                            return None;
+                        }
+                    }
+                }
+            }
+            let end = self.prev_span().end;
+            lhs = Expr {
+                id: self.fresh(),
+                span: Span::new(start, end),
+                kind: ExprKind::Call { name, args },
+            };
+        }
+        Some(lhs)
     }
 
     fn parse_or(&mut self) -> Option<Expr> {

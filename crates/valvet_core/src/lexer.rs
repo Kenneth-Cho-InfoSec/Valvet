@@ -504,6 +504,7 @@ impl<'a> Lexer<'a> {
             Some((b'>', b'=')) => tok2!(Tok::GtEq),
             Some((b'&', b'&')) => tok2!(Tok::AndAnd),
             Some((b'|', b'|')) => tok2!(Tok::OrOr),
+            Some((b'|', b'>')) => tok2!(Tok::Pipe),
             Some((b'-', b'>')) => tok2!(Tok::Arrow),
             Some((b'+', b'=')) => tok2!(Tok::PlusEq),
             Some((b'-', b'=')) => tok2!(Tok::MinusEq),

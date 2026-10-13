@@ -64,6 +64,8 @@ pub enum Tok {
     AndAnd,
     OrOr,
     BitOr,
+    /// `|>` left-to-right pipe (D1): `x |> f(args)` lowers to `f(x, args)`.
+    Pipe,
     Bang,
     Eq,
     PlusEq,

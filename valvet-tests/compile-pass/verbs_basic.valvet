@@ -1,0 +1,31 @@
+import std::frame::DynamicFrame;
+import std::frame::ColExpr;
+import std::frame::frame_arrange;
+import std::frame::frame_mutate;
+import std::frame::frame_summarise;
+
+fun mk(): DynamicFrame {
+    return DynamicFrame { names: vec!["name", "score"], cols: vec![vec!["b", "a", "c"], vec!["10", "30", "20"]], nrows: 3 as Int64 };
+}
+
+fun show(f: DynamicFrame) {
+    println(f.names);
+    println(f.cols);
+}
+
+fun main() {
+    // Arrange: numeric order on numeric-looking strings, lexicographic
+    // on names, unchanged on missing columns; desc reverses.
+    show(mk() |> frame_arrange("score", true));
+    show(mk() |> frame_arrange("score", false));
+    show(mk() |> frame_arrange("name", true));
+    show(mk() |> frame_arrange("nope", true));
+    // Mutate: new and replaced columns; chains via pipe.
+    show(mk() |> frame_mutate("double", ColExpr::Mul("score", "score")));
+    show(mk() |> frame_mutate("double", ColExpr::Mul("score", "score")) |> frame_mutate("score", ColExpr::Add("score", "score")));
+    // Summarise: one row per aggregation.
+    show(mk() |> frame_summarise("mean_score", ColExpr::MeanOf("score")));
+    show(mk() |> frame_summarise("total", ColExpr::SumOf("score")));
+    show(mk() |> frame_summarise("n", ColExpr::Count));
+    show(mk() |> frame_mutate("who", ColExpr::Lit("x")) |> frame_summarise("first_who", ColExpr::Col("who")));
+}

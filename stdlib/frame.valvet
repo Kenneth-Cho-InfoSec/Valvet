@@ -403,3 +403,264 @@ pub fun frame_join_inner(left: &DynamicFrame, lkey: String, right: &DynamicFrame
 pub fun frame_join_left(left: &DynamicFrame, lkey: String, right: &DynamicFrame, rkey: String): Result<JoinResult, String> {
     join_core(left, lkey, right, rkey, true)
 }
+
+// D1 verbs: pipe-friendly frame transforms (frames move by value, so
+// `f |> frame_arrange("x", true) |> frame_mutate(...)` chains). Missing
+// columns follow the file's existing precedent (silent empty), documented
+// per verb. All numeric parsing skips/recycles exactly like
+// `frame_group_sum` (unparseable cells are ignored, never traps).
+
+// First-order column expressions (flat by design: Valvet has no Box, so
+// expressions nest only through intermediate `frame_mutate` columns,
+// never inside one `ColExpr`).
+pub enum ColExpr {
+    Col(String),
+    Lit(String),
+    Count,
+    Add(String, String),
+    Sub(String, String),
+    Mul(String, String),
+    Div(String, String),
+    MeanOf(String),
+    SumOf(String),
+    MinOf(String),
+    MaxOf(String),
+}
+
+fun strcol_of(f: &DynamicFrame, col: String, n: Int64): Vec<String> {
+    val empty: Vec<String> = vec![];
+    val c = match (frame_col(f, col)) { Some(v) -> v, None -> empty, };
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        if (i < c.len()) {
+            out.push(c[i]);
+        } else {
+            out.push("");
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun numcol_of(f: &DynamicFrame, col: String, n: Int64): Vec<Float64> {
+    val s = strcol_of(f, col, n);
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < s.len()) {
+        val v = match (s[i].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+        out.push(v);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun is_nan(x: Float64): Bool {
+    return x != x;
+}
+
+fun agg_mean(v: Vec<Float64>): Float64 {
+    var sum = 0.0;
+    var n = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (!is_nan(v[i])) {
+            sum = sum + v[i];
+            n = n + (1 as Int64);
+        }
+        i = i + (1 as Int64);
+    }
+    if (n == (0 as Int64)) {
+        return 0.0 / 0.0;
+    }
+    val nf = match (to_string(n).parse_float()) { Some(x) -> x, None -> 1.0, };
+    return sum / nf;
+}
+
+fun agg_sum(v: Vec<Float64>): Float64 {
+    var sum = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (!is_nan(v[i])) {
+            sum = sum + v[i];
+        }
+        i = i + (1 as Int64);
+    }
+    return sum;
+}
+
+fun agg_min(v: Vec<Float64>): Float64 {
+    var best = 0.0 / 0.0;
+    var started = false;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (is_nan(v[i])) {
+            return 0.0 / 0.0;
+        }
+        if (!started || v[i] < best) {
+            best = v[i];
+            started = true;
+        }
+        i = i + (1 as Int64);
+    }
+    return best;
+}
+
+fun agg_max(v: Vec<Float64>): Float64 {
+    var best = 0.0 / 0.0;
+    var started = false;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (is_nan(v[i])) {
+            return 0.0 / 0.0;
+        }
+        if (!started || v[i] > best) {
+            best = v[i];
+            started = true;
+        }
+        i = i + (1 as Int64);
+    }
+    return best;
+}
+
+fun eval_arith(a: Vec<Float64>, b: Vec<Float64>, op: Int64, n: Int64): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val x = a[i];
+        val y = b[i];
+        var r = 0.0 / 0.0;
+        if (op == (0 as Int64)) {
+            r = x + y;
+        }
+        if (op == (1 as Int64)) {
+            r = x - y;
+        }
+        if (op == (2 as Int64)) {
+            r = x * y;
+        }
+        if (op == (3 as Int64)) {
+            r = x / y;
+        }
+        out.push(to_string(r));
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun broadcast(s: String, n: Int64): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        out.push(s.clone());
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+// Row-wise evaluation (aggregates broadcast their scalar to every row).
+fun eval_colexpr(f: &DynamicFrame, e: ColExpr, n: Int64): Vec<String> {
+    return match (e) {
+        ColExpr::Col(c) -> strcol_of(f, c, n),
+        ColExpr::Lit(s) -> broadcast(s, n),
+        ColExpr::Count -> broadcast(to_string(n), n),
+        ColExpr::Add(a, b) -> eval_arith(numcol_of(f, a, n), numcol_of(f, b, n), 0 as Int64, n),
+        ColExpr::Sub(a, b) -> eval_arith(numcol_of(f, a, n), numcol_of(f, b, n), 1 as Int64, n),
+        ColExpr::Mul(a, b) -> eval_arith(numcol_of(f, a, n), numcol_of(f, b, n), 2 as Int64, n),
+        ColExpr::Div(a, b) -> eval_arith(numcol_of(f, a, n), numcol_of(f, b, n), 3 as Int64, n),
+        ColExpr::MeanOf(c) -> broadcast(to_string(agg_mean(numcol_of(f, c, n))), n),
+        ColExpr::SumOf(c) -> broadcast(to_string(agg_sum(numcol_of(f, c, n))), n),
+        ColExpr::MinOf(c) -> broadcast(to_string(agg_min(numcol_of(f, c, n))), n),
+        ColExpr::MaxOf(c) -> broadcast(to_string(agg_max(numcol_of(f, c, n))), n),
+    };
+}
+
+pub fun frame_mutate(f: DynamicFrame, name: String, e: ColExpr): DynamicFrame {
+    val n = f.nrows;
+    val newcol = eval_colexpr(&f, e, n);
+    var onames: Vec<String> = vec![];
+    var ocols: Vec<Vec<String>> = vec![];
+    var replaced = false;
+    var i = 0 as Int64;
+    while (i < f.names.len()) {
+        if (f.names[i] == name) {
+            onames.push(f.names[i]);
+            ocols.push(newcol.clone());
+            replaced = true;
+        } else {
+            onames.push(f.names[i]);
+            ocols.push(f.cols[i]);
+        }
+        i = i + (1 as Int64);
+    }
+    if (!replaced) {
+        onames.push(name);
+        ocols.push(newcol);
+    }
+    return DynamicFrame { names: onames, cols: ocols, nrows: n };
+}
+
+// `summarise` evaluates exactly like `mutate`, then keeps the first row
+// (aggregates broadcast, so row 0 is the scalar; empty frames stay empty).
+pub fun frame_summarise(f: DynamicFrame, name: String, e: ColExpr): DynamicFrame {
+    val n = f.nrows;
+    if (n == (0 as Int64)) {
+        val ec: Vec<String> = vec![];
+        return DynamicFrame { names: vec![name.clone()], cols: vec![ec], nrows: 0 as Int64 };
+    }
+    val col = eval_colexpr(&f, e, n);
+    return DynamicFrame { names: vec![name], cols: vec![vec![col[0 as Int64]]], nrows: 1 as Int64 };
+}
+
+// Arrange rows by one column (M2 `order`). Numeric when every cell parses
+// as Float64, else lexicographic on raw strings (documented). Missing
+// columns return the frame unchanged; `asc` false reverses the order.
+pub fun frame_arrange(f: DynamicFrame, col: String, asc: Bool): DynamicFrame {
+    val empty: Vec<String> = vec![];
+    val key = match (frame_col(&f, col)) { Some(v) -> v, None -> empty, };
+    val missing = key.len() == (0 as Int64);
+    if (missing) {
+        return DynamicFrame { names: f.names.clone(), cols: f.cols.clone(), nrows: f.nrows };
+    }
+    var all_num = true;
+    var nums: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < key.len()) {
+        val p = match (key[i].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+        if (is_nan(p)) {
+            all_num = false;
+        }
+        nums.push(p);
+        i = i + (1 as Int64);
+    }
+    var ord: Vec<Int64> = vec![];
+    if (all_num) {
+        ord = nums.order();
+    } else {
+        ord = key.clone().order();
+    }
+    if (!asc) {
+        var rev: Vec<Int64> = vec![];
+        var k = ord.len() - (1 as Int64);
+        while (k >= (0 as Int64)) {
+            rev.push(ord[k]);
+            k = k - (1 as Int64);
+        }
+        ord = rev;
+    }
+    var onames: Vec<String> = vec![];
+    var ocols: Vec<Vec<String>> = vec![];
+    var c = 0 as Int64;
+    while (c < f.names.len()) {
+        onames.push(f.names[c]);
+        var ncol: Vec<String> = vec![];
+        var r = 0 as Int64;
+        while (r < ord.len()) {
+            ncol.push(f.cols[c][ord[r]]);
+            r = r + (1 as Int64);
+        }
+        ocols.push(ncol);
+        c = c + (1 as Int64);
+    }
+    return DynamicFrame { names: onames, cols: ocols, nrows: f.nrows };
+}

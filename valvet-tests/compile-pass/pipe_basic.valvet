@@ -1,0 +1,14 @@
+fun add1(x: Int64): Int64 {
+    return x + (1 as Int64);
+}
+
+fun add2(x: Int64, y: Int64): Int64 {
+    return x + y;
+}
+
+fun main() {
+    // Bare pipe target and piped extra args; left-associative chains.
+    println(1 as Int64 |> add1);
+    println(1 as Int64 |> add1 |> add1);
+    println(1 as Int64 |> add2(41 as Int64));
+}
