@@ -1,0 +1,8 @@
+fun double(x: Int64): Int64 {
+x * (2 as Int64)
+}
+fun main() {
+val v = 21 as Int64
+println(v.double())
+println(double(v))
+}

@@ -1,0 +1,12 @@
+struct Wrap {
+s: String,
+}
+fun eat(w: Wrap): Int64 {
+println(w.s)
+1 as Int64
+}
+fun main() {
+val w = Wrap { s: "hi" }
+println(w.eat())
+println(w.eat())
+}

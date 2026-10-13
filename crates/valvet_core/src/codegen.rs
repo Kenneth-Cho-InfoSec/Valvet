@@ -4370,6 +4370,7 @@ impl<'a> Gen<'a> {
                 if name == "println" || name == "print" {
                     let a = args.first().ok_or_else(|| Ice("print arity".into()))?;
                     let t = self.ty_of(a.id);
+
                     let saved = self.cur_move;
                     self.cur_move = false; // print borrows
                                            // Materialize so owned rvalues (literals, concats, call results)
@@ -4421,6 +4422,10 @@ impl<'a> Gen<'a> {
                         Ty::Int64 => format!("vstr_from_i64({})", inner),
                         Ty::Float64 => format!("vstr_from_f64({})", inner),
                         Ty::Bool => format!("vstr_from_bool({})", inner),
+                        // Identity clone (D1 interpolation of `String`
+                        // values): concat consumes its inputs, so borrow
+                        // position must clone (like materialization).
+                        Ty::Str => format!("vstr_clone({})", inner),
                         _ => return Err(Ice("to_string of non-scalar".into())),
                     }
                 } else if name == "rng_seeded" {
@@ -4594,48 +4599,7 @@ impl<'a> Gen<'a> {
                     // the kernel; the function operand lowers to its C symbol).
                     self.emit_functional(name, e, args)?
                 } else {
-                    // Arguments: move owned values into the callee (callee frees params).
-                    let saved = self.cur_move;
-                    let mut parts = vec![];
-                    let mut moved_tmps = vec![];
-                    // Declared parameter dimensions (for scale conversion).
-                    let pdims = match self.resolve_fun(name) {
-                        Some((m, n)) => self.callee_param_dims(&m, &n),
-                        None => vec![],
-                    };
-                    // Shield (as in struct literals): an argument that
-                    // flushes internally (e.g. a nested `vec![..]`) must
-                    // not write poisons queued by earlier arguments — the
-                    // call text has not been emitted yet.
-                    let mut shielded: Vec<(String, Ty)> = vec![];
-                    for (i, a) in args.iter().enumerate() {
-                        shielded.extend(std::mem::take(&mut self.nulls));
-                        let t = self.ty_of(a.id);
-                        self.cur_move = self.moves(&t);
-                        let before = self.frame_len();
-                        let v = self.mat_str(a)?;
-                        if self.cur_move && self.is_tmp_since(before, &v) {
-                            moved_tmps.push(v.clone());
-                        }
-                        // Units: convert to the parameter's scale.
-                        let v = match pdims.get(i) {
-                            Some(pd) => self.coerce(v, &self.dim_of(a.id), pd),
-                            None => v,
-                        };
-                        parts.push(v);
-                    }
-                    self.cur_move = saved;
-                    let (cmod, cname) = self
-                        .resolve_fun(name)
-                        .ok_or_else(|| Ice(format!("unknown function {}", name)))?;
-                    let call = format!("{}_fn({})", cfun(&cmod, &cname), parts.join(", "));
-                    for t in moved_tmps {
-                        self.null_slot(&t);
-                    }
-                    self.nulls.extend(shielded);
-                    // NOTE: no flush here — nulls are statement-level effects and must
-                    // be written after the enclosing statement text (else use-after-NULL).
-                    call
+                    self.emit_user_call(name, args)?
                 }
             }
             ExprKind::Binary { op, lhs, rhs } => {
@@ -5237,7 +5201,16 @@ impl<'a> Gen<'a> {
                         let vct = ctype_inst(base, args);
                         (t, vct.strip_prefix('V').unwrap_or(&vct).to_string())
                     }
-                    _ => return Err(Ice("method on non-Vec".into())),
+                    // UFCS (C2): sema routes method-less receivers to a free
+                    // function; lower as that call (sema guaranteed it).
+                    _ => {
+                        if self.resolve_fun(method).is_some() {
+                            let mut uargs = vec![(**receiver).clone()];
+                            uargs.extend(args.iter().cloned());
+                            return self.emit_user_call(method, &uargs);
+                        }
+                        return Err(Ice("method on non-Vec".into()));
+                    }
                 };
                 // Receiver borrows (pointer model — never moves).
                 let saved = self.cur_move;
@@ -5756,6 +5729,53 @@ impl<'a> Gen<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Lower a user-function call (shared by `Call` and the UFCS
+    /// `Method` fallback): move owned args in, coerce unit scales.
+    fn emit_user_call(&mut self, name: &str, args: &[Expr]) -> Result<String, Ice> {
+        // Arguments: move owned values into the callee (callee frees params).
+        let saved = self.cur_move;
+        let mut parts = vec![];
+        let mut moved_tmps = vec![];
+        // Declared parameter dimensions (for scale conversion).
+        let pdims = match self.resolve_fun(name) {
+            Some((m, n)) => self.callee_param_dims(&m, &n),
+            None => vec![],
+        };
+        // Shield (as in struct literals): an argument that
+        // flushes internally (e.g. a nested `vec![..]`) must
+        // not write poisons queued by earlier arguments — the
+        // call text has not been emitted yet.
+        let mut shielded: Vec<(String, Ty)> = vec![];
+        for (i, a) in args.iter().enumerate() {
+            shielded.extend(std::mem::take(&mut self.nulls));
+            let t = self.ty_of(a.id);
+            self.cur_move = self.moves(&t);
+            let before = self.frame_len();
+            let v = self.mat_str(a)?;
+            if self.cur_move && self.is_tmp_since(before, &v) {
+                moved_tmps.push(v.clone());
+            }
+            // Units: convert to the parameter's scale.
+            let v = match pdims.get(i) {
+                Some(pd) => self.coerce(v, &self.dim_of(a.id), pd),
+                None => v,
+            };
+            parts.push(v);
+        }
+        self.cur_move = saved;
+        let (cmod, cname) = self
+            .resolve_fun(name)
+            .ok_or_else(|| Ice(format!("unknown function {}", name)))?;
+        let call = format!("{}_fn({})", cfun(&cmod, &cname), parts.join(", "));
+        for t in moved_tmps {
+            self.null_slot(&t);
+        }
+        self.nulls.extend(shielded);
+        // NOTE: no flush here — nulls are statement-level effects and must
+        // be written after the enclosing statement text (else use-after-NULL).
+        Ok(call)
     }
 
     /// Emit a whole match. `res_ty`: value-match result type, if any.

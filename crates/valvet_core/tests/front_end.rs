@@ -1106,3 +1106,55 @@ fn sugar_suffix_bad_rejected() {
 fn sugar_suffix_range_rejected() {
     assert_eq!(check_codes("val x = 99999999999i32\n"), vec!["E0201"]);
 }
+
+#[test]
+fn sugar_ufcs_accepted() {
+    check_ok("fun double(x: Int64): Int64 {\nx * (2 as Int64)\n}\nfun main() {\nval v = 21 as Int64\nprintln(v.double())\n}\n");
+}
+
+#[test]
+fn sugar_ufcs_moved_rejected() {
+    // The receiver is a real first argument: moving it flags later uses.
+    assert_eq!(
+        check_codes("struct Wrap {\ns: String,\n}\nfun eat(w: Wrap): Int64 {\nprintln(w.s)\n1 as Int64\n}\nfun main() {\nval w = Wrap { s: \"hi\" }\nprintln(w.eat())\nprintln(w.eat())\n}\n"),
+        vec!["E0301"]
+    );
+}
+
+#[test]
+fn sugar_ufcs_vec_method_wins() {
+    // Real methods beat same-named free functions: still the Vec error.
+    assert_eq!(
+        check_codes("fun first(v: Vec<Int64>): Int64 {\nv[0]\n}\nfun main() {\nval v = vec![7 as Int64]\nprintln(v.first())\n}\n"),
+        vec!["E0401"]
+    );
+}
+
+#[test]
+fn sugar_multi_assign_accepted() {
+    check_ok("var a = 1\nvar b = 2\na, b = b, a\nprintln(a, b)\n");
+}
+
+#[test]
+fn sugar_multi_arity_rejected() {
+    assert_eq!(
+        check_codes("var a = 1\nvar b = 2\na, b = b\n"),
+        vec!["E0005"]
+    );
+}
+
+#[test]
+fn sugar_interp_accepted() {
+    check_ok("val name = \"world\"\nval n = 42\nprintln(\"hello $name, n=$n!\")\nprintln(\"${n + 1}\")\nprintln(\"braces {ok} and price $5\")\n");
+}
+
+#[test]
+fn sugar_interp_unknown_var_single_error() {
+    // Poison flows through concat without follow-ons.
+    assert_eq!(check_codes("println(\"a${nope}b\")\n"), vec!["E0401"]);
+}
+
+#[test]
+fn sugar_interp_adjacent_strings_still_error() {
+    assert_eq!(check_codes("println(\"a\" \"b\")\n"), vec!["E0005"]);
+}

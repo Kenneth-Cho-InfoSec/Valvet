@@ -34,56 +34,7 @@ impl<'a> Lexer<'a> {
         }
         // UTF-8 validity is guaranteed by Rust String; validate scalars below.
         while i < self.text.len() {
-            let c = self.text[i];
-            match c {
-                b' ' | b'\t' | b'\r' => {
-                    // CRLF normalised: lone \r skipped; \r\n handled by \n arm.
-                    i += 1;
-                }
-                b'\n' => {
-                    self.push(Tok::Nl, i, i + 1);
-                    i += 1;
-                }
-                b'/' if self.peek(i + 1) == Some(b'/') => {
-                    i += 2;
-                    while i < self.text.len() && self.text[i] != b'\n' {
-                        i += 1;
-                    }
-                }
-                b'/' if self.peek(i + 1) == Some(b'*') => {
-                    let start = i;
-                    i += 2;
-                    let mut depth = 1usize;
-                    while i < self.text.len() && depth > 0 {
-                        if self.text[i] == b'/' && self.peek(i + 1) == Some(b'*') {
-                            depth += 1;
-                            i += 2;
-                        } else if self.text[i] == b'*' && self.peek(i + 1) == Some(b'/') {
-                            depth -= 1;
-                            i += 2;
-                        } else {
-                            i += 1;
-                        }
-                    }
-                    if depth > 0 {
-                        self.errs.push(
-                            Diagnostic::error(
-                                "E0003",
-                                Span::new(start, self.text.len()),
-                                "unterminated block comment",
-                            )
-                            .with_help("close the comment with */"),
-                        );
-                    }
-                }
-                b'"' => i = self.string(i),
-                b'\'' => i = self.char_lit(i),
-                b'0'..=b'9' => i = self.number(i),
-                b'a'..=b'z' | b'A'..=b'Z' | b'_' => i = self.word(i),
-                _ => {
-                    i = self.symbol(i);
-                }
-            }
+            i = self.step(i);
         }
         let e = self.text.len();
         self.out.push(Token {
@@ -91,6 +42,62 @@ impl<'a> Lexer<'a> {
             span: Span::new(e, e),
         });
         self.pos = i;
+    }
+
+    /// Lex one token (or trivia) at `i`; returns the next position.
+    /// Extracted verbatim from `run` so `{...}` interpolation can reuse it.
+    fn step(&mut self, mut i: usize) -> usize {
+        let c = self.text[i];
+        match c {
+            b' ' | b'\t' | b'\r' => {
+                // CRLF normalised: lone \r skipped; \r\n handled by \n arm.
+                i += 1;
+            }
+            b'\n' => {
+                self.push(Tok::Nl, i, i + 1);
+                i += 1;
+            }
+            b'/' if self.peek(i + 1) == Some(b'/') => {
+                i += 2;
+                while i < self.text.len() && self.text[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if self.peek(i + 1) == Some(b'*') => {
+                let start = i;
+                i += 2;
+                let mut depth = 1usize;
+                while i < self.text.len() && depth > 0 {
+                    if self.text[i] == b'/' && self.peek(i + 1) == Some(b'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if self.text[i] == b'*' && self.peek(i + 1) == Some(b'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if depth > 0 {
+                    self.errs.push(
+                        Diagnostic::error(
+                            "E0003",
+                            Span::new(start, self.text.len()),
+                            "unterminated block comment",
+                        )
+                        .with_help("close the comment with */"),
+                    );
+                }
+            }
+            b'"' => i = self.string(i),
+            b'\'' => i = self.char_lit(i),
+            b'0'..=b'9' => i = self.number(i),
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => i = self.word(i),
+            _ => {
+                i = self.symbol(i);
+            }
+        }
+        i
     }
 
     fn peek(&self, i: usize) -> Option<u8> {
@@ -304,6 +311,21 @@ impl<'a> Lexer<'a> {
         }
         i += 1;
         let mut out = String::new();
+        // `true` once `{...}` interpolation appeared: later literal chunks
+        // arrive as `StrCont` so adjacent plain literals stay an error.
+        let mut interpolated = false;
+        macro_rules! flush_lit {
+            () => {{
+                if !out.is_empty() {
+                    let text = std::mem::take(&mut out);
+                    if interpolated {
+                        self.push(Tok::StrCont(text), s, i);
+                    } else {
+                        self.push(Tok::StrLit(text), s, i);
+                    }
+                }
+            }};
+        }
         loop {
             if i >= self.text.len() {
                 self.errs.push(Diagnostic::error(
@@ -317,6 +339,63 @@ impl<'a> Lexer<'a> {
             if c == b'"' {
                 i += 1;
                 break;
+            }
+            // Interpolation (D1, Kotlin-style `$ident` / `${expr}`):
+            // `{`/`}` stay ordinary (JSON-in-strings keeps working).
+            // Triple-quoted strings opt out.
+            if c == b'$' {
+                let n = self.peek(i + 1);
+                let is_ident_start = matches!(n, Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'));
+                if n == Some(b'{') || is_ident_start {
+                    flush_lit!();
+                    interpolated = true;
+                    self.push(Tok::InterpBegin, i, i + 1);
+                    if n == Some(b'{') {
+                        // `${expr}`: skip both opener chars, then track
+                        // nested braces via `step` (depth 0 = our closer).
+                        i += 2;
+                        let mut depth = 0usize;
+                        loop {
+                            if i >= self.text.len() {
+                                self.errs.push(Diagnostic::error(
+                                    "E0003",
+                                    Span::new(s, i),
+                                    "unterminated interpolation (missing `}`)",
+                                ));
+                                return i;
+                            }
+                            match self.text[i] {
+                                b'{' => {
+                                    depth += 1;
+                                    i = self.step(i);
+                                }
+                                b'}' => {
+                                    if depth == 0 {
+                                        self.push(Tok::InterpEnd, i, i + 1);
+                                        i += 1;
+                                        break;
+                                    }
+                                    depth -= 1;
+                                    i = self.step(i);
+                                }
+                                _ => {
+                                    i = self.step(i);
+                                }
+                            }
+                        }
+                    } else {
+                        // `$ident`: skip `$`, lex one word token, then a
+                        // synthetic close.
+                        i += 1;
+                        i = self.step(i);
+                        self.push(Tok::InterpEnd, i, i);
+                    }
+                    continue;
+                }
+                // Lone `$` (prices, shell): literal.
+                out.push('$');
+                i += 1;
+                continue;
             }
             if c == b'\n' {
                 self.errs.push(Diagnostic::error(
@@ -338,6 +417,7 @@ impl<'a> Lexer<'a> {
                     b'\\' => out.push('\\'),
                     b'"' => out.push('"'),
                     b'\'' => out.push('\''),
+                    b'$' => out.push('$'),
                     b'0' => out.push('\0'),
                     b'u' => {
                         // \u{HEX}
@@ -388,7 +468,17 @@ impl<'a> Lexer<'a> {
             out.push(c as char);
             i += 1;
         }
-        self.push(Tok::StrLit(out), s, i);
+        if !out.is_empty() {
+            let text = std::mem::take(&mut out);
+            if interpolated {
+                self.push(Tok::StrCont(text), s, i);
+            } else {
+                self.push(Tok::StrLit(text), s, i);
+            }
+        } else if !interpolated {
+            // Preserve today's empty-string token (`""`).
+            self.push(Tok::StrLit(String::new()), s, i);
+        }
         i
     }
 

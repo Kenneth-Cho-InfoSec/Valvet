@@ -2856,16 +2856,35 @@ impl Cx {
                         if ty_has_error(&rt) {
                             return Ty::Error;
                         }
-                        self.err(
-                            "E0401",
-                            *method_span,
-                            format!(
-                                "type {} has no methods (only `Vec`, `Mat`, `Factor`, `String` and `Rng` have methods)",
-                                rt.name()
-                            ),
-                            None,
-                        );
-                        Ty::Error
+                        // UFCS (C2): `x.f(args)` falls back to free
+                        // `f(x, args)` when the receiver type has no methods.
+                        // Real methods always win (earlier arms).
+                        let ufcs = self
+                            .resolve_fun(method)
+                            .and_then(|fid| self.sigs.get(&fid).cloned())
+                            .filter(|(pt, _)| pt.first().is_some_and(|p| p == &rt));
+                        match ufcs {
+                            Some(_) => {
+                                let mut uargs: Vec<Expr> = Vec::with_capacity(call_args.len() + 1);
+                                uargs.push((**receiver).clone());
+                                uargs.extend(call_args.iter().cloned());
+                                let t = self.check_call(e.id, e.span, method, &uargs);
+                                self.record_ty(&t);
+                                t
+                            }
+                            None => {
+                                self.err(
+                                    "E0401",
+                                    *method_span,
+                                    format!(
+                                        "type {} has no methods (only `Vec`, `Mat`, `Factor`, `String` and `Rng` have methods)",
+                                        rt.name()
+                                    ),
+                                    None,
+                                );
+                                Ty::Error
+                            }
+                        }
                     }
                 }
             }
@@ -5841,14 +5860,14 @@ impl Cx {
             }
             let t = self.check_expr(&args[0]);
             return match t {
-                Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool => Ty::Str,
+                Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str => Ty::Str,
                 _ if ty_has_error(&t) => Ty::Str,
                 _ => {
                     self.err(
                         "E0201",
                         span,
                         format!(
-                            "`to_string` supports Int32/Int64/Float64/Bool, found {}",
+                            "`to_string` supports Int32/Int64/Float64/Bool/String, found {}",
                             t.name()
                         ),
                         None,

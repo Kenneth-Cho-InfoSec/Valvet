@@ -50,6 +50,7 @@ pub fn analyze_with_files(
             errs: vec![],
             scopes: vec![HashMap::new()],
             loans: vec![],
+            cur_module: f.module.clone(),
             last_use,
             seq_of,
             tail_of,
@@ -378,6 +379,8 @@ struct Cx<'a> {
     errs: Vec<Diagnostic>,
     scopes: Vec<HashMap<String, VarState>>,
     loans: Vec<Loan>,
+    /// Module of the function under analysis (for UFCS resolution).
+    cur_module: String,
     /// Precomputed: variable -> last-use statement seq (per function).
     last_use: HashMap<String, usize>,
     /// Precomputed: statement/block-tail node id -> sequence number.
@@ -436,6 +439,43 @@ fn stmt_id(s: &Stmt) -> NodeId {
 impl<'a> Cx<'a> {
     fn ty_of(&self, id: NodeId) -> Ty {
         self.checked.types.get(&id).cloned().unwrap_or(Ty::Unit)
+    }
+
+    /// Mirror of sema's `resolve_fun` (own module, then import aliases).
+    fn resolve_fun(&self, name: &str) -> Option<NodeId> {
+        let own = crate::resolver::qname(&self.cur_module, name);
+        if let Some(id) = self.checked.fun_names.get(&own) {
+            return Some(*id);
+        }
+        if let Some((tm, tn)) = self
+            .checked
+            .aliases
+            .get(&(self.cur_module.clone(), name.to_string()))
+        {
+            let tq = crate::resolver::qname(tm, tn);
+            return self.checked.fun_names.get(&tq).copied();
+        }
+        None
+    }
+
+    /// True exactly when sema's method-miss arm routes through UFCS: the
+    /// receiver type has no methods and a free function takes it first.
+    fn ufcs_hit(&self, method: &str, rt: &Ty) -> bool {
+        match rt {
+            Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => false,
+            Ty::Generic { base, args } if base == "Mat" && args.is_empty() => false,
+            Ty::Generic { base, args } if base == "Factor" && args.is_empty() => false,
+            Ty::Str => false,
+            Ty::Generic { base, args } if base == "Rng" && args.is_empty() => false,
+            Ty::Error => false,
+            _ => match self
+                .resolve_fun(method)
+                .and_then(|fid| self.checked.sigs.get(&fid))
+            {
+                Some((pt, _)) => pt.first().is_some_and(|p| p == rt),
+                None => false,
+            },
+        }
     }
 
     fn declare(&mut self, name: String, ty: Ty) {
@@ -1883,6 +1923,15 @@ impl<'a> Cx<'a> {
                 args,
                 ..
             } => {
+                if self.ufcs_hit(method, &self.ty_of(receiver.id)) {
+                    // UFCS: the receiver is a real first argument and may
+                    // move, exactly like the equivalent free call.
+                    self.check_expr(receiver, self.moves_ty(receiver.id));
+                    for a in args {
+                        self.check_expr(a, self.moves_ty(a.id));
+                    }
+                    return;
+                }
                 // Receivers borrow (pointer model — never moves). Only `push`
                 // moves its element argument in.
                 self.check_expr(receiver, false);

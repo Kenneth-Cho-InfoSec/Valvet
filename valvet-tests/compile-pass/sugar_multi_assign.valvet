@@ -1,0 +1,12 @@
+var a = 1
+var b = 2
+a, b = b, a
+println(a, b)
+var x = 1
+var y = 2
+var z = 3
+x, y, z = z, x, y
+println(x, y, z)
+var v = vec![1, 2, 3]
+v[0], v[2] = v[2], v[0]
+println(v[0], v[2])

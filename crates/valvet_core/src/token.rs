@@ -50,6 +50,12 @@ pub enum Tok {
     /// Numeric suffix attached to the preceding literal (`1i64`, `2.5f64`).
     /// The lexer only emits these adjacently; other suffixes are E0010.
     IntSuffix(NumSuffix),
+    /// `"...{expr}..."` interpolation (D1): `InterpBegin` opens, the
+    /// interior is lexed with `step`, `InterpEnd` closes; literal chunks
+    /// after the first arrive as `StrCont` (so `"a" "b"` stays an error).
+    InterpBegin,
+    InterpEnd,
+    StrCont(String),
     StrLit(String),
     CharLit(char),
     /// Explicit lifetime `'a` (disambiguated from char literals in the lexer).

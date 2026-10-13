@@ -1268,6 +1268,60 @@ impl Parser {
         }
     }
 
+    /// Fold `"a$x b${y}"` interpolation (D1) into concatenations.
+    /// `first` is the leading literal (possibly `""`); a lone literal with
+    /// no `InterpBegin` after returns unchanged (today's shape exactly).
+    /// `to_string` already covers scalars; other payloads keep its E0201.
+    /// Format specifiers (`{x:...}`) are rejected (deferred).
+    fn parse_interp_rest(&mut self, first: Expr, _sp: Span) -> Option<Expr> {
+        if !matches!(self.cur(), Tok::InterpBegin) {
+            return Some(first);
+        }
+        let mut acc = first;
+        loop {
+            self.bump();
+            self.skip_nls();
+            let e = self.parse_expr()?;
+            if matches!(self.cur(), Tok::Colon) {
+                self.err(
+                    "E0005",
+                    "format specifiers (`${x:...}`) are not yet supported",
+                );
+                return None;
+            }
+            self.skip_nls();
+            if !matches!(self.cur(), Tok::InterpEnd) {
+                self.err("E0005", "expected `}` to close interpolation");
+                return None;
+            }
+            self.bump();
+            let espan = e.span;
+            let conv = Expr {
+                id: self.fresh(),
+                span: espan,
+                kind: ExprKind::Call {
+                    name: "to_string".to_string(),
+                    args: vec![e],
+                },
+            };
+            acc = self.binary(BinOp::Add, acc, conv);
+            if let Tok::StrCont(s) = self.cur().clone() {
+                let cspan = self.cur_span();
+                self.bump();
+                let lit = Expr {
+                    id: self.fresh(),
+                    span: cspan,
+                    kind: ExprKind::Str(s),
+                };
+                acc = self.binary(BinOp::Add, acc, lit);
+            }
+            if !matches!(self.cur(), Tok::InterpBegin) {
+                break;
+            }
+        }
+        Some(acc)
+    }
+
     /// Postfix `if`/`unless` condition (A2). Call immediately after a bare
     /// expression statement, before skipping newlines: a same-line
     /// `if`/`unless` is postfix (any newline surfaces as `Nl` first).
@@ -1838,6 +1892,112 @@ impl Parser {
                 // bare expression (maybe assignment)
                 let e = self.parse_expr()?;
                 let espan = e.span;
+                // Multiple assignment (C3): `a, b = e1, e2` evaluates all
+                // right sides first (simultaneous, Lua-style), then assigns
+                // left to right through hygienic temporaries.
+                if matches!(self.cur(), Tok::Comma) {
+                    let start = espan.start;
+                    let mut lhss = vec![e];
+                    while matches!(self.cur(), Tok::Comma) {
+                        self.bump();
+                        self.skip_nls();
+                        lhss.push(self.parse_expr()?);
+                    }
+                    if !matches!(self.cur(), Tok::Eq) {
+                        self.err(
+                            "E0005",
+                            "multiple assignment needs plain `=` (one `=` for the whole list)",
+                        );
+                        return None;
+                    }
+                    self.bump();
+                    self.skip_nls();
+                    let mut rhss = vec![self.parse_expr()?];
+                    loop {
+                        if !matches!(self.cur(), Tok::Comma) {
+                            break;
+                        }
+                        self.bump();
+                        self.skip_nls();
+                        rhss.push(self.parse_expr()?);
+                    }
+                    if lhss.len() != rhss.len() {
+                        self.err(
+                            "E0005",
+                            format!(
+                                "multiple assignment needs equal counts ({} targets, {} values)",
+                                lhss.len(),
+                                rhss.len()
+                            ),
+                        );
+                        return None;
+                    }
+                    let end = self.prev_span().end;
+                    let mut stmts: Vec<Stmt> = vec![];
+                    let mut tmps: Vec<Expr> = vec![];
+                    for r in rhss.drain(..) {
+                        let rspan = r.span;
+                        let tname = self.tmp_name();
+                        stmts.push(Stmt::Val {
+                            id: self.fresh(),
+                            name: tname.clone(),
+                            name_span: rspan,
+                            ty: None,
+                            unit: None,
+                            init: r,
+                            span: rspan,
+                        });
+                        tmps.push(Expr {
+                            id: self.fresh(),
+                            span: rspan,
+                            kind: ExprKind::Var(tname),
+                        });
+                    }
+                    for (l, t) in lhss.drain(..).zip(tmps.drain(..)) {
+                        match Self::as_place(l) {
+                            Some(target) => {
+                                let aspan = t.span;
+                                stmts.push(Stmt::Expr {
+                                    id: self.fresh(),
+                                    expr: Expr {
+                                        id: self.fresh(),
+                                        span: Span::new(aspan.start, aspan.end),
+                                        kind: ExprKind::Assign {
+                                            target,
+                                            op: AssignOp::Set,
+                                            value: Box::new(t),
+                                        },
+                                    },
+                                    span: aspan,
+                                });
+                            }
+                            None => {
+                                self.err_at(
+                                    "E0005",
+                                    espan,
+                                    "assignment target must be a variable, field path, or dereference",
+                                );
+                                return None;
+                            }
+                        }
+                    }
+                    self.expect_separator("assignment")?;
+                    let block = Expr {
+                        id: self.fresh(),
+                        span: Span::new(start, end),
+                        kind: ExprKind::Block(Block {
+                            id: self.fresh(),
+                            stmts,
+                            tail: None,
+                            span: Span::new(start, end),
+                        }),
+                    };
+                    return Some(ParsedStmt::Stmt(Stmt::Expr {
+                        id: self.fresh(),
+                        expr: block,
+                        span: Span::new(start, end),
+                    }));
+                }
                 // assignment?
                 match self.cur() {
                     Tok::Eq
@@ -2657,11 +2817,22 @@ impl Parser {
             }
             Tok::StrLit(s) => {
                 self.bump();
-                Some(Expr {
+                let first = Expr {
                     id: self.fresh(),
                     span: sp,
                     kind: ExprKind::Str(s),
-                })
+                };
+                self.parse_interp_rest(first, sp)
+            }
+            // A string that starts with interpolation (`"${x}..."`): the
+            // lexer emits no leading literal, so seed with `""`.
+            Tok::InterpBegin => {
+                let first = Expr {
+                    id: self.fresh(),
+                    span: sp,
+                    kind: ExprKind::Str(String::new()),
+                };
+                self.parse_interp_rest(first, sp)
             }
             Tok::CharLit(_) => {
                 self.err(
