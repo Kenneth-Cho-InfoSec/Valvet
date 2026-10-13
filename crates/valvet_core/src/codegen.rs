@@ -3329,7 +3329,7 @@ impl<'a> Gen<'a> {
         self.emit_scope_frees(self.scopes.len() - 1);
         if main_result.is_some() {
             self.out.push_str("}\n\n");
-            self.scopes.pop();
+            self.pop_scope();
             // Exit-code wrapper: Ok(n)/Some(n) -> n; Err(e) -> drop + 1.
             let rct = self.cty(&f.ret);
             self.out.push_str("int main(void) {\n");
@@ -3366,7 +3366,7 @@ impl<'a> Gen<'a> {
                 .push_str("{ fprintf(stderr, \"missing return\\n\"); abort(); }\n");
         }
         self.out.push_str("}\n\n");
-        self.scopes.pop();
+        self.pop_scope();
         Ok(())
     }
 
@@ -3376,7 +3376,7 @@ impl<'a> Gen<'a> {
         let depth = self.scopes.len() - 1;
         self.emit_block_body_only(b, ret_ty, is_fn_body)?;
         self.emit_scope_frees(depth);
-        self.scopes.pop();
+        self.pop_scope();
         Ok(())
     }
 
@@ -3793,7 +3793,7 @@ impl<'a> Gen<'a> {
                         }
                         self.emit_block_body_only(body, ret_ty, false)?;
                         self.emit_scope_frees(self.scopes.len() - 1);
-                        self.scopes.pop();
+                        self.pop_scope();
                         self.loop_stack.pop();
                         self.out.push_str("}\n");
                         self.out.push_str("}\n");
@@ -5033,7 +5033,7 @@ impl<'a> Gen<'a> {
         }
         self.pop_frame();
         self.emit_scope_frees(depth);
-        self.scopes.pop();
+        self.pop_scope();
         Ok(())
     }
 
@@ -5389,7 +5389,7 @@ impl<'a> Gen<'a> {
                 }
             }
             self.out.push_str("}\n");
-            self.scopes.pop();
+            self.pop_scope();
         }
         if res_ty.is_some() && !self.ends_with_catch_all(arms) {
             // Guards may all fail at runtime: abort (sema proved coverage modulo guards).
@@ -5427,7 +5427,7 @@ impl<'a> Gen<'a> {
         }
         self.pop_frame();
         self.emit_scope_frees(depth);
-        self.scopes.pop();
+        self.pop_scope();
         Ok(())
     }
 
@@ -5438,6 +5438,29 @@ impl<'a> Gen<'a> {
             let vars = scope.clone();
             for (v, t) in vars.iter().rev() {
                 self.emit_destroy(v, t);
+            }
+        }
+    }
+
+    /// Pop one scope, forgetting its declarations in `owned`/`vartypes`.
+    /// Entries leak otherwise: a later same-named binding with a different
+    /// type would resolve moves/poisons against the dead entry (wrong
+    /// poison shape — e.g. Vec poison on a Float64 slot). Shadowed outer
+    /// bindings are restored when they are owned.
+    fn pop_scope(&mut self) {
+        if let Some(scope) = self.scopes.pop() {
+            for (name, _) in &scope {
+                self.owned.remove(name);
+                self.vartypes.remove(name);
+                for sc in self.scopes.iter().rev() {
+                    if let Some((_, ty)) = sc.iter().rev().find(|(n, _)| n == name) {
+                        self.vartypes.insert(name.clone(), ty.clone());
+                        if self.moves(ty) {
+                            self.owned.insert(name.clone(), ty.clone());
+                        }
+                        break;
+                    }
+                }
             }
         }
     }

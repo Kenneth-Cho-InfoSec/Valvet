@@ -115,7 +115,17 @@ arrive with Stage 1 closures.
 val g = frame_group_sum(&f, "region", "sales");
 val top = g |> frame_arrange("sum", false);
 ```
-**D2. Plot grammar.** Not a ggplot clone: composable owned `Plot`
+**D2. Plot grammar.** SHIPPED: composable owned `Plot` (frame +
+parallel layer arrays of kind + x/y column names, never functions)
+composed with `|>` (no operator overloading exists, so pipe is the
+honest form of `+` chaining); `plot_log_x` (log10, non-positive dropped
+ggplot-style), `plot_facet` (one translated SVG panel per level value,
+verified well-formed XML), per-panel autoscaling (documented), empty
+layers skipped, no layers is `Err`. Also fixed a latent codegen
+miscompile: arm-scope pops leaked `owned`/`vartypes`, so a later
+same-named binding got the dead entry's poison shape (Vec poison on a
+Float64 slot); scopes now pop through `pop_scope` with shadowing
+restore. 1 fixture, 172/172 green, ASan-clean. Not a ggplot clone: composable owned `Plot`
 builder. `Plot` holds data + layer list (layers are DATA: enum of geom
 specs with column-name mappings, never functions); `+` chains builders;
 scales (`scale_log_x`) and `facet_wrap(col)` included; one SVG render at

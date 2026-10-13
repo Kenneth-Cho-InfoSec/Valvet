@@ -2,6 +2,9 @@ module std.plot;
 
 import std::stats::quantile;
 import std::stats::MissingPolicy;
+import std::math::log;
+import std::frame::DynamicFrame;
+import std::frame::frame_col;
 
 pub struct PlotBuilder {
     kind: String,
@@ -445,4 +448,258 @@ pub fun plot_svg(p: PlotBuilder): Result<String, String> {
 pub fun plot_save(p: PlotBuilder, path: String): Result<Int64, String> {
     val svg = plot_svg(p)?;
     return write_file(path, svg);
+}
+
+// D2 grammar: a `Plot` holds data plus a layer list (layers are DATA:
+// kind + column-name mappings, never functions). Builders compose with
+// `|>` (Valvet has no operator overloading, so `|>` is the honest form
+// of the `+` chaining in the plan); one SVG comes out of `plot_render`.
+// Scales are per-panel (each panel autoscales its own data, documented);
+// facets stack vertically with one panel per facet value.
+
+pub struct Plot {
+    frame: DynamicFrame,
+    kinds: Vec<String>,
+    xcols: Vec<String>,
+    ycols: Vec<String>,
+    title: String,
+    width: Int64,
+    height: Int64,
+    log_x: Bool,
+    facet: String,
+}
+
+pub fun plot_new(f: DynamicFrame): Plot {
+    val kinds: Vec<String> = vec![];
+    val xcols: Vec<String> = vec![];
+    val ycols: Vec<String> = vec![];
+    Plot { frame: f, kinds: kinds, xcols: xcols, ycols: ycols, title: "", width: 400 as Int64, height: 300 as Int64, log_x: false, facet: "" }
+}
+
+fun plot_push_layer(p: Plot, kind: String, x: String, y: String): Plot {
+    var kinds = p.kinds.clone();
+    var xcols = p.xcols.clone();
+    var ycols = p.ycols.clone();
+    kinds.push(kind);
+    xcols.push(x);
+    ycols.push(y);
+    val f = DynamicFrame { names: p.frame.names.clone(), cols: p.frame.cols.clone(), nrows: p.frame.nrows };
+    Plot { frame: f, kinds: kinds, xcols: xcols, ycols: ycols, title: p.title.clone(), width: p.width, height: p.height, log_x: p.log_x, facet: p.facet.clone() }
+}
+
+pub fun plot_add_points(p: Plot, x: String, y: String): Plot {
+    return plot_push_layer(p, "points", x, y);
+}
+
+pub fun plot_add_line(p: Plot, x: String, y: String): Plot {
+    return plot_push_layer(p, "line", x, y);
+}
+
+pub fun plot_add_bar(p: Plot, labels: String, values: String): Plot {
+    return plot_push_layer(p, "bar", labels, values);
+}
+
+pub fun plot_log_x(p: Plot): Plot {
+    val f = DynamicFrame { names: p.frame.names.clone(), cols: p.frame.cols.clone(), nrows: p.frame.nrows };
+    Plot { frame: f, kinds: p.kinds.clone(), xcols: p.xcols.clone(), ycols: p.ycols.clone(), title: p.title.clone(), width: p.width, height: p.height, log_x: true, facet: p.facet.clone() }
+}
+
+pub fun plot_facet(p: Plot, col: String): Plot {
+    val f = DynamicFrame { names: p.frame.names.clone(), cols: p.frame.cols.clone(), nrows: p.frame.nrows };
+    Plot { frame: f, kinds: p.kinds.clone(), xcols: p.xcols.clone(), ycols: p.ycols.clone(), title: p.title.clone(), width: p.width, height: p.height, log_x: p.log_x, facet: col }
+}
+
+pub fun plot_heading(p: Plot, t: String): Plot {
+    val f = DynamicFrame { names: p.frame.names.clone(), cols: p.frame.cols.clone(), nrows: p.frame.nrows };
+    Plot { frame: f, kinds: p.kinds.clone(), xcols: p.xcols.clone(), ycols: p.ycols.clone(), title: t, width: p.width, height: p.height, log_x: p.log_x, facet: p.facet.clone() }
+}
+
+fun plot_numcol(frame: &DynamicFrame, col: String, rows: Vec<Int64>): Vec<Float64> {
+    val empty: Vec<String> = vec![];
+    val c = match (frame_col(frame, col)) { Some(v) -> v, None -> empty, };
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < rows.len()) {
+        val r = rows[i];
+        if (r >= (0 as Int64) && r < c.len()) {
+            val v = match (c[r].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+            out.push(v);
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun plot_strcol(frame: &DynamicFrame, col: String, rows: Vec<Int64>): Vec<String> {
+    val empty: Vec<String> = vec![];
+    val c = match (frame_col(frame, col)) { Some(v) -> v, None -> empty, };
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < rows.len()) {
+        val r = rows[i];
+        if (r >= (0 as Int64) && r < c.len()) {
+            out.push(c[r]);
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun is_nan_f(x: Float64): Bool {
+    return x != x;
+}
+
+fun log10_f(x: Float64): Float64 {
+    return log(x) / log(10.0);
+}
+
+// One panel body for one layer over a row subset (empty when the layer
+// has no drawable data: unparseable cells and non-positive log-x values
+// are dropped, ggplot-style).
+fun plot_layer_body(kind: String, xnums: Vec<Float64>, ystrs: Vec<String>, vals: Vec<Float64>, labels: Vec<String>, w: Int64, h: Int64, ptitle: String, log_x: Bool): String {
+    var out = "";
+    if (kind == "bar") {
+        var fy: Vec<Float64> = vec![];
+        var fl: Vec<String> = vec![];
+        var i = 0 as Int64;
+        while (i < labels.len() && i < vals.len()) {
+            if (!is_nan_f(vals[i])) {
+                fl.push(labels[i]);
+                fy.push(vals[i]);
+            }
+            i = i + (1 as Int64);
+        }
+        if (fl.len() != (0 as Int64)) {
+            val b = plot_size(plot_title(plot_bar(fl, fy), ptitle), w, h);
+            out = draw_bar(&b);
+        }
+    } else {
+        var fx: Vec<Float64> = vec![];
+        var fy2: Vec<Float64> = vec![];
+        var i = 0 as Int64;
+        while (i < xnums.len() && i < ystrs.len()) {
+            val xv = xnums[i];
+            val yv = match (ystrs[i].parse_float()) { Some(y) -> y, None -> 0.0 / 0.0, };
+            if (!is_nan_f(xv) && !is_nan_f(yv)) {
+                if (log_x) {
+                    if (xv > 0.0) {
+                        fx.push(log10_f(xv));
+                        fy2.push(yv);
+                    }
+                } else {
+                    fx.push(xv);
+                    fy2.push(yv);
+                }
+            }
+            i = i + (1 as Int64);
+        }
+        if (fx.len() != (0 as Int64)) {
+            if (kind == "line") {
+                val b = plot_size(plot_title(plot_line(fx.clone(), fy2.clone()), ptitle.clone()), w, h);
+                out = draw_line(&b);
+            } else {
+                val b = plot_size(plot_title(plot_points(fx, fy2), ptitle), w, h);
+                out = draw_points(&b);
+            }
+        }
+    }
+    return out;
+}
+
+pub fun plot_render(p: Plot): Result<String, String> {
+    val kinds = p.kinds.clone();
+    val xcols = p.xcols.clone();
+    val ycols = p.ycols.clone();
+    val ptitle_main = p.title.clone();
+    val pw = p.width;
+    val ph = p.height;
+    val plogx = p.log_x;
+    val pfacet = p.facet.clone();
+    val frame = DynamicFrame { names: p.frame.names.clone(), cols: p.frame.cols.clone(), nrows: p.frame.nrows };
+    if (kinds.len() == (0 as Int64)) {
+        return Err("plot has no layers");
+    }
+    // Facet values in first-appearance order; "" or a missing column
+    // means one panel over all rows.
+    var panels: Vec<String> = vec![];
+    var all_rows: Vec<Int64> = vec![];
+    var r = 0 as Int64;
+    while (r < frame.nrows) {
+        all_rows.push(r);
+        r = r + (1 as Int64);
+    }
+    if (pfacet == "") {
+        panels.push("");
+    } else {
+        val fc = plot_strcol(&frame, pfacet.clone(), all_rows.clone());
+        var i = 0 as Int64;
+        while (i < fc.len()) {
+            var seen = false;
+            var j = 0 as Int64;
+            while (j < panels.len()) {
+                if (panels[j] == fc[i]) {
+                    seen = true;
+                }
+                j = j + (1 as Int64);
+            }
+            if (!seen) {
+                panels.push(fc[i]);
+            }
+            i = i + (1 as Int64);
+        }
+        if (panels.len() == (0 as Int64)) {
+            panels.push("");
+        }
+    }
+    val dummy = PlotBuilder { kind: "points", xs: vec![0.0], ys: vec![0.0], labels: vec![""], bins: 10 as Int64, title: ptitle_main, width: pw, height: ph * panels.len() };
+    var st = head(&dummy);
+    var pi = 0 as Int64;
+    while (pi < panels.len()) {
+        val pv = panels[pi].clone();
+        var rows: Vec<Int64> = vec![];
+        if (pfacet == "" || pv == "") {
+            rows = all_rows.clone();
+        } else {
+            val fc = plot_strcol(&frame, pfacet.clone(), all_rows.clone());
+            var i = 0 as Int64;
+            while (i < fc.len() && i < all_rows.len()) {
+                if (fc[i] == pv) {
+                    rows.push(all_rows[i]);
+                }
+                i = i + (1 as Int64);
+            }
+        }
+        var body = "";
+        var li = 0 as Int64;
+        while (li < kinds.len()) {
+            val kind = kinds[li].clone();
+            val xc = xcols[li].clone();
+            val yc = ycols[li].clone();
+            var ptitle = "";
+            if (pv != "") {
+                ptitle = pv.clone();
+            }
+            if (kind == "bar") {
+                val labels = plot_strcol(&frame, xc, rows.clone());
+                val vals = plot_numcol(&frame, yc, rows.clone());
+                val ex: Vec<Float64> = vec![];
+                body = body + plot_layer_body(kind, ex, labels.clone(), vals, labels, pw, ph, ptitle, plogx);
+            } else {
+                val ys = plot_strcol(&frame, yc, rows.clone());
+                val xnums = plot_numcol(&frame, xc, rows.clone());
+                val ev: Vec<Float64> = vec![];
+                val es: Vec<String> = vec![];
+                body = body + plot_layer_body(kind, xnums, ys, ev, es, pw, ph, ptitle, plogx);
+            }
+            li = li + (1 as Int64);
+        }
+        st = st + "<g transform=\"translate(0,";
+        st = st + to_string(pi * ph);
+        st = st + ")\">";
+        st = st + body;
+        st = st + "</g>";
+        pi = pi + (1 as Int64);
+    }
+    st = st + "</svg>";
+    return Ok(st);
 }

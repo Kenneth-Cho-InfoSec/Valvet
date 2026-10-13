@@ -1,0 +1,54 @@
+import std::frame::DynamicFrame;
+import std::plot::plot_new;
+import std::plot::plot_add_points;
+import std::plot::plot_add_line;
+import std::plot::plot_add_bar;
+import std::plot::plot_log_x;
+import std::plot::plot_facet;
+import std::plot::plot_heading;
+import std::plot::plot_render;
+import std::str::str_contains;
+
+fun mk(): DynamicFrame {
+    return DynamicFrame { names: vec!["g", "x", "y"], cols: vec![vec!["a", "a", "b", "b"], vec!["1", "10", "100", "1000"], vec!["2", "4", "6", "8"]], nrows: 4 as Int64 };
+}
+
+fun render_ok(s: String): String {
+    if (str_contains(s.clone(), "<svg") && str_contains(s, "</svg>")) {
+        return "svg-ok";
+    }
+    return "svg-bad";
+}
+
+fun main() {
+    // Points layer over frame columns, with a heading.
+    val s = match (plot_new(mk()) |> plot_add_points("x", "y") |> plot_heading("pts") |> plot_render) {
+        Ok(v) -> v,
+        Err(e) -> e,
+    };
+    println(render_ok(s.clone()));
+    println(str_contains(s.clone(), "<circle"));
+    println(str_contains(s.clone(), "pts"));
+    // Facets stack one translated panel per level value.
+    val f = match (plot_new(mk()) |> plot_add_line("x", "y") |> plot_facet("g") |> plot_render) {
+        Ok(v) -> v,
+        Err(e) -> e,
+    };
+    println(render_ok(f.clone()));
+    println(str_contains(f.clone(), "translate(0,0)"));
+    println(str_contains(f.clone(), "translate(0,300)"));
+    println(str_contains(f, "<polyline"));
+    // Log x plus bars compose in one render.
+    val b = match (plot_new(mk()) |> plot_add_bar("g", "y") |> plot_log_x |> plot_facet("g") |> plot_render) {
+        Ok(v) -> v,
+        Err(e) -> e,
+    };
+    println(render_ok(b.clone()));
+    println(str_contains(b.clone(), "<rect"));
+    // No layers is Err, never an empty document.
+    val e = match (plot_render(plot_new(mk()))) {
+        Ok(_) -> "has-layers",
+        Err(_) -> "no-layers",
+    };
+    println(e);
+}
