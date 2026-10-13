@@ -4775,6 +4775,52 @@ impl Cx {
                 }
                 Ty::Str
             }
+            "len" => {
+                // F2: byte length (no compiler change beyond this accessor;
+                // all string verbs build on len/byte_at/slice in stdlib).
+                if !args.is_empty() {
+                    self.err("E0201", span, "`len` takes no arguments", None);
+                }
+                Ty::Int64
+            }
+            "byte_at" => {
+                // F2: byte value at a 0-based index (traps out of bounds,
+                // exactly like `Vec` indexing).
+                if args.len() != 1 {
+                    self.err("E0201", span, "`byte_at` takes exactly 1 argument", None);
+                    return Ty::Int64;
+                }
+                let at = self.check_expr(&args[0]);
+                if at != Ty::Int64 && at != Ty::Int32 {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`byte_at` expects an Int index, found {}", at.name()),
+                        None,
+                    );
+                }
+                Ty::Int64
+            }
+            "slice" => {
+                // F2: `slice(start, end)` byte substring, 0-based half-open
+                // (traps on out-of-range bounds, like `byte_at`).
+                if args.len() != 2 {
+                    self.err("E0201", span, "`slice` takes exactly 2 arguments", None);
+                    return Ty::Str;
+                }
+                for a in args {
+                    let at = self.check_expr(a);
+                    if at != Ty::Int64 && at != Ty::Int32 {
+                        self.err(
+                            "E0201",
+                            a.span,
+                            format!("`slice` expects Int bounds, found {}", at.name()),
+                            None,
+                        );
+                    }
+                }
+                Ty::Str
+            }
             "parse_int" | "parse_float" => {
                 if !args.is_empty() {
                     self.err(
@@ -4799,7 +4845,7 @@ impl Cx {
                     "E0401",
                     method_span,
                     format!(
-                        "unknown method `{}` (available on String: split, trim, clone, parse_int, parse_float)",
+                        "unknown method `{}` (available on String: split, trim, clone, len, byte_at, slice, parse_int, parse_float)",
                         method
                     ),
                     None,

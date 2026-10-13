@@ -67,7 +67,14 @@ codes: Vec<Int32> }` (level 0 = missing). Constructors
 level order preserved. Layouts + drop/clone in codegen; everything else
 pure Valvet. Fixtures vs R `factor()` semantics on level ordering and NA
 handling.
-**F2. Strings.** Phase 1 (stdlib, no compiler change): `contains`,
+**F2. Strings.** SHIPPED Phase 1: three `String` byte primitives (`len`,
+`byte_at` with OOB trap, `slice` with OOB trap) plus `std::str` verbs
+(`str_contains`, `str_starts_with`/`str_ends_with`, literal `str_replace`,
+`str_substring`), all differential-tested vs Python (empty-needle
+interleave included). Also fixed a latent codegen double-free: moved call
+args in statement-`if` conditions (flush_all_nulls drained poisons needed
+by merge paths; now non-draining). 2 fixtures, 167/167 green, ASan-clean.
+Phase 1 (stdlib, no compiler change): `contains`,
 `starts_with`/`ends_with`, `replace` (literal), `substring` by byte
 range with trap, `split` exists already. Phase 2: regex via Thompson NFA
 over explicit tables (first-order, proven portable by the Parsec port):

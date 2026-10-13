@@ -973,7 +973,24 @@ impl<'a> Gen<'a> {
     /// Slots already poisoned (moved out) are safely skipped.
     fn pop_frame(&mut self) {
         if let Some(frame) = self.tmp_frames.pop() {
+            // Skip temps with queued poisons: ownership already moved
+            // (the callee frees); the poison writes at the statement-level
+            // flush. Freeing here double-frees (e.g. moved call args in an
+            // `if` condition, whose frame pops before the flush).
+            let queued: std::collections::HashSet<String> = self
+                .nulls
+                .iter()
+                .map(|(n, _)| n.clone())
+                .chain(
+                    self.null_shields
+                        .iter()
+                        .flat_map(|s| s.iter().map(|(n, _)| n.clone())),
+                )
+                .collect();
             for (t, cty) in frame.iter().rev() {
+                if queued.contains(t) {
+                    continue;
+                }
                 if cty == "VStr" {
                     self.out.push_str(&format!("vstr_free(&{});\n", t));
                 } else {
@@ -1128,10 +1145,25 @@ impl<'a> Gen<'a> {
     /// (`break`/`continue`/`return`/`?`): every queued poison's move
     /// dominates the jump, and nothing after the jump can use the slots.
     fn flush_all_nulls(&mut self) {
-        while let Some(sh) = self.null_shields.pop() {
-            self.nulls.extend(sh);
+        // Non-draining: diverging paths (`return`/`break`/`continue`/`?`
+        // inside a branch) must poison for the taken path WITHOUT consuming
+        // poisons other paths still need. Draining here starved merge-point
+        // flushes: the taken path's poisons executed only on that path,
+        // while fall-through pops freed the (already callee-freed) temps
+        // (double free). Rewrites are idempotent NULL stores. Order matches
+        // the old drain-then-flush (queue first, then shields innermost
+        // out) so first-occurrence dedup is unchanged.
+        let mut combined = self.nulls.clone();
+        for sh in self.null_shields.iter().rev() {
+            combined.extend(sh.iter().cloned());
         }
-        self.flush_nulls();
+        let mut seen = HashSet::new();
+        for (n, t) in &combined {
+            if seen.insert(n.clone()) {
+                let (nn, tt) = (n.clone(), t.clone());
+                self.emit_poison(&nn, &tt);
+            }
+        }
     }
 
     /// Emit poisoning statements for moved-from lvalue `lval` of type `ty`.
@@ -1859,6 +1891,16 @@ impl<'a> Gen<'a> {
     /// J1 string kernels over the generated vec/union layouts above.
     /// Each emits only when its result instantiation was recorded.
     fn emit_str_kernels(&mut self) -> Result<(), Ice> {
+        // F2 byte-access primitives (unconditional: no layout deps).
+        // `byte_at`/`slice` trap out of bounds like `Vec` indexing.
+        self.out
+            .push_str("static int64_t vstr_len(VStr v) { return v.s ? v.len : 0; }\n");
+        self.out.push_str(
+            "static int64_t vstr_byte_at(VStr v, int64_t i) {\nint64_t n = v.s ? v.len : 0;\nif (i < 0 || i >= n) { fprintf(stderr, \"index out of bounds\\n\"); abort(); }\nreturn (int64_t)((unsigned char)v.s[i]);\n}\n",
+        );
+        self.out.push_str(
+            "static VStr vstr_slice(VStr v, int64_t a, int64_t b) {\nint64_t n = v.s ? v.len : 0;\nif (a < 0 || b < a || b > n) { fprintf(stderr, \"index out of bounds\\n\"); abort(); }\nint64_t len = b - a;\nchar *p = (char *)malloc((size_t)len + 1);\nif (!p) { fprintf(stderr, \"alloc error\\n\"); abort(); }\nif (len) memcpy(p, v.s + a, (size_t)len);\np[len] = '\\0';\nreturn (VStr){p, len};\n}\n",
+        );
         if self.has_inst("Vec", &[Ty::Str]) {
             let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Str));
             let iname = iname_of(&vct);
@@ -1949,6 +1991,28 @@ impl<'a> Gen<'a> {
         match method {
             "trim" => Ok(format!("vstr_trim({})", r)),
             "clone" => Ok(format!("vstr_clone({})", r)),
+            "len" => Ok(format!("vstr_len({})", r)),
+            "byte_at" => {
+                let a = args.first().ok_or_else(|| Ice("byte_at arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let v = self.emit_expr(a)?;
+                self.cur_move = saved;
+                Ok(format!("vstr_byte_at({}, (int64_t)({}))", r, v))
+            }
+            "slice" => {
+                let a = args.first().ok_or_else(|| Ice("slice arity".into()))?;
+                let b = args.get(1).ok_or_else(|| Ice("slice arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let va = self.emit_expr(a)?;
+                let vb = self.emit_expr(b)?;
+                self.cur_move = saved;
+                Ok(format!(
+                    "vstr_slice({}, (int64_t)({}), (int64_t)({}))",
+                    r, va, vb
+                ))
+            }
             "split" => {
                 let a = args.first().ok_or_else(|| Ice("split arity".into()))?;
                 let saved = self.cur_move;

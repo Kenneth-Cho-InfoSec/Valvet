@@ -1,0 +1,84 @@
+// F2 string verbs: byte-oriented search and editing over the `len` /
+// `byte_at` / `slice` primitives. All comparisons are bytewise (UTF-8
+// unaware, documented); `str_replace` is a literal (non-regex) replace.
+
+module std.str;
+
+fun str_match_at(h: String, at: Int64, n: String): Bool {
+    val nl = n.len();
+    var j = 0 as Int64;
+    while (j < nl) {
+        if (h.byte_at(at + j) != n.byte_at(j)) {
+            return false;
+        }
+        j = j + (1 as Int64);
+    }
+    return true;
+}
+
+pub fun str_contains(h: String, n: String): Bool {
+    val hl = h.len();
+    val nl = n.len();
+    if (nl == (0 as Int64)) {
+        return true;
+    }
+    if (nl > hl) {
+        return false;
+    }
+    var i = 0 as Int64;
+    while (i + nl <= hl) {
+        if (str_match_at(h.clone(), i, n.clone())) {
+            return true;
+        }
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+pub fun str_starts_with(h: String, pre: String): Bool {
+    if (pre.len() > h.len()) {
+        return false;
+    }
+    return str_match_at(h, 0 as Int64, pre);
+}
+
+pub fun str_ends_with(h: String, suf: String): Bool {
+    val hl = h.len();
+    val sl = suf.len();
+    if (sl > hl) {
+        return false;
+    }
+    return str_match_at(h, hl - sl, suf);
+}
+
+pub fun str_replace(h: String, from: String, to: String): String {
+    val fl = from.len();
+    val hl = h.len();
+    if (fl == (0 as Int64)) {
+        // Empty needle interleaves (Python/R semantics): to + c + to ...
+        var out = to.clone();
+        var k = 0 as Int64;
+        while (k < hl) {
+            out = out + h.slice(k, k + (1 as Int64));
+            out = out + to.clone();
+            k = k + (1 as Int64);
+        }
+        return out;
+    }
+    var out = "";
+    var i = 0 as Int64;
+    while (i < hl) {
+        if (i + fl <= hl && str_match_at(h.clone(), i, from.clone())) {
+            out = out + to.clone();
+            i = i + fl;
+        } else {
+            out = out + h.slice(i, i + (1 as Int64));
+            i = i + (1 as Int64);
+        }
+    }
+    return out;
+}
+
+pub fun str_substring(s: String, start: Int64, stop: Int64): String {
+    return s.slice(start, stop);
+}
