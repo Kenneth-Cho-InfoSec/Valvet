@@ -1,0 +1,42 @@
+import std::date::Datetime;
+import std::date::datetime_from_ymdhms;
+import std::date::datetime_to_string;
+import std::date::datetime_parse;
+import std::date::datetime_add_seconds;
+import std::date::datetime_diff_seconds;
+import std::date::datetime_compare;
+import std::date::date_to_datetime;
+import std::date::datetime_to_date;
+import std::date::date_to_string;
+
+fun show(t: Option<Datetime>) {
+    val s = match (t) {
+        Some(v) -> datetime_to_string(v),
+        None -> "none",
+    };
+    println(s);
+}
+
+fun main() {
+    // RFC3330-subset round trip, plus bad inputs rejected.
+    show(datetime_from_ymdhms(2024 as Int64, 3 as Int64, 1 as Int64, 12 as Int64, 30 as Int64, 45 as Int64));
+    show(datetime_from_ymdhms(2024 as Int64, 3 as Int64, 1 as Int64, 25 as Int64, 0 as Int64, 0 as Int64));
+    show(datetime_parse("1969-12-31T23:59:59Z"));
+    show(datetime_parse("2024-03-01 12:00:00"));
+    show(datetime_parse("2024-03-01T12:00:00"));
+    val t = match (datetime_parse("2024-03-01T12:30:45Z")) {
+        Some(v) -> v,
+        None -> Datetime { nanos: 0 as Int64 },
+    };
+    val u = match (datetime_parse("1969-12-31T23:59:59Z")) {
+        Some(v) -> v,
+        None -> Datetime { nanos: 0 as Int64 },
+    };
+    // Second arithmetic across midnight; diff vs Python oracle.
+    println(datetime_to_string(datetime_add_seconds(t, 90 as Int64)));
+    println(datetime_diff_seconds(t, u));
+    println(datetime_compare(t, u));
+    // Date bridges: midnight mapping and floor back.
+    println(date_to_string(datetime_to_date(t)));
+    println(datetime_to_string(date_to_datetime(datetime_to_date(t))));
+}

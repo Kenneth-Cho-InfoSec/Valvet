@@ -1,0 +1,43 @@
+import std::date::Date;
+import std::date::date_from_ymd;
+import std::date::date_to_string;
+import std::date::date_parse;
+import std::date::date_add_days;
+import std::date::date_diff_days;
+import std::date::date_compare;
+
+fun show(d: Option<Date>) {
+    val s = match (d) {
+        Some(v) -> date_to_string(v),
+        None -> "none",
+    };
+    println(s);
+}
+
+fun main() {
+    // Leap rules: 2024 and 2000 leap, 2023 and 1900 not.
+    show(date_from_ymd(2024 as Int64, 2 as Int64, 29 as Int64));
+    show(date_from_ymd(2023 as Int64, 2 as Int64, 29 as Int64));
+    show(date_from_ymd(2000 as Int64, 2 as Int64, 29 as Int64));
+    show(date_from_ymd(1900 as Int64, 2 as Int64, 29 as Int64));
+    show(date_from_ymd(2024 as Int64, 13 as Int64, 1 as Int64));
+    // Strict YYYY-MM-DD parsing; pre-epoch dates work.
+    show(date_parse("1969-12-31"));
+    show(date_parse("1970-01-01"));
+    show(date_parse("not-a-date"));
+    show(date_parse("2024-1-1"));
+    // Arithmetic across the 2024 leap day.
+    val a = match (date_parse("2024-03-01")) {
+        Some(v) -> v,
+        None -> Date { days: 0 as Int64 },
+    };
+    val b = match (date_parse("2024-02-28")) {
+        Some(v) -> v,
+        None -> Date { days: 0 as Int64 },
+    };
+    println(date_to_string(date_add_days(b, 1 as Int64)));
+    println(date_diff_days(a, b));
+    println(date_compare(a, b));
+    println(date_compare(b, a));
+    println(date_compare(a, a));
+}

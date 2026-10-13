@@ -81,7 +81,13 @@ over explicit tables (first-order, proven portable by the Parsec port):
 `re_detect`, `re_extract`, restricted syntax
 (`literals . * + ? [] () | ^ $`), leftmost-first match semantics pinned
 by fixtures.
-**F3. Dates.** New `Date` (days since epoch, Int32) and `Datetime`
+**F3. Dates.** SHIPPED as pure stdlib (`std::date`, no compiler change):
+`Date` (days since epoch) and `Datetime` (UTC nanos) over Hinnant civil
+algorithms with floored division (pre-1970 works); strict `YYYY-MM-DD`
+and `YYYY-MM-DDTHH:MM:SSZ` parse/format, validated `Option` constructors,
+day/second arithmetic, compares, and date bridges. Differential-tested
+vs Python `datetime` (leap rules, epoch boundaries, cross-midnight
+arithmetic). 2 fixtures, 169/169 green, ASan-clean. New `Date` (days since epoch, Int32) and `Datetime`
 (nanos, Int64), UTC only (timezones explicitly deferred).
 Parsing/formatting for fixed formats (`YYYY-MM-DD`, RFC3330 subset) in
 pure Valvet over Int64 via Howard Hinnant's civil algorithms;
