@@ -494,6 +494,12 @@ fn scan_stmt(s: &crate::ast::Stmt, saw_try: &mut bool, saw_ret_val: &mut bool) {
                 scan_block(&a.body, saw_try, saw_ret_val);
             }
         }
+        LetElse {
+            scrutinee, else_b, ..
+        } => {
+            scan_expr(scrutinee, saw_try, saw_ret_val);
+            scan_block(else_b, saw_try, saw_ret_val);
+        }
         While { cond, body, .. } => {
             scan_expr(cond, saw_try, saw_ret_val);
             scan_block(body, saw_try, saw_ret_val);
@@ -689,6 +695,16 @@ fn renumber_stmt(s: &mut crate::ast::Stmt, next: &mut crate::ast::NodeId) {
             for a in arms {
                 renumber_arm(a, next);
             }
+        }
+        LetElse {
+            id,
+            scrutinee,
+            else_b,
+            ..
+        } => {
+            *id = bump(next);
+            renumber_expr(scrutinee, next);
+            renumber_block(else_b, next);
         }
         While { id, cond, body, .. } => {
             *id = bump(next);

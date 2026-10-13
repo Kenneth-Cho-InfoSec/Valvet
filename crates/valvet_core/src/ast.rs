@@ -283,6 +283,15 @@ pub enum Stmt {
         arms: Vec<MatchArm>,
         span: Span,
     },
+    /// `let PAT = expr else DIVERGING` (B3): bindings join the current
+    /// scope; the `else` block must diverge (checked via `Flow`).
+    LetElse {
+        id: NodeId,
+        scrutinee: Box<Expr>,
+        pat: Pat,
+        else_b: Box<Block>,
+        span: Span,
+    },
     While {
         id: NodeId,
         cond: Expr,
@@ -331,6 +340,7 @@ pub fn stmt_span(s: &Stmt) -> Span {
         | Stmt::Break { span, .. }
         | Stmt::Continue { span, .. }
         | Stmt::Match { span, .. }
+        | Stmt::LetElse { span, .. }
         | Stmt::Return { span, .. } => *span,
     }
 }

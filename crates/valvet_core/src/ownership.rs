@@ -169,6 +169,18 @@ fn number_uses(
                         self.walk_block(&a.body);
                     }
                 }
+                Stmt::LetElse {
+                    scrutinee,
+                    pat,
+                    else_b,
+                    ..
+                } => {
+                    // Bindings join the current scope (like `Val` without
+                    // shadowing limits); the body continues after.
+                    self.walk_expr(scrutinee);
+                    self.walk_pat(pat);
+                    self.walk_block(else_b);
+                }
             }
             self.next += 1;
         }
@@ -309,7 +321,8 @@ fn number_uses(
             | Stmt::Break { id, .. }
             | Stmt::Continue { id, .. }
             | Stmt::Return { id, .. }
-            | Stmt::Match { id, .. } => *id,
+            | Stmt::Match { id, .. }
+            | Stmt::LetElse { id, .. } => *id,
         }
     }
     let mut w = W {
@@ -415,7 +428,8 @@ fn stmt_id(s: &Stmt) -> NodeId {
         | Stmt::Break { id, .. }
         | Stmt::Continue { id, .. }
         | Stmt::Return { id, .. }
-        | Stmt::Match { id, .. } => *id,
+        | Stmt::Match { id, .. }
+        | Stmt::LetElse { id, .. } => *id,
     }
 }
 
@@ -1293,6 +1307,12 @@ impl<'a> Cx<'a> {
                     Self::collect_block_refs(&a.body, cx, out);
                 }
             }
+            Stmt::LetElse {
+                scrutinee, else_b, ..
+            } => {
+                Self::collect_ref_vars(scrutinee, cx, out);
+                Self::collect_block_refs(else_b, cx, out);
+            }
         }
     }
 
@@ -1579,6 +1599,42 @@ impl<'a> Cx<'a> {
                     self.check_match_arm(arm, scrutinee, false, &mut union, &mut uspans);
                 }
                 self.apply_moved(&union, &uspans);
+            }
+            Stmt::LetElse {
+                scrutinee,
+                pat,
+                else_b,
+                ..
+            } => {
+                // Success path continues inline (no arm join): bindings join
+                // the current scope; an owned capture moves a variable
+                // scrutinee (mirrors `check_match_arm`).
+                let st = self.ty_of(scrutinee.id);
+                let bindings = self.arm_bindings(pat, &st);
+                if let ExprKind::Var(n) = &scrutinee.kind {
+                    if bindings
+                        .iter()
+                        .any(|(_, t)| !is_copy_ty(t, &self.checked.structs, &self.checked.enums))
+                    {
+                        if let Some(v) = self.find_mut(n) {
+                            v.moved = true;
+                            v.moved_span = Some(scrutinee.span);
+                        }
+                    }
+                }
+                for (name, ty) in &bindings {
+                    self.declare(name.clone(), ty.clone());
+                }
+                self.check_expr(scrutinee, false);
+                for s in &else_b.stmts {
+                    self.check_stmt(s);
+                }
+                if let Some(t) = &else_b.tail {
+                    if let Some(seq) = self.tail_of.get(&else_b.id).copied() {
+                        self.cur = seq;
+                    }
+                    self.check_expr(t, false);
+                }
             }
             Stmt::Break { value, .. } => {
                 // `break v` moves a value out of the loop (like `return`).

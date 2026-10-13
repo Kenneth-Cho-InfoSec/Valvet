@@ -226,33 +226,26 @@ impl<'a> Lexer<'a> {
             i += 1;
         }
         let suffix = String::from_utf8_lossy(&self.text[suf_s..i]).into_owned();
-        if !suffix.is_empty()
-            && !matches!(
-                suffix.as_str(),
-                "i8" | "i16"
-                    | "i32"
-                    | "i64"
-                    | "u8"
-                    | "u16"
-                    | "u32"
-                    | "u64"
-                    | "isize"
-                    | "usize"
-                    | "f32"
-                    | "f64"
-            )
-        {
-            // Could be `42foo` typo or `3 +x`? No space means part of literal; reject.
-            self.errs.push(Diagnostic::error(
-                "E0010",
-                Span::new(s, i),
-                format!("invalid numeric suffix `{}`", suffix),
-            ));
-            return i;
-        }
+        // Numeric suffixes (C1): only Valvet's own types survive the lexer;
+        // anything else is E0010. `f64` needs a float literal, `i32`/`i64`
+        // need an integer literal.
+        let suffix_tok = match suffix.as_str() {
+            "" => None,
+            "i32" if !is_float => Some(crate::token::NumSuffix::I32),
+            "i64" if !is_float => Some(crate::token::NumSuffix::I64),
+            "f64" if is_float => Some(crate::token::NumSuffix::F64),
+            _ => {
+                self.errs.push(Diagnostic::error(
+                    "E0010",
+                    Span::new(s, i),
+                    format!("invalid numeric suffix `{}`", suffix),
+                ));
+                return i;
+            }
+        };
         if is_float {
             match digits.parse::<f64>() {
-                Ok(v) => self.push(Tok::FloatLit(v), s, i),
+                Ok(v) => self.push(Tok::FloatLit(v), s, suf_s),
                 Err(_) => self.errs.push(Diagnostic::error(
                     "E0010",
                     Span::new(s, i),
@@ -261,7 +254,7 @@ impl<'a> Lexer<'a> {
             }
         } else {
             match i64::from_str_radix(digits.as_str().max("0"), base) {
-                Ok(v) => self.push(Tok::IntLit(v), s, i),
+                Ok(v) => self.push(Tok::IntLit(v), s, suf_s),
                 Err(_) => self.errs.push(Diagnostic::error(
                     "E0010",
                     Span::new(s, i),
@@ -269,7 +262,9 @@ impl<'a> Lexer<'a> {
                 )),
             }
         }
-        let _ = suffix;
+        if let Some(k) = suffix_tok {
+            self.push(Tok::IntSuffix(k), suf_s, i);
+        }
         i
     }
 

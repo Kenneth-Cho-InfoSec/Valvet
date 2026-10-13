@@ -391,6 +391,9 @@ fn stmt_tree_has_return(s: &Stmt) -> bool {
             it || block_tree_has_return(body)
         }
         Stmt::Loop { body, .. } => block_tree_has_return(body),
+        Stmt::LetElse {
+            scrutinee, else_b, ..
+        } => expr_tree_has_return(scrutinee) || block_tree_has_return(else_b),
         Stmt::Break { value, .. } => value.as_ref().is_some_and(expr_tree_has_return),
         Stmt::Continue { .. } => false,
     }
@@ -1495,6 +1498,15 @@ impl Cx {
                             .any(|x| self.stmt_has_local_borrow(x, params))
                     })
             }
+            Stmt::LetElse {
+                scrutinee, else_b, ..
+            } => {
+                self.contains_local_borrow(scrutinee, params)
+                    || else_b
+                        .stmts
+                        .iter()
+                        .any(|x| self.stmt_has_local_borrow(x, params))
+            }
         }
     }
 
@@ -2094,6 +2106,32 @@ impl Cx {
                 ..
             } => {
                 let _ = self.check_match(scrutinee, arms, *span, ret_ty, false);
+                self.types.insert(*id, Ty::Unit);
+                Flow::Normal
+            }
+            Stmt::LetElse {
+                id,
+                scrutinee,
+                pat,
+                else_b,
+                span,
+                ..
+            } => {
+                // `let PAT = expr else DIVERGING` (B3): pattern bindings
+                // join the current scope (no push); the `else` block must
+                // diverge (Flow-precise, so nested returns count).
+                let st = self.check_expr(scrutinee);
+                let sdim = self.dim_of(scrutinee.id);
+                let _ = self.check_pat(pat, &st, &sdim, *span);
+                let (_et, eflow) = self.check_block(else_b, ret_ty);
+                if matches!(eflow, Flow::Normal) {
+                    self.err(
+                        "E0201",
+                        *span,
+                        "`let ... else` requires a diverging `else` block",
+                        Some("end it with `return`, `break`, or `continue`".into()),
+                    );
+                }
                 self.types.insert(*id, Ty::Unit);
                 Flow::Normal
             }

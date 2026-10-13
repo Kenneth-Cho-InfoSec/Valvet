@@ -4094,6 +4094,46 @@ impl<'a> Gen<'a> {
                 self.pop_frame();
                 Ok(())
             }
+            Stmt::LetElse {
+                scrutinee,
+                pat,
+                else_b,
+                ..
+            } => {
+                // `let PAT = expr else DIVERGING` (B3): materialize the
+                // scrutinee once, pre-declare bindings in the current scope
+                // (C block scoping: the branch cannot declare what the rest
+                // uses), assign payloads on the taken branch, and emit the
+                // diverging `else` block otherwise (sema-enforced via `Flow`).
+                let st = self.ty_of(scrutinee.id);
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let slot = match &scrutinee.kind {
+                    ExprKind::Var(name) => mangle(name),
+                    _ => {
+                        let inline = self.emit_expr(scrutinee)?;
+                        self.new_tmp_ty(&self.cty_val(&st), &inline)
+                    }
+                };
+                self.cur_move = saved;
+                self.flush_nulls();
+                self.pat_declare(pat, &st)?;
+                let test = self.pat_test(pat, &st, &slot)?;
+                self.out.push_str(&format!("if ({}) {{\n", test));
+                self.pat_assign(pat, &st, &slot)?;
+                self.flush_nulls();
+                self.out.push_str("} else {\n");
+                self.scopes.push(vec![]);
+                let depth = self.scopes.len() - 1;
+                self.push_frame();
+                self.emit_block(else_b, ret_ty, false)?;
+                self.emit_scope_frees(depth);
+                self.flush_nulls();
+                self.pop_frame();
+                self.pop_scope();
+                self.out.push_str("}\n");
+                Ok(())
+            }
             Stmt::Break { value, .. } => {
                 let info = self
                     .loop_stack
@@ -5516,6 +5556,141 @@ impl<'a> Gen<'a> {
             // guarantees all alternatives agree).
             Pat::Or(alts) => match alts.first() {
                 Some(a) => self.pat_binds(a, ty, slot),
+                None => Ok(()),
+            },
+        }
+    }
+
+    /// Pre-declare `let-else` bindings zero-initialized in the current scope.
+    /// (C block scoping: the taken branch cannot declare what the rest of the
+    /// function uses, so declaration happens up front and the branch assigns.)
+    fn pat_declare(&mut self, pat: &Pat, ty: &Ty) -> Result<(), Ice> {
+        match pat {
+            Pat::Wild => Ok(()),
+            Pat::Bind(name, _) => {
+                let cname = mangle(name);
+                let ct = self.cty_val(ty);
+                self.out
+                    .push_str(&format!("{} {} = ({}){{0}};\n", ct, cname, ct));
+                self.declare(cname.clone(), ty.clone());
+                if self.moves(ty) {
+                    self.owned.insert(cname, ty.clone());
+                }
+                Ok(())
+            }
+            Pat::LitInt(_) | Pat::LitFloat(_) | Pat::LitBool(_) | Pat::LitStr(_) => Ok(()),
+            Pat::Variant {
+                ty: q,
+                variant,
+                sub,
+                ..
+            } => {
+                let rq = self.resolve_pat_ty(q)?;
+                let (_, _, pts) = self.resolve_variant(&rq, variant, ty)?;
+                for (j, sp) in sub.iter().enumerate() {
+                    let pty = pts.get(j).cloned().unwrap_or(Ty::Unit);
+                    self.pat_declare(sp, &pty)?;
+                }
+                Ok(())
+            }
+            Pat::Struct { name, fields } => {
+                let def = self
+                    .structs
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| Ice(format!("unknown struct {}", name)))?;
+                for (fname, sub) in fields {
+                    let fty = def
+                        .fields
+                        .iter()
+                        .find(|(f, _)| f == fname)
+                        .map(|(_, t)| t.clone())
+                        .ok_or_else(|| Ice("unknown field".into()))?;
+                    match sub {
+                        None => {
+                            let cname = mangle(fname);
+                            let ct = self.cty_val(&fty);
+                            self.out
+                                .push_str(&format!("{} {} = ({}){{0}};\n", ct, cname, ct));
+                            self.declare(cname.clone(), fty.clone());
+                            if self.moves(&fty) {
+                                self.owned.insert(cname, fty);
+                            }
+                        }
+                        Some(p) => self.pat_declare(p, &fty)?,
+                    }
+                }
+                Ok(())
+            }
+            Pat::Or(alts) => match alts.first() {
+                Some(a) => self.pat_declare(a, ty),
+                None => Ok(()),
+            },
+        }
+    }
+
+    /// Assign `let-else` payloads into pre-declared bindings on the taken
+    /// branch (move-poisoning mirrors `pat_binds`; no redeclaration).
+    fn pat_assign(&mut self, pat: &Pat, ty: &Ty, slot: &str) -> Result<(), Ice> {
+        match pat {
+            Pat::Wild => Ok(()),
+            Pat::Bind(name, _) => {
+                let cname = mangle(name);
+                self.out.push_str(&format!("{} = {};\n", cname, slot));
+                if self.moves(ty) {
+                    // Move-out: poison the source path.
+                    self.nulls.push((slot.to_string(), ty.clone()));
+                    self.flush_nulls();
+                }
+                Ok(())
+            }
+            Pat::LitInt(_) | Pat::LitFloat(_) | Pat::LitBool(_) | Pat::LitStr(_) => Ok(()),
+            Pat::Variant {
+                ty: q,
+                variant,
+                sub,
+                ..
+            } => {
+                let rq = self.resolve_pat_ty(q)?;
+                let (_, idx, pts) = self.resolve_variant(&rq, variant, ty)?;
+                for (j, sp) in sub.iter().enumerate() {
+                    let ppath =
+                        format!("{}.u.{}.{}", slot, cmember(idx), cfield(&format!("_{}", j)));
+                    let pty = pts.get(j).cloned().unwrap_or(Ty::Unit);
+                    self.pat_assign(sp, &pty, &ppath)?;
+                }
+                Ok(())
+            }
+            Pat::Struct { name, fields } => {
+                let def = self
+                    .structs
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| Ice(format!("unknown struct {}", name)))?;
+                for (fname, sub) in fields {
+                    let fty = def
+                        .fields
+                        .iter()
+                        .find(|(f, _)| f == fname)
+                        .map(|(_, t)| t.clone())
+                        .ok_or_else(|| Ice("unknown field".into()))?;
+                    let fpath = format!("{}.{}", slot, cfield(fname));
+                    match sub {
+                        None => {
+                            let cname = mangle(fname);
+                            self.out.push_str(&format!("{} = {};\n", cname, fpath));
+                            if self.moves(&fty) {
+                                self.nulls.push((fpath, fty));
+                                self.flush_nulls();
+                            }
+                        }
+                        Some(p) => self.pat_assign(p, &fty, &fpath)?,
+                    }
+                }
+                Ok(())
+            }
+            Pat::Or(alts) => match alts.first() {
+                Some(a) => self.pat_assign(a, ty, slot),
                 None => Ok(()),
             },
         }

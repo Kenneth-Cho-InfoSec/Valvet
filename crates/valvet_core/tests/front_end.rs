@@ -1077,3 +1077,32 @@ fn sugar_iflet_or_needs_parens() {
         vec!["E0005"]
     );
 }
+
+#[test]
+fn sugar_let_else_accepted() {
+    check_ok("fun get(v: Int64): Option<Int64> {\nif (v > (0 as Int64)) {\nreturn Some(v)\n}\nreturn None\n}\nfun show(v: Int64) {\nlet Some(x) = get(v) else {\nprintln(0)\nreturn\n};\nprintln(x)\n}\nfun main() {\nshow(5 as Int64)\n}\n");
+}
+
+#[test]
+fn sugar_let_else_nodiv_rejected() {
+    // One E0201 for the non-diverging else, nothing more.
+    assert_eq!(
+        check_codes("fun main() {\nval o = Some(3 as Int64)\nlet Some(x) = o else {\nprintln(0)\n}\nprintln(x)\n}\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn sugar_suffix_pins_types() {
+    check_ok("val x = 1i64\nval y: Int64 = x\nval a = 5i32\nval f = 2.5f64\nprintln(y)\nprintln(a)\nprintln(f)\n");
+}
+
+#[test]
+fn sugar_suffix_bad_rejected() {
+    assert_eq!(check_codes("val x = 1u8\n"), vec!["E0010"]);
+}
+
+#[test]
+fn sugar_suffix_range_rejected() {
+    assert_eq!(check_codes("val x = 99999999999i32\n"), vec!["E0201"]);
+}

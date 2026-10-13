@@ -47,6 +47,9 @@ pub enum Tok {
     Ident(String),
     IntLit(i64),
     FloatLit(f64),
+    /// Numeric suffix attached to the preceding literal (`1i64`, `2.5f64`).
+    /// The lexer only emits these adjacently; other suffixes are E0010.
+    IntSuffix(NumSuffix),
     StrLit(String),
     CharLit(char),
     /// Explicit lifetime `'a` (disambiguated from char literals in the lexer).
@@ -100,6 +103,14 @@ pub enum Tok {
     // Layout
     Nl,
     Eof,
+}
+
+/// Numeric literal suffix (`1i32`, `1i64`, `2.5f64`); see `Tok::IntSuffix`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumSuffix {
+    I32,
+    I64,
+    F64,
 }
 
 #[derive(Debug, Clone)]

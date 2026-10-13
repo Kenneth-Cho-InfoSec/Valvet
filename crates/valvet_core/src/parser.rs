@@ -970,10 +970,17 @@ impl Parser {
             }
             Tok::IntLit(v) => {
                 self.bump();
+                // Suffixes are value-neutral in patterns: accept and ignore.
+                if matches!(self.cur(), Tok::IntSuffix(_)) {
+                    self.bump();
+                }
                 Some(Pat::LitInt(v))
             }
             Tok::FloatLit(v) => {
                 self.bump();
+                if matches!(self.cur(), Tok::IntSuffix(_)) {
+                    self.bump();
+                }
                 Some(Pat::LitFloat(v))
             }
             Tok::StrLit(v) => {
@@ -1289,6 +1296,33 @@ impl Parser {
     fn parse_stmt(&mut self) -> Option<ParsedStmt> {
         self.skip_nls();
         match self.cur().clone() {
+            Tok::Let => {
+                // `let PAT = expr else DIVERGING` (B3): bindings join the
+                // current scope; divergence is enforced in sema via `Flow`.
+                let start = self.cur_span().start;
+                self.bump();
+                let pat = self.parse_pat()?;
+                self.expect(Tok::Eq, "expected `=` after `let` pattern")?;
+                let scrutinee = self.parse_nostruct_expr()?;
+                let save = self.pos;
+                self.skip_nls();
+                if !matches!(self.cur(), Tok::Else) {
+                    self.pos = save;
+                    self.err("E0005", "`let` needs a diverging `else` block");
+                    return None;
+                }
+                self.bump();
+                let else_b = Box::new(self.parse_block()?);
+                let end = else_b.span.end;
+                self.expect_separator_opt();
+                Some(ParsedStmt::Stmt(Stmt::LetElse {
+                    id: self.fresh(),
+                    scrutinee: Box::new(scrutinee),
+                    pat,
+                    else_b,
+                    span: Span::new(start, end),
+                }))
+            }
             Tok::Val | Tok::Var => {
                 let is_val = matches!(self.cur(), Tok::Val);
                 let start = self.cur_span().start;
@@ -2541,14 +2575,64 @@ impl Parser {
         match self.cur().clone() {
             Tok::IntLit(v) => {
                 self.bump();
-                Some(Expr {
+                // Numeric suffix (C1): pins the literal type via a cast node
+                // (sema/codegen already fold `as` on literals).
+                let mut expr = Expr {
                     id: self.fresh(),
                     span: sp,
                     kind: ExprKind::Int(v),
-                })
+                };
+                if let Tok::IntSuffix(k) = self.cur().clone() {
+                    self.bump();
+                    let end = self.prev_span().end;
+                    let target = match k {
+                        crate::token::NumSuffix::I64 => Ty::Int64,
+                        crate::token::NumSuffix::I32 => {
+                            if v > i32::MAX as i64 || v < i32::MIN as i64 {
+                                self.err_at(
+                                    "E0201",
+                                    Span::new(sp.start, end),
+                                    format!("integer literal `{}` out of range for `Int32`", v),
+                                );
+                                return None;
+                            }
+                            Ty::Int32
+                        }
+                        crate::token::NumSuffix::F64 => {
+                            self.err_at(
+                                "E0010",
+                                Span::new(sp.start, end),
+                                "`f64` suffix needs a float literal",
+                            );
+                            return None;
+                        }
+                    };
+                    expr = Expr {
+                        id: self.fresh(),
+                        span: Span::new(sp.start, end),
+                        kind: ExprKind::Cast {
+                            expr: Box::new(expr),
+                            target,
+                            target_span: Span::new(sp.start, end),
+                        },
+                    };
+                }
+                Some(expr)
             }
             Tok::FloatLit(v) => {
                 self.bump();
+                // `f64` is already the float type: accept and ignore.
+                if matches!(self.cur(), Tok::IntSuffix(_)) {
+                    if !matches!(self.cur(), Tok::IntSuffix(crate::token::NumSuffix::F64)) {
+                        self.err_at(
+                            "E0010",
+                            self.cur_span(),
+                            "`i32`/`i64` suffix needs an integer literal",
+                        );
+                        return None;
+                    }
+                    self.bump();
+                }
                 Some(Expr {
                     id: self.fresh(),
                     span: sp,
