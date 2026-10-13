@@ -193,6 +193,11 @@ pub enum Ty {
         mutable: bool,
         inner: Box<Ty>,
     },
+    /// Poison from an already-reported error (stops cascade diagnostics;
+    /// never user-visible when suppression works, never reaches codegen
+    /// since any error aborts compilation). Behaves like `Unit` (Copy)
+    /// in every predicate.
+    Error,
 }
 
 impl Ty {
@@ -222,6 +227,8 @@ impl Ty {
                 let inner: Vec<String> = args.iter().map(|a| a.name()).collect();
                 format!("{}<{}>", base, inner.join(", "))
             }
+            // Backstop only: suppression (item 2) keeps this out of output.
+            Ty::Error => "<error>".to_string(),
         }
     }
     /// Display name, resolved or not.

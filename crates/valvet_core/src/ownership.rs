@@ -325,9 +325,13 @@ fn number_uses(
 struct VarState {
     ty: Ty,
     moved: bool,
+    /// Byte span of the move, for the "value moved here" note on E0301.
+    moved_span: Option<crate::source::Span>,
     /// Struct fields moved out individually (conservative: any field move
     /// forbids whole-value use; see `use_var`).
     moved_fields: HashSet<String>,
+    /// Per-field move spans, parallel to `moved_fields`.
+    moved_field_spans: HashMap<String, crate::source::Span>,
 }
 
 /// Move state snapshot for branch joins (if/else, match arms, loop bodies):
@@ -336,6 +340,10 @@ struct VarState {
 struct MoveSnap {
     vars: HashSet<String>,
     fields: HashMap<String, HashSet<String>>,
+    /// Move spans parallel to `vars` (first-found wins at joins).
+    spans: HashMap<String, crate::source::Span>,
+    /// Move spans parallel to `fields`.
+    field_spans: HashMap<String, HashMap<String, crate::source::Span>>,
 }
 
 /// A live borrow region.
@@ -421,7 +429,9 @@ impl<'a> Cx<'a> {
             VarState {
                 ty,
                 moved: false,
+                moved_span: None,
                 moved_fields: HashSet::new(),
+                moved_field_spans: HashMap::new(),
             },
         );
     }
@@ -732,13 +742,25 @@ impl<'a> Cx<'a> {
             return;
         }
         if st.moved || !st.moved_fields.is_empty() {
-            self.errs.push(
-                Diagnostic::error("E0301", span, format!("use of moved value `{}`", name))
-                    .with_help(format!(
-                        "clone before move, or stop using `{}` after it was moved",
-                        name
-                    )),
-            );
+            let mut d = Diagnostic::error("E0301", span, format!("use of moved value `{}`", name))
+                .with_help(format!(
+                    "clone before move, or stop using `{}` after it was moved",
+                    name
+                ));
+            if let Some(ms) = st.moved_span {
+                d = d.with_label(ms, "value moved here");
+            } else {
+                // Whole flag unset (join-merged field moves): label each
+                // moved field, sorted for deterministic output.
+                let mut fields: Vec<&String> = st.moved_fields.iter().collect();
+                fields.sort();
+                for f in fields {
+                    if let Some(fs) = st.moved_field_spans.get(f) {
+                        d = d.with_label(*fs, format!("field `{}` moved here", f));
+                    }
+                }
+            }
+            self.errs.push(d);
             return;
         }
         if move_ctx {
@@ -755,6 +777,7 @@ impl<'a> Cx<'a> {
             }
             if let Some(v) = self.find_mut(name) {
                 v.moved = true;
+                v.moved_span = Some(span);
             }
         }
     }
@@ -788,21 +811,25 @@ impl<'a> Cx<'a> {
             None => return, // sema already reported
         };
         if st.moved {
-            self.errs.push(
-                Diagnostic::error("E0301", span, format!("use of moved value `{}`", var))
-                    .with_help("the whole value was moved earlier".to_string()),
-            );
+            let mut d = Diagnostic::error("E0301", span, format!("use of moved value `{}`", var))
+                .with_help("the whole value was moved earlier".to_string());
+            if let Some(ms) = st.moved_span {
+                d = d.with_label(ms, "value moved here");
+            }
+            self.errs.push(d);
             return;
         }
         if st.moved_fields.contains(field) {
-            self.errs.push(
-                Diagnostic::error(
-                    "E0301",
-                    span,
-                    format!("use of moved field `{}.{}`", var, field),
-                )
-                .with_help("the field was moved out earlier".to_string()),
-            );
+            let mut d = Diagnostic::error(
+                "E0301",
+                span,
+                format!("use of moved field `{}.{}`", var, field),
+            )
+            .with_help("the field was moved out earlier".to_string());
+            if let Some(fs) = st.moved_field_spans.get(field) {
+                d = d.with_label(*fs, "field moved here");
+            }
+            self.errs.push(d);
             return;
         }
         // Moving a non-Copy field out of a shared borrow is corruption
@@ -856,6 +883,7 @@ impl<'a> Cx<'a> {
             Some(t) if !is_copy_ty(&t, &self.checked.structs, &self.checked.enums) => {
                 if let Some(v) = self.find_mut(var) {
                     v.moved_fields.insert(field.to_string());
+                    v.moved_field_spans.insert(field.to_string(), span);
                 }
             }
             _ => {}
@@ -865,6 +893,8 @@ impl<'a> Cx<'a> {
     fn moved_snapshot(&self) -> MoveSnap {
         let mut vars = HashSet::new();
         let mut fields: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut spans: HashMap<String, crate::source::Span> = HashMap::new();
+        let mut field_spans: HashMap<String, HashMap<String, crate::source::Span>> = HashMap::new();
         for s in &self.scopes {
             for (n, v) in s {
                 // Disjoint field borrows keep this legal under the borrow checker.
@@ -872,23 +902,41 @@ impl<'a> Cx<'a> {
                     && !is_copy_ty(&v.ty, &self.checked.structs, &self.checked.enums)
                 {
                     vars.insert(n.clone());
+                    if let Some(sp) = v.moved_span {
+                        spans.entry(n.clone()).or_insert(sp);
+                    }
                 }
                 if !v.moved_fields.is_empty() {
                     fields
                         .entry(n.clone())
                         .or_default()
                         .extend(v.moved_fields.iter().cloned());
+                    for (f, sp) in &v.moved_field_spans {
+                        field_spans
+                            .entry(n.clone())
+                            .or_default()
+                            .entry(f.clone())
+                            .or_insert(*sp);
+                    }
                 }
             }
         }
-        MoveSnap { vars, fields }
+        MoveSnap {
+            vars,
+            fields,
+            spans,
+            field_spans,
+        }
     }
 
-    fn apply_moved(&mut self, set: &HashSet<String>) {
+    fn apply_moved(&mut self, set: &HashSet<String>, spans: &HashMap<String, crate::source::Span>) {
         for s in self.scopes.iter_mut() {
             for (n, v) in s.iter_mut() {
                 if set.contains(n) {
                     v.moved = true;
+                    if let Some(sp) = spans.get(n) {
+                        v.moved_span = Some(*sp);
+                    }
                 }
             }
         }
@@ -1280,6 +1328,7 @@ impl<'a> Cx<'a> {
         scrut: &Expr,
         move_ctx: bool,
         union_out: &mut HashSet<String>,
+        uspans_out: &mut HashMap<String, crate::source::Span>,
     ) {
         let before = self.moved_snapshot();
         let st = self.ty_of(scrut.id);
@@ -1296,7 +1345,9 @@ impl<'a> Cx<'a> {
                 VarState {
                     ty: ty.clone(),
                     moved: false,
+                    moved_span: None,
                     moved_fields: HashSet::new(),
+                    moved_field_spans: HashMap::new(),
                 },
             );
         }
@@ -1307,6 +1358,7 @@ impl<'a> Cx<'a> {
             {
                 if let Some(v) = self.find_mut(&vn) {
                     v.moved = true;
+                    v.moved_span = Some(scrut.span);
                 }
             }
         }
@@ -1326,6 +1378,9 @@ impl<'a> Cx<'a> {
         let moved_arm = self.moved_snapshot();
         self.restore_snapshot(&before);
         union_out.extend(moved_arm.vars);
+        for (n, sp) in moved_arm.spans {
+            uspans_out.entry(n).or_insert(sp);
+        }
     }
 
     /// Binding slots introduced by a pattern: (name, type). Mirrors the sema
@@ -1416,7 +1471,9 @@ impl<'a> Cx<'a> {
                     VarState {
                         ty: decl_ty,
                         moved: false,
+                        moved_span: None,
                         moved_fields: HashSet::new(),
+                        moved_field_spans: HashMap::new(),
                     },
                 );
             }
@@ -1440,11 +1497,15 @@ impl<'a> Cx<'a> {
                     self.check_block_scoped(e);
                 }
                 let moved_else = self.moved_snapshot();
-                // union
+                // union (spans: first-found wins, matching bool behavior)
                 let mut union = moved_then.vars;
                 union.extend(moved_else.vars);
+                let mut uspans = moved_then.spans;
+                for (n, sp) in moved_else.spans {
+                    uspans.entry(n).or_insert(sp);
+                }
                 self.restore_snapshot(&before);
-                self.apply_moved(&union);
+                self.apply_moved(&union, &uspans);
             }
             Stmt::While { cond, body, .. } => {
                 self.check_expr(cond, false);
@@ -1455,7 +1516,7 @@ impl<'a> Cx<'a> {
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
                 // Conservative: body moves persist after loop.
-                self.apply_moved(&moved_body.vars);
+                self.apply_moved(&moved_body.vars, &moved_body.spans);
             }
             Stmt::For {
                 var, iter, body, ..
@@ -1483,7 +1544,9 @@ impl<'a> Cx<'a> {
                     VarState {
                         ty: vt,
                         moved: false,
+                        moved_span: None,
                         moved_fields: HashSet::new(),
+                        moved_field_spans: HashMap::new(),
                     },
                 );
                 self.loop_depth += 1;
@@ -1493,7 +1556,7 @@ impl<'a> Cx<'a> {
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
                 // Conservative like `while`: body moves persist after loop.
-                self.apply_moved(&moved_body.vars);
+                self.apply_moved(&moved_body.vars, &moved_body.spans);
             }
             Stmt::Loop { body, .. } => {
                 let before = self.moved_snapshot();
@@ -1502,17 +1565,18 @@ impl<'a> Cx<'a> {
                 self.loop_depth -= 1;
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
-                self.apply_moved(&moved_body.vars);
+                self.apply_moved(&moved_body.vars, &moved_body.spans);
             }
             Stmt::Match {
                 scrutinee, arms, ..
             } => {
                 self.check_expr(scrutinee, false);
                 let mut union = HashSet::new();
+                let mut uspans: HashMap<String, crate::source::Span> = HashMap::new();
                 for arm in arms {
-                    self.check_match_arm(arm, scrutinee, false, &mut union);
+                    self.check_match_arm(arm, scrutinee, false, &mut union, &mut uspans);
                 }
-                self.apply_moved(&union);
+                self.apply_moved(&union, &uspans);
             }
             Stmt::Break { value, .. } => {
                 // `break v` moves a value out of the loop (like `return`).
@@ -1544,10 +1608,12 @@ impl<'a> Cx<'a> {
         for s in self.scopes.iter_mut() {
             for (n, v) in s.iter_mut() {
                 v.moved = snap.vars.contains(n);
+                v.moved_span = snap.spans.get(n).copied();
                 // Field moves must also roll back: exclusive branches must
                 // not observe each other's partial moves (same rule as whole
                 // moves above; previously leaked, causing spurious E0301).
                 v.moved_fields = snap.fields.get(n).cloned().unwrap_or_default();
+                v.moved_field_spans = snap.field_spans.get(n).cloned().unwrap_or_default();
             }
         }
     }
@@ -1791,10 +1857,11 @@ impl<'a> Cx<'a> {
             ExprKind::Match { scrutinee, arms } => {
                 self.check_expr(scrutinee, false);
                 let mut union = HashSet::new();
+                let mut uspans: HashMap<String, crate::source::Span> = HashMap::new();
                 for arm in arms {
-                    self.check_match_arm(arm, scrutinee, move_ctx, &mut union);
+                    self.check_match_arm(arm, scrutinee, move_ctx, &mut union, &mut uspans);
                 }
-                self.apply_moved(&union);
+                self.apply_moved(&union, &uspans);
             }
             ExprKind::Loop { body } => {
                 // Value loop: check body in a scope; `break v` tails propagate
@@ -1815,7 +1882,7 @@ impl<'a> Cx<'a> {
                 self.scopes.pop();
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
-                self.apply_moved(&moved_body.vars);
+                self.apply_moved(&moved_body.vars, &moved_body.spans);
             }
             ExprKind::Assign { target, value, .. } => {
                 let moves = self.moves_ty(value.id);
@@ -1955,8 +2022,12 @@ impl<'a> Cx<'a> {
                 let moved_else = self.moved_snapshot();
                 let mut union = moved_then.vars;
                 union.extend(moved_else.vars);
+                let mut uspans = moved_then.spans;
+                for (n, sp) in moved_else.spans {
+                    uspans.entry(n).or_insert(sp);
+                }
                 self.restore_snapshot(&before);
-                self.apply_moved(&union);
+                self.apply_moved(&union, &uspans);
             }
         }
     }

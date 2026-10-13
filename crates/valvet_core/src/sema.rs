@@ -77,6 +77,18 @@ pub struct Checked {
 }
 
 /// Structural Copy analysis: an ADT is Copy iff all its fields/payloads are.
+/// Whether a type contains poison from an already-reported error.
+/// Diagnostic sites check this first and stay silent instead of
+/// emitting follow-on (cascade) errors; the poison itself renders as
+/// `<error>` only if a guard is ever missed (backstop, never committed).
+pub fn ty_has_error(ty: &Ty) -> bool {
+    match ty {
+        Ty::Error => true,
+        Ty::Generic { args, .. } => args.iter().any(ty_has_error),
+        Ty::Reference { inner, .. } => ty_has_error(inner),
+        _ => false,
+    }
+}
 /// (No recursive types exist in 0.1.0, so this always terminates.)
 pub fn is_copy_ty(
     ty: &Ty,
@@ -528,12 +540,14 @@ impl Cx {
                         None => None,
                     },
                     _ => {
-                        self.err(
-                            "E0201",
-                            *span,
-                            format!("type {} has no fields", bt.name()),
-                            None,
-                        );
+                        if !ty_has_error(&bt) {
+                            self.err(
+                                "E0201",
+                                *span,
+                                format!("type {} has no fields", bt.name()),
+                                None,
+                            );
+                        }
                         None
                     }
                 }
@@ -556,12 +570,14 @@ impl Cx {
                         None
                     }
                     _ => {
-                        self.err(
-                            "E0201",
-                            *span,
-                            format!("cannot dereference {}", bt.name()),
-                            None,
-                        );
+                        if !ty_has_error(&bt) {
+                            self.err(
+                                "E0201",
+                                *span,
+                                format!("cannot dereference {}", bt.name()),
+                                None,
+                            );
+                        }
                         None
                     }
                 }
@@ -577,10 +593,13 @@ impl Cx {
                     return None;
                 }
                 let (bt, bmut, _) = self.check_place(base)?;
+                if ty_has_error(&bt) {
+                    return None;
+                }
                 match bt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
                         let it = self.check_expr(idx);
-                        if !matches!(it, Ty::Int32 | Ty::Int64) {
+                        if !matches!(it, Ty::Int32 | Ty::Int64) && !ty_has_error(&it) {
                             self.err(
                                 "E0201",
                                 idx.span,
@@ -929,6 +948,8 @@ impl Cx {
             // No nested references in 0.1.0; total fallback.
             Ty::Reference { .. } => "ref".to_string(),
             Ty::Generic { base, args } => Self::inst_key(base, args),
+            // Unreachable on success paths (errors abort before lowering).
+            Ty::Error => "error".to_string(),
         }
     }
 
@@ -951,7 +972,7 @@ impl Cx {
                         "nested references are deferred in 0.1.0 (references only at top level)",
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 Ty::Reference {
                     lifetime: lifetime.clone(),
@@ -971,7 +992,7 @@ impl Cx {
                         "references inside generic arguments are deferred in 0.1.0",
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 match (base.as_str(), resolved.len()) {
                     ("Option", 1)
@@ -995,7 +1016,7 @@ impl Cx {
                             format!("unknown generic type `{}`, or wrong arity", base),
                             Some("only `Option<T>`, `Result<T, E>`, `Vec<T>`, `Missing<T>`, `Rng`, `Mat` and `Factor` are supported".into()),
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                 }
             }
@@ -1020,7 +1041,7 @@ impl Cx {
                             format!("unknown type `{}`", n),
                             Some("expected Int32, Int64, Float64, Bool, String, or a declared struct/enum".into()),
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                 },
             },
@@ -1484,7 +1505,7 @@ impl Cx {
                 }
                 _ => false,
             };
-            if !main_ok {
+            if !main_ok && !ty_has_error(&f.ret) {
                 self.err(
                     "E0201",
                     f.ret_span,
@@ -1499,7 +1520,10 @@ impl Cx {
         let ret_dim = self.eval_unit(&f.ret_unit);
         self.fn_ret_dim = ret_dim.clone();
         self.dims.insert(f.id, ret_dim);
-        if f.ret_unit.is_some() && !matches!(f.ret, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+        if f.ret_unit.is_some()
+            && !matches!(f.ret, Ty::Int32 | Ty::Int64 | Ty::Float64)
+            && !ty_has_error(&f.ret)
+        {
             self.err(
                 "E0201",
                 f.ret_span,
@@ -1511,7 +1535,10 @@ impl Cx {
         self.locals.push(HashMap::new());
         for p in &f.params {
             let pdim = self.eval_unit(&p.unit);
-            if p.unit.is_some() && !matches!(p.ty, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+            if p.unit.is_some()
+                && !matches!(p.ty, Ty::Int32 | Ty::Int64 | Ty::Float64)
+                && !ty_has_error(&p.ty)
+            {
                 self.err(
                     "E0201",
                     p.span,
@@ -1533,7 +1560,11 @@ impl Cx {
         // Tail/unit coherence: block type must equal declared return, unless the
         // block diverges (ends in unconditional `return`, which coerces to any type).
         // (`break`/`continue` at top level already errored; only Normal must match.)
-        if matches!(flow, Flow::Normal) && body_ty != f.ret {
+        if matches!(flow, Flow::Normal)
+            && body_ty != f.ret
+            && !ty_has_error(&body_ty)
+            && !ty_has_error(&f.ret)
+        {
             self.err(
                 "E0201",
                 f.body.span,
@@ -1671,7 +1702,7 @@ impl Cx {
                 }
                 let decl_ty = match aty.as_ref() {
                     Some(t) => {
-                        if *t != it {
+                        if *t != it && !ty_has_error(t) && !ty_has_error(&it) {
                             self.err(
                                 "E0201",
                                 *span,
@@ -1696,7 +1727,10 @@ impl Cx {
                 // codegen); otherwise the binding inherits the
                 // initializer's dimension.
                 let want = self.eval_unit(unit);
-                if unit.is_some() && !matches!(decl_ty, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+                if unit.is_some()
+                    && !matches!(decl_ty, Ty::Int32 | Ty::Int64 | Ty::Float64)
+                    && !ty_has_error(&decl_ty)
+                {
                     self.err(
                         "E0201",
                         *span,
@@ -1771,7 +1805,7 @@ impl Cx {
                 }
                 let decl_ty = match aty.as_ref() {
                     Some(t) => {
-                        if *t != it {
+                        if *t != it && !ty_has_error(t) && !ty_has_error(&it) {
                             self.err(
                                 "E0201",
                                 *span,
@@ -1793,7 +1827,10 @@ impl Cx {
                 self.types.insert(*id, decl_ty.clone());
                 // Units: same rule as `val` (see above).
                 let want = self.eval_unit(unit);
-                if unit.is_some() && !matches!(decl_ty, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+                if unit.is_some()
+                    && !matches!(decl_ty, Ty::Int32 | Ty::Int64 | Ty::Float64)
+                    && !ty_has_error(&decl_ty)
+                {
                     self.err(
                         "E0201",
                         *span,
@@ -1832,7 +1869,7 @@ impl Cx {
                 let t = self.check_expr(expr);
                 // Discarded non-unit values are allowed, EXCEPT method results:
                 // `v.push(x);` without assignment would silently lose the update.
-                if t != Ty::Unit {
+                if t != Ty::Unit && !ty_has_error(&t) {
                     if let ExprKind::Method { method, .. } = &expr.kind {
                         self.err(
                             "E0201",
@@ -1857,7 +1894,7 @@ impl Cx {
                 ..
             } => {
                 let ct = self.check_expr(cond);
-                if ct != Ty::Bool {
+                if ct != Ty::Bool && !ty_has_error(&ct) {
                     self.err(
                         "E0201",
                         cond.span,
@@ -1872,7 +1909,11 @@ impl Cx {
                 };
                 // Statement-if: arms must agree only if both diverge-or-unit; be lenient:
                 // if no else, then-branch must be Unit (no stray tail value).
-                if else_b.is_none() && matches!(d1, Flow::Normal) && t1 != Ty::Unit {
+                if else_b.is_none()
+                    && matches!(d1, Flow::Normal)
+                    && t1 != Ty::Unit
+                    && !ty_has_error(&t1)
+                {
                     self.err(
                         "E0201", then_b.span,
                         "statement `if` without `else` must have `()` branches; add `else` or use statement form",
@@ -1888,7 +1929,7 @@ impl Cx {
             }
             Stmt::While { id, cond, body, .. } => {
                 let ct = self.check_expr(cond);
-                if ct != Ty::Bool {
+                if ct != Ty::Bool && !ty_has_error(&ct) {
                     self.err(
                         "E0201",
                         cond.span,
@@ -1914,7 +1955,7 @@ impl Cx {
                         Some("remove the value or use the `loop` as a tail expression".into()),
                     );
                 }
-                if matches!(bflow, Flow::Normal) && bt != Ty::Unit {
+                if matches!(bflow, Flow::Normal) && bt != Ty::Unit && !ty_has_error(&bt) {
                     self.err(
                         "E0201",
                         body.span,
@@ -1938,7 +1979,10 @@ impl Cx {
                     ForIter::Range { lo, hi, .. } => {
                         let lt = self.check_expr(lo);
                         let rt = self.check_expr(hi);
-                        if lt != rt || !matches!(lt, Ty::Int32 | Ty::Int64) {
+                        if (lt != rt || !matches!(lt, Ty::Int32 | Ty::Int64))
+                            && !ty_has_error(&lt)
+                            && !ty_has_error(&rt)
+                        {
                             self.err(
                                 "E0201",
                                 stmt_span(s),
@@ -1959,16 +2003,22 @@ impl Cx {
                                 args[0].clone()
                             }
                             _ => {
-                                self.err(
-                                    "E0201",
-                                    stmt_span(s),
-                                    format!(
-                                        "`for` without `..` iterates a `Vec<T>`, found {}",
-                                        wt.name()
-                                    ),
-                                    None,
-                                );
-                                Ty::Unit
+                                if !ty_has_error(&wt) {
+                                    self.err(
+                                        "E0201",
+                                        stmt_span(s),
+                                        format!(
+                                            "`for` without `..` iterates a `Vec<T>`, found {}",
+                                            wt.name()
+                                        ),
+                                        None,
+                                    );
+                                }
+                                if ty_has_error(&wt) {
+                                    Ty::Error
+                                } else {
+                                    Ty::Unit
+                                }
                             }
                         }
                     }
@@ -1989,7 +2039,7 @@ impl Cx {
                 );
                 let _ = var_span;
                 let (bt, bflow) = self.check_block(body, ret_ty);
-                if matches!(bflow, Flow::Normal) && bt != Ty::Unit {
+                if matches!(bflow, Flow::Normal) && bt != Ty::Unit && !ty_has_error(&bt) {
                     self.err("E0201", body.span, "`for` body must evaluate to `()`", None);
                 }
                 self.locals.pop();
@@ -2015,7 +2065,7 @@ impl Cx {
                         Some("remove the value or use the `loop` as a tail expression".into()),
                     );
                 }
-                if matches!(bflow, Flow::Normal) && bt != Ty::Unit {
+                if matches!(bflow, Flow::Normal) && bt != Ty::Unit && !ty_has_error(&bt) {
                     self.err(
                         "E0201",
                         body.span,
@@ -2085,7 +2135,7 @@ impl Cx {
                     None => Ty::Unit,
                 };
                 self.expected = saved_exp;
-                if vt != *ret_ty {
+                if vt != *ret_ty && !ty_has_error(&vt) && !ty_has_error(ret_ty) {
                     self.err(
                         "E0201",
                         stmt_span(s),
@@ -2163,7 +2213,7 @@ impl Cx {
                                 Some("declare it with `val`/`var` or check the spelling".into()),
                             );
                         }
-                        Ty::Unit
+                        Ty::Error
                     }
                 }
             }
@@ -2191,6 +2241,9 @@ impl Cx {
             }
             ExprKind::Unary { op, expr } => {
                 let t = self.check_expr(expr);
+                if ty_has_error(&t) {
+                    return Ty::Error;
+                }
                 // Negation and dereference preserve dimensions.
                 let d = self.dim_of(expr.id);
                 match op {
@@ -2227,6 +2280,9 @@ impl Cx {
                             *inner.clone()
                         }
                         _ => {
+                            if ty_has_error(&t) {
+                                return Ty::Error;
+                            }
                             self.err(
                                 "E0201",
                                 e.span,
@@ -2274,7 +2330,7 @@ impl Cx {
                         }
                         self.set_dim(e.id, pdim.clone());
                         if *op == AssignOp::Set {
-                            if pt != vt {
+                            if pt != vt && !ty_has_error(&pt) && !ty_has_error(&vt) {
                                 self.err(
                                     "E0201",
                                     e.span,
@@ -2347,7 +2403,7 @@ impl Cx {
                 else_b,
             } => {
                 let ct = self.check_expr(cond);
-                if ct != Ty::Bool {
+                if ct != Ty::Bool && !ty_has_error(&ct) {
                     self.err(
                         "E0201",
                         cond.span,
@@ -2387,7 +2443,7 @@ impl Cx {
                         t1
                     }
                     (false, false) => {
-                        if t1 != t2 {
+                        if t1 != t2 && !ty_has_error(&t1) && !ty_has_error(&t2) {
                             self.err(
                                 "E0201",
                                 e.span,
@@ -2395,6 +2451,8 @@ impl Cx {
                                 None,
                             );
                             Ty::Unit
+                        } else if ty_has_error(&t1) || ty_has_error(&t2) {
+                            Ty::Error
                         } else {
                             // Units: branches must share the dimension
                             // (literals pin); the first arm's scale wins
@@ -2438,7 +2496,7 @@ impl Cx {
                 let rt = self.fn_ret.clone();
                 let (bt, bflow) = self.check_block(body, &rt);
                 let ctx = self.loop_stack.pop().expect("loop stack underflow");
-                if matches!(bflow, Flow::Normal) && bt != Ty::Unit {
+                if matches!(bflow, Flow::Normal) && bt != Ty::Unit && !ty_has_error(&bt) {
                     self.err(
                         "E0201",
                         body.span,
@@ -2465,6 +2523,10 @@ impl Cx {
                         let mut ty = first.clone();
                         for b in it {
                             if *b != ty {
+                                if ty_has_error(&ty) || ty_has_error(b) {
+                                    ty = Ty::Error;
+                                    break;
+                                }
                                 self.err(
                                     "E0201",
                                     e.span,
@@ -2490,6 +2552,9 @@ impl Cx {
                 ..
             } => {
                 let bt = self.check_expr(base);
+                if ty_has_error(&bt) {
+                    return self.insert(e.id, Ty::Error);
+                }
                 let payload = match &bt {
                     Ty::Generic { base, args } if base == "Option" && args.len() == 1 => {
                         args[0].clone()
@@ -2523,12 +2588,15 @@ impl Cx {
                                     format!("unknown field `{}.{}`", sn, field),
                                     None,
                                 );
-                                Ty::Unit
+                                Ty::Error
                             }
                         },
                         None => Ty::Unit,
                     },
                     other => {
+                        if ty_has_error(&other) {
+                            return Ty::Error;
+                        }
                         self.err(
                             "E0201",
                             *field_span,
@@ -2545,6 +2613,9 @@ impl Cx {
                 // operand `Option<T>` requires enclosing `Option<U>`.
                 // Success type is unconstrained (flows into the body).
                 let ot = self.check_expr(expr);
+                if ty_has_error(&ot) {
+                    return Ty::Error;
+                }
                 let fret = self.fn_ret.clone();
                 match (&ot, &fret) {
                     (
@@ -2556,7 +2627,8 @@ impl Cx {
                     ) if ob == "Result" && fb == "Result" && oargs.len() == 2 => {
                         // Error-type identity (no From conversions yet).
                         if let Ty::Generic { args: fargs, .. } = &fret {
-                            if fargs.len() == 2 && fargs[1] != oargs[1] {
+                            if fargs.len() == 2 && fargs[1] != oargs[1] && !ty_has_error(&fargs[1])
+                            {
                                 self.err(
                                     "E0702",
                                     e.span,
@@ -2579,6 +2651,9 @@ impl Cx {
                         Ty::Generic { base: fb, args: _ },
                     ) if ob == "Option" && fb == "Option" && oargs.len() == 1 => oargs[0].clone(),
                     _ => {
+                        if ty_has_error(&fret) {
+                            return Ty::Error;
+                        }
                         self.err(
                             "E0702",
                             e.span,
@@ -2650,7 +2725,7 @@ impl Cx {
                         match &t0_opt {
                             None => t0_opt = Some(t),
                             Some(t0) => {
-                                if t != *t0 {
+                                if t != *t0 && !ty_has_error(t0) && !ty_has_error(&t) {
                                     self.err(
                                         "E0201",
                                         el.span,
@@ -2667,7 +2742,7 @@ impl Cx {
                     }
                     let t0 = t0_opt.unwrap_or(Ty::Unit);
                     let vt = if let Some(exp) = exp_elem {
-                        if exp != t0 {
+                        if exp != t0 && !ty_has_error(&exp) && !ty_has_error(&t0) {
                             self.err(
                                 "E0201",
                                 e.span,
@@ -2723,6 +2798,9 @@ impl Cx {
                         self.check_rng_method(e.span, method, *method_span, call_args)
                     }
                     _ => {
+                        if ty_has_error(&rt) {
+                            return Ty::Error;
+                        }
                         self.err(
                             "E0401",
                             *method_span,
@@ -2732,12 +2810,15 @@ impl Cx {
                             ),
                             None,
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                 }
             }
             ExprKind::Cast { expr, target, .. } => {
                 let st = self.check_expr(expr);
+                if ty_has_error(&st) {
+                    return Ty::Error;
+                }
                 if !can_cast(&st, target) {
                     self.err(
                         "E0201",
@@ -2756,6 +2837,9 @@ impl Cx {
                 // the dimension, same-vector operands convert scales,
                 // anything else is E0201. No runtime effect beyond scale.
                 let t = self.check_expr(expr);
+                if ty_has_error(&t) {
+                    return self.insert(e.id, Ty::Error);
+                }
                 match t {
                     Ty::Int32 | Ty::Int64 | Ty::Float64 => {}
                     _ => {
@@ -2807,7 +2891,7 @@ impl Cx {
                         } else {
                             self.err("E0401", e.span, format!("unknown type `{}`", name), None);
                         }
-                        return self.insert(e.id, Ty::Unit);
+                        return self.insert(e.id, Ty::Error);
                     }
                 };
                 if def.is_tuple {
@@ -2870,7 +2954,7 @@ impl Cx {
                         }
                         Some((_, _, fexpr)) => {
                             let at = self.check_expr(fexpr);
-                            if at != *fty {
+                            if at != *fty && !ty_has_error(&at) && !ty_has_error(fty) {
                                 self.err(
                                     "E0201",
                                     fexpr.span,
@@ -2913,7 +2997,7 @@ impl Cx {
                                     ),
                                     None,
                                 );
-                                Ty::Unit
+                                Ty::Error
                             }
                         },
                         None => Ty::Unit,
@@ -2925,7 +3009,7 @@ impl Cx {
                             format!("enum `{}` has no fields; match on its variants instead", en),
                             None,
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                     Ty::Reference { inner, .. } => {
                         // Auto-deref for field access through references.
@@ -2940,7 +3024,7 @@ impl Cx {
                                             format!("unknown field `{}.{}`", sn, field),
                                             None,
                                         );
-                                        Ty::Unit
+                                        Ty::Error
                                     }
                                 },
                                 None => Ty::Unit,
@@ -2952,11 +3036,14 @@ impl Cx {
                                     "cannot access fields through this reference",
                                     None,
                                 );
-                                Ty::Unit
+                                Ty::Error
                             }
                         }
                     }
                     other => {
+                        if ty_has_error(&other) {
+                            return Ty::Error;
+                        }
                         self.err(
                             "E0201",
                             *field_span,
@@ -2970,6 +3057,9 @@ impl Cx {
             ExprKind::Index { base, idx } => {
                 let bt = self.check_expr(base);
                 let it = self.check_expr(idx);
+                if ty_has_error(&bt) || ty_has_error(&it) {
+                    return Ty::Error;
+                }
                 if !matches!(it, Ty::Int32 | Ty::Int64) {
                     self.err(
                         "E0201",
@@ -3263,7 +3353,7 @@ impl Cx {
             _ => false,
         };
         if !arity_ok {
-            return Ty::Unit;
+            return Ty::Error;
         }
         match name {
             "None" => match expected {
@@ -3274,6 +3364,9 @@ impl Cx {
                     }
                 }
                 Some(other) => {
+                    if ty_has_error(other) {
+                        return Ty::Error;
+                    }
                     self.err(
                         "E0201",
                         span,
@@ -3303,6 +3396,9 @@ impl Cx {
                     }
                 }
                 Some(other) => {
+                    if ty_has_error(other) {
+                        return Ty::Error;
+                    }
                     self.err(
                         "E0201",
                         span,
@@ -3329,7 +3425,7 @@ impl Cx {
                 let at = self.check_expr(&args[0]);
                 match expected {
                     Some(Ty::Generic { base, args: exp }) if base == want && exp.len() == 1 => {
-                        if exp[0] != at {
+                        if exp[0] != at && !ty_has_error(&exp[0]) && !ty_has_error(&at) {
                             self.err(
                                 "E0201",
                                 args[0].span,
@@ -3343,6 +3439,9 @@ impl Cx {
                         }
                     }
                     Some(other) => {
+                        if ty_has_error(other) {
+                            return Ty::Error;
+                        }
                         self.err(
                             "E0201",
                             span,
@@ -3374,7 +3473,7 @@ impl Cx {
                 match expected {
                     Some(Ty::Generic { base, args: exp }) if base == "Result" && exp.len() == 2 => {
                         let slot = if is_ok { &exp[0] } else { &exp[1] };
-                        if *slot != at {
+                        if *slot != at && !ty_has_error(slot) && !ty_has_error(&at) {
                             self.err(
                                 "E0201",
                                 args[0].span,
@@ -3388,6 +3487,9 @@ impl Cx {
                         }
                     }
                     Some(other) => {
+                        if ty_has_error(other) {
+                            return Ty::Error;
+                        }
                         self.err(
                             "E0201",
                             span,
@@ -3447,7 +3549,7 @@ impl Cx {
                     format!("unknown variant `{}::{}`", ty, variant),
                     None,
                 );
-                return Ty::Unit;
+                return Ty::Error;
             }
         };
         if args.len() != arity {
@@ -3457,7 +3559,7 @@ impl Cx {
                 format!("`{}::{}` takes exactly {} argument(s)", ty, variant, arity),
                 None,
             );
-            return Ty::Unit;
+            return Ty::Error;
         }
         // Expected instantiation, when it names the same builtin.
         let exp_args: Option<Vec<Ty>> = match expected {
@@ -3479,7 +3581,11 @@ impl Cx {
             targs = vec![Ty::Unit; width];
             // If the expected type knows this slot, validate against it.
             if let Some(exp) = exp_args {
-                if exp.len() == width && exp[slot] != at {
+                if exp.len() == width
+                    && exp[slot] != at
+                    && !ty_has_error(&exp[slot])
+                    && !ty_has_error(&at)
+                {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -3501,7 +3607,7 @@ impl Cx {
                         ),
                         Some("e.g. `val x: Result<Int32, String> = Ok(1)`".into()),
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 if ty == "Option" && variant == "None" || ty == "Missing" && variant == "Missing" {
                     unreachable!("arity-0 handled below");
@@ -3522,7 +3628,7 @@ impl Cx {
                         ),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
             }
         }
@@ -3560,7 +3666,7 @@ impl Cx {
         }
         for (a, (_, ft)) in args.iter().zip(fields.iter()) {
             let at = self.check_expr(a);
-            if at != *ft {
+            if at != *ft && !ty_has_error(&at) && !ty_has_error(ft) {
                 self.err(
                     "E0201",
                     a.span,
@@ -3573,6 +3679,48 @@ impl Cx {
     }
 
     // ---------- match checking (Phase C) ----------
+
+    /// Declare every binding in a pattern as poison when the scrutinee
+    /// already errored, so arm bodies stay silent (no `unknown variable`
+    /// cascades). Dimensions default; only reached on poisoned input.
+    fn declare_error_binds(&mut self, pat: &Pat) {
+        match pat {
+            Pat::Bind(name, _) => {
+                if let Some(m) = self.locals.last_mut() {
+                    m.insert(
+                        name.clone(),
+                        Local {
+                            ty: Ty::Error,
+                            mutable: false,
+                            dim: Dim::dimensionless(),
+                        },
+                    );
+                }
+            }
+            Pat::Variant { sub, .. } => {
+                for s in sub {
+                    self.declare_error_binds(s);
+                }
+            }
+            Pat::Struct { fields, .. } => {
+                for (fname, sub) in fields {
+                    match sub {
+                        Some(p) => self.declare_error_binds(p),
+                        // `x` shorthand binds the field name itself.
+                        None => {
+                            self.declare_error_binds(&Pat::Bind(fname.clone(), Span::new(0, 0)))
+                        }
+                    }
+                }
+            }
+            Pat::Or(alts) => {
+                for a in alts {
+                    self.declare_error_binds(a);
+                }
+            }
+            _ => {}
+        }
+    }
 
     /// Check a pattern against the scrutinee type. Declares bindings in the
     /// current (arm) scope. Returns Err(()) on any error (already reported).
@@ -3591,7 +3739,7 @@ impl Cx {
                 } else {
                     Ty::Int32
                 };
-                if *scrut_ty != want {
+                if *scrut_ty != want && !ty_has_error(scrut_ty) {
                     self.err(
                         "E0201",
                         e_span,
@@ -3608,7 +3756,7 @@ impl Cx {
                 Ok(())
             }
             Pat::LitFloat(_) => {
-                if *scrut_ty != Ty::Float64 {
+                if *scrut_ty != Ty::Float64 && !ty_has_error(scrut_ty) {
                     self.err(
                         "E0201",
                         e_span,
@@ -3623,7 +3771,7 @@ impl Cx {
                 Ok(())
             }
             Pat::LitBool(_) => {
-                if *scrut_ty != Ty::Bool {
+                if *scrut_ty != Ty::Bool && !ty_has_error(scrut_ty) {
                     self.err(
                         "E0201",
                         e_span,
@@ -3638,7 +3786,7 @@ impl Cx {
                 Ok(())
             }
             Pat::LitStr(_) => {
-                if *scrut_ty != Ty::Str {
+                if *scrut_ty != Ty::Str && !ty_has_error(scrut_ty) {
                     self.err(
                         "E0201",
                         e_span,
@@ -3683,6 +3831,12 @@ impl Cx {
                 span,
                 sub,
             } => {
+                // Poisoned scrutinee: declare bindings as poison and stay
+                // silent (bodies still check; their uses stay silent too).
+                if ty_has_error(scrut_ty) {
+                    self.declare_error_binds(pat);
+                    return Ok(());
+                }
                 // Resolve the enum: qualified must match, bare resolves via scrutinee.
                 // `Option`/`Result`/`Missing` (builtin generics) resolve structurally.
                 let ename = match ty {
@@ -3819,6 +3973,10 @@ impl Cx {
                 Ok(())
             }
             Pat::Struct { name, fields } => {
+                if ty_has_error(scrut_ty) {
+                    self.declare_error_binds(pat);
+                    return Ok(());
+                }
                 let qname = self.resolve_type(name);
                 let def = match qname.as_ref().and_then(|q| self.structs.get(q)).cloned() {
                     Some(d) => d,
@@ -4113,7 +4271,7 @@ impl Cx {
             let ok = self.check_pat(&arm.pat, &st, &sdim, span).is_ok();
             if let Some(g) = &arm.guard {
                 let gt = self.check_expr(g);
-                if gt != Ty::Bool {
+                if gt != Ty::Bool && !ty_has_error(&gt) {
                     self.err(
                         "E0201",
                         g.span,
@@ -4126,7 +4284,7 @@ impl Cx {
                 let _ = self.check_block_expr(&arm.body);
             } else {
                 let (bt, bflow) = self.check_block(&arm.body, ret_ty);
-                if matches!(bflow, Flow::Normal) && bt != Ty::Unit {
+                if matches!(bflow, Flow::Normal) && bt != Ty::Unit && !ty_has_error(&bt) {
                     self.err(
                         "E0201",
                         arm.body.span,
@@ -4146,7 +4304,7 @@ impl Cx {
                         first_dim = Some(self.dim_of(arm.body.id));
                     }
                     Some(f) => {
-                        if *f != at {
+                        if *f != at && !ty_has_error(f) && !ty_has_error(&at) {
                             self.err(
                                 "E0201",
                                 arm.span,
@@ -4190,7 +4348,7 @@ impl Cx {
                 .map(|a| (a.pat.clone(), a.guard.is_some()))
                 .collect();
             let missing = self.missing_coverage(&st, &cov);
-            if !missing.is_empty() {
+            if !missing.is_empty() && !ty_has_error(&st) {
                 self.err(
                     "E0204",
                     span,
@@ -4251,7 +4409,7 @@ impl Cx {
                 // returns Unit, so `v.push(x);` is a complete statement.
                 if args.len() != 1 {
                     self.err("E0201", span, "`push` takes exactly 1 argument", None);
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 // Constructors (`None`, `Missing`) check against the
                 // element type, like annotated call arguments.
@@ -4261,7 +4419,7 @@ impl Cx {
                     }
                     None => self.check_expr(&args[0]),
                 };
-                if at != *elem {
+                if at != *elem && !ty_has_error(&at) && !ty_has_error(elem) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4286,7 +4444,7 @@ impl Cx {
                     return opt_of(elem.clone());
                 }
                 let at = self.check_expr(&args[0]);
-                if !matches!(at, Ty::Int32 | Ty::Int64) {
+                if !matches!(at, Ty::Int32 | Ty::Int64) && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4346,7 +4504,7 @@ impl Cx {
                     return vec_of(elem.clone());
                 }
                 let at = self.check_expr(&args[0]);
-                if at != *elem {
+                if at != *elem && !ty_has_error(&at) && !ty_has_error(elem) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4382,7 +4540,7 @@ impl Cx {
                 }
                 let at = self.check_expr(&args[0]);
                 let want = vec_of(elem.clone());
-                if at != want {
+                if at != want && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4394,7 +4552,7 @@ impl Cx {
                 res_of(vec_of(elem.clone()))
             }
             "dot" => {
-                if *elem != Ty::Float64 {
+                if *elem != Ty::Float64 && !ty_has_error(elem) {
                     self.err(
                         "E0201",
                         span,
@@ -4409,7 +4567,7 @@ impl Cx {
                 }
                 let at = self.check_expr(&args[0]);
                 let want = vec_of(Ty::Float64);
-                if at != want {
+                if at != want && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4424,14 +4582,14 @@ impl Cx {
                 // advances through the receiver pointer model.
                 if args.len() != 1 {
                     self.err("E0201", span, "`shuffle` takes exactly 1 argument", None);
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let at = self.check_expr(&args[0]);
                 let want = Ty::Generic {
                     base: "Rng".to_string(),
                     args: vec![],
                 };
-                if at != want {
+                if at != want && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4448,7 +4606,7 @@ impl Cx {
                     return vec_of(elem.clone());
                 }
                 let nt = self.check_expr(&args[0]);
-                if nt != Ty::Int64 && nt != Ty::Int32 {
+                if nt != Ty::Int64 && nt != Ty::Int32 && !ty_has_error(&nt) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4461,7 +4619,7 @@ impl Cx {
                     base: "Rng".to_string(),
                     args: vec![],
                 };
-                if at != want {
+                if at != want && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[1].span,
@@ -4482,12 +4640,14 @@ impl Cx {
                 match elem {
                     Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str => Ty::Unit,
                     other => {
-                        self.err(
-                            "E0201",
-                            span,
-                            format!("`sort` needs Int32/Int64/Float64/Bool/String elements, found Vec<{}>", other.name()),
-                            None,
-                        );
+                        if !ty_has_error(other) {
+                            self.err(
+                                "E0201",
+                                span,
+                                format!("`sort` needs Int32/Int64/Float64/Bool/String elements, found Vec<{}>", other.name()),
+                                None,
+                            );
+                        }
                         Ty::Unit
                     }
                 }
@@ -4504,12 +4664,14 @@ impl Cx {
                         vec_of(Ty::Int64)
                     }
                     other => {
-                        self.err(
-                            "E0201",
-                            span,
-                            format!("`order` needs Int32/Int64/Float64/Bool/String elements, found Vec<{}>", other.name()),
-                            None,
-                        );
+                        if !ty_has_error(other) {
+                            self.err(
+                                "E0201",
+                                span,
+                                format!("`order` needs Int32/Int64/Float64/Bool/String elements, found Vec<{}>", other.name()),
+                                None,
+                            );
+                        }
                         vec_of(Ty::Int64)
                     }
                 }
@@ -4521,7 +4683,7 @@ impl Cx {
                     format!("unknown method `{}` (available on Vec: len, push, pop, get, clone, cast, add_scalar, add, mul, dot, shuffle, sample, sort, order)", method),
                     Some("map/filter/mask take closures or slices (deferred)".into()),
                 );
-                Ty::Unit
+                Ty::Error
             }
         }
     }
@@ -4571,7 +4733,7 @@ impl Cx {
                     return res_mat();
                 }
                 let at = self.check_expr(&args[0]);
-                if at != mat_ty() {
+                if at != mat_ty() && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4600,7 +4762,7 @@ impl Cx {
                     base: "Vec".to_string(),
                     args: vec![Ty::Float64],
                 };
-                if at != want {
+                if at != want && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4635,7 +4797,7 @@ impl Cx {
                     base: "Vec".to_string(),
                     args: vec![Ty::Float64],
                 };
-                if at != want {
+                if at != want && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4666,7 +4828,7 @@ impl Cx {
                     base: "Vec".to_string(),
                     args: vec![Ty::Float64],
                 };
-                if at != want {
+                if at != want && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4769,7 +4931,7 @@ impl Cx {
                     format!("unknown method `{}` (available on Mat: rows, cols, transpose, matmul, mat_vec, mat_scale_rows, mat_diag, eigen_values, eigen_vectors, svd_u, svd_s, svd_vt, lu_solve, det, inverse, cholesky, clone)", method),
                     None,
                 );
-                Ty::Unit
+                Ty::Error
             }
         }
     }
@@ -4843,9 +5005,12 @@ impl Cx {
                         format!("`map` takes exactly 2 arguments, found {}", args.len()),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let vt = self.check_expr(&args[0]);
+                if ty_has_error(&vt) {
+                    return Ty::Error;
+                }
                 let t = match vt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
                         args[0].clone()
@@ -4857,10 +5022,10 @@ impl Cx {
                             format!("`map` expects Vec<T> first, found {}", vt.name()),
                             None,
                         );
-                        return Ty::Unit;
+                        return Ty::Error;
                     }
                 };
-                if !scalar(&t) {
+                if !scalar(&t) && !ty_has_error(&t) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4870,12 +5035,15 @@ impl Cx {
                         ),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let Some((ps, r)) = self.fun_value_sig(&args[1], "map") else {
-                    return Ty::Unit;
+                    return Ty::Error;
                 };
-                if ps.len() != 1 || ps[0] != t {
+                if ps.iter().any(ty_has_error) || ty_has_error(&r) {
+                    return Ty::Error;
+                }
+                if (ps.len() != 1 || ps[0] != t) && !ty_has_error(&t) {
                     self.err(
                         "E0201",
                         args[1].span,
@@ -4890,9 +5058,9 @@ impl Cx {
                         ),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
-                if !scalar(&r) {
+                if !scalar(&r) && !ty_has_error(&r) {
                     self.err(
                         "E0201",
                         args[1].span,
@@ -4902,7 +5070,7 @@ impl Cx {
                         ),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 self.record_vec_inst(&t);
                 self.record_vec_inst(&r);
@@ -4918,9 +5086,12 @@ impl Cx {
                         format!("`filter` takes exactly 2 arguments, found {}", args.len()),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let vt = self.check_expr(&args[0]);
+                if ty_has_error(&vt) {
+                    return Ty::Error;
+                }
                 let t = match vt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
                         args[0].clone()
@@ -4932,10 +5103,10 @@ impl Cx {
                             format!("`filter` expects Vec<T> first, found {}", vt.name()),
                             None,
                         );
-                        return Ty::Unit;
+                        return Ty::Error;
                     }
                 };
-                if !scalar(&t) {
+                if !scalar(&t) && !ty_has_error(&t) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4945,19 +5116,22 @@ impl Cx {
                         ),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let Some((ps, r)) = self.fun_value_sig(&args[1], "filter") else {
-                    return Ty::Unit;
+                    return Ty::Error;
                 };
-                if ps.len() != 1 || ps[0] != t || r != Ty::Bool {
+                if ps.iter().any(ty_has_error) || ty_has_error(&r) {
+                    return Ty::Error;
+                }
+                if (ps.len() != 1 || ps[0] != t || r != Ty::Bool) && !ty_has_error(&t) {
                     self.err(
                         "E0201",
                         args[1].span,
                         format!("`filter` predicate must be `({}) -> Bool`", t.name()),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 self.record_vec_inst(&t);
                 let key = vec![t.clone()];
@@ -4972,9 +5146,12 @@ impl Cx {
                         format!("`fold` takes exactly 3 arguments, found {}", args.len()),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let vt = self.check_expr(&args[0]);
+                if ty_has_error(&vt) {
+                    return Ty::Error;
+                }
                 let t = match vt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
                         args[0].clone()
@@ -4986,10 +5163,10 @@ impl Cx {
                             format!("`fold` expects Vec<T> first, found {}", vt.name()),
                             None,
                         );
-                        return Ty::Unit;
+                        return Ty::Error;
                     }
                 };
-                if !scalar(&t) {
+                if !scalar(&t) && !ty_has_error(&t) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -4999,10 +5176,13 @@ impl Cx {
                         ),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let a = self.check_expr(&args[1]);
-                if !scalar(&a) {
+                if ty_has_error(&a) {
+                    return Ty::Error;
+                }
+                if !scalar(&a) && !ty_has_error(&a) {
                     self.err(
                         "E0201",
                         args[1].span,
@@ -5012,12 +5192,18 @@ impl Cx {
                         ),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let Some((ps, r)) = self.fun_value_sig(&args[2], "fold") else {
-                    return Ty::Unit;
+                    return Ty::Error;
                 };
-                if ps.len() != 2 || ps[0] != a || ps[1] != t || r != a {
+                if ps.iter().any(ty_has_error) || ty_has_error(&r) {
+                    return Ty::Error;
+                }
+                if (ps.len() != 2 || ps[0] != a || ps[1] != t || r != a)
+                    && !ty_has_error(&t)
+                    && !ty_has_error(&a)
+                {
                     self.err(
                         "E0201",
                         args[2].span,
@@ -5029,7 +5215,7 @@ impl Cx {
                         ),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 self.record_vec_inst(&t);
                 self.record_vec_inst(&a);
@@ -5050,9 +5236,12 @@ impl Cx {
                         ),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let ft = self.check_expr(&args[0]);
+                if ty_has_error(&ft) {
+                    return Ty::Error;
+                }
                 if !matches!(&ft, Ty::Generic { base, args } if base == "Factor" && args.is_empty())
                 {
                     self.err(
@@ -5061,11 +5250,11 @@ impl Cx {
                         format!("`split_apply` expects Factor first, found {}", ft.name()),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let vt = self.check_expr(&args[1]);
                 let want = vec_of(Ty::Float64);
-                if vt != want {
+                if vt != want && !ty_has_error(&vt) {
                     self.err(
                         "E0201",
                         args[1].span,
@@ -5075,11 +5264,14 @@ impl Cx {
                         ),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 let Some((ps, r)) = self.fun_value_sig(&args[2], "split_apply") else {
-                    return Ty::Unit;
+                    return Ty::Error;
                 };
+                if ps.iter().any(ty_has_error) || ty_has_error(&r) {
+                    return Ty::Error;
+                }
                 if ps.len() != 1 || ps[0] != want || r != Ty::Float64 {
                     self.err(
                         "E0201",
@@ -5087,7 +5279,7 @@ impl Cx {
                         "`split_apply` combine must be `(Vec<Float64>) -> Float64`".to_string(),
                         None,
                     );
-                    return Ty::Unit;
+                    return Ty::Error;
                 }
                 self.record_vec_inst(&Ty::Float64);
                 self.record_ty(&ft);
@@ -5156,7 +5348,7 @@ impl Cx {
                     return fac_ty();
                 }
                 let at = self.check_expr(&args[0]);
-                if at != Ty::Str {
+                if at != Ty::Str && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -5184,7 +5376,7 @@ impl Cx {
                     format!("unknown method `{}` (available on Factor: levels, codes, as_strings, relevel, reorder_by_count, droplevels, clone)", method),
                     None,
                 );
-                Ty::Unit
+                Ty::Error
             }
         }
     }
@@ -5212,7 +5404,7 @@ impl Cx {
                     };
                 }
                 let at = self.check_expr(&args[0]);
-                if at != Ty::Str {
+                if at != Ty::Str && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -5254,7 +5446,7 @@ impl Cx {
                     return Ty::Int64;
                 }
                 let at = self.check_expr(&args[0]);
-                if at != Ty::Int64 && at != Ty::Int32 {
+                if at != Ty::Int64 && at != Ty::Int32 && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -5273,7 +5465,7 @@ impl Cx {
                 }
                 for a in args {
                     let at = self.check_expr(a);
-                    if at != Ty::Int64 && at != Ty::Int32 {
+                    if at != Ty::Int64 && at != Ty::Int32 && !ty_has_error(&at) {
                         self.err(
                             "E0201",
                             a.span,
@@ -5313,7 +5505,7 @@ impl Cx {
                     ),
                     None,
                 );
-                Ty::Unit
+                Ty::Error
             }
         }
     }
@@ -5340,7 +5532,7 @@ impl Cx {
                     return Ty::Int64;
                 }
                 let at = self.check_expr(&args[0]);
-                if at != Ty::Int64 && at != Ty::Int32 {
+                if at != Ty::Int64 && at != Ty::Int32 && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         args[0].span,
@@ -5360,7 +5552,7 @@ impl Cx {
                     ),
                     None,
                 );
-                Ty::Unit
+                Ty::Error
             }
         }
     }
@@ -5421,7 +5613,7 @@ impl Cx {
         }
         let expect = |this: &mut Self, i: usize, want: &Ty, what: &str| {
             let at = this.check_expr(&args[i]);
-            if &at != want {
+            if &at != want && !ty_has_error(&at) {
                 this.err(
                     "E0201",
                     args[i].span,
@@ -5520,9 +5712,14 @@ impl Cx {
                     format!("`{}` takes exactly 1 argument, found {}", name, args.len()),
                     None,
                 );
-                return Ty::Unit;
+                return Ty::Error;
             }
             let t = self.check_expr(&args[0]);
+            if ty_has_error(&t) {
+                // Poison from an already-reported error (e.g. unknown
+                // variable): stay silent instead of cascading.
+                return Ty::Error;
+            }
             if !Self::printable(&t) {
                 self.err(
                     "E0201",
@@ -5571,6 +5768,7 @@ impl Cx {
             let t = self.check_expr(&args[0]);
             return match t {
                 Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool => Ty::Str,
+                _ if ty_has_error(&t) => Ty::Str,
                 _ => {
                     self.err(
                         "E0201",
@@ -5602,7 +5800,7 @@ impl Cx {
                 return Ty::Int64;
             }
             let at = self.check_expr(&args[0]);
-            if at != Ty::Str {
+            if at != Ty::Str && !ty_has_error(&at) {
                 self.err(
                     "E0201",
                     args[0].span,
@@ -5628,7 +5826,7 @@ impl Cx {
                 base: "Vec".to_string(),
                 args: vec![Ty::Float64],
             };
-            if at != want {
+            if at != want && !ty_has_error(&at) {
                 self.err(
                     "E0201",
                     args[0].span,
@@ -5639,7 +5837,7 @@ impl Cx {
                 self.record_vec_inst(&Ty::Float64);
             }
             let bt = self.check_expr(&args[1]);
-            if bt != Ty::Int64 && bt != Ty::Int32 {
+            if bt != Ty::Int64 && bt != Ty::Int32 && !ty_has_error(&bt) {
                 self.err(
                     "E0201",
                     args[1].span,
@@ -5671,7 +5869,7 @@ impl Cx {
             }
             for a in args {
                 let at = self.check_expr(a);
-                if at != Ty::Int64 && at != Ty::Int32 {
+                if at != Ty::Int64 && at != Ty::Int32 && !ty_has_error(&at) {
                     self.err(
                         "E0201",
                         a.span,
@@ -5714,7 +5912,7 @@ impl Cx {
                     args: vec![Ty::Float64],
                 }],
             };
-            if at != want {
+            if at != want && !ty_has_error(&at) {
                 self.err(
                     "E0201",
                     args[0].span,
@@ -5764,7 +5962,7 @@ impl Cx {
                 base: "Vec".to_string(),
                 args: vec![Ty::Str],
             };
-            if at != want {
+            if at != want && !ty_has_error(&at) {
                 self.err(
                     "E0201",
                     args[0].span,
@@ -5805,7 +6003,7 @@ impl Cx {
                 return self.io_result_int();
             }
             let pt = self.check_expr(&args[0]);
-            if pt != Ty::Str {
+            if pt != Ty::Str && !ty_has_error(&pt) {
                 self.err(
                     "E0201",
                     args[0].span,
@@ -5814,7 +6012,7 @@ impl Cx {
                 );
             }
             let ct = self.check_expr(&args[1]);
-            if ct != Ty::Str {
+            if ct != Ty::Str && !ty_has_error(&ct) {
                 self.err(
                     "E0201",
                     args[1].span,
@@ -5841,7 +6039,7 @@ impl Cx {
                 };
             }
             let at = self.check_expr(&args[0]);
-            if at != Ty::Int64 && at != Ty::Int32 {
+            if at != Ty::Int64 && at != Ty::Int32 && !ty_has_error(&at) {
                 self.err(
                     "E0201",
                     args[0].span,
@@ -5867,7 +6065,7 @@ impl Cx {
                 format!("`{}` takes no parentheses; write `{}`", name, name),
                 None,
             );
-            return Ty::Unit;
+            return Ty::Error;
         }
         let fid_opt = self.resolve_fun(name);
         let (pt, rt) = match fid_opt.and_then(|fid| self.sigs.get(&fid)) {
@@ -5913,7 +6111,7 @@ impl Cx {
                     format!("unknown function `{}`", name),
                     Some("define it with `fun` before use".into()),
                 );
-                return Ty::Unit;
+                return Ty::Error;
             }
         };
         // Parameter + return dimensions (for unit conversion checks).
@@ -5986,7 +6184,7 @@ impl Cx {
                 }
                 _ => {}
             }
-            if !compat_ok {
+            if !compat_ok && !ty_has_error(&at) && !ty_has_error(p) {
                 self.err(
                     "E0201",
                     a.span,
@@ -6008,6 +6206,11 @@ impl Cx {
         let span = b.span;
         let op = b.op;
         let (lt, rt, ld, rd, lhs, rhs) = (b.lt, b.rt, b.ld, b.rd, b.lhs, b.rhs);
+        // Poison from an already-reported error stays silent (no cascades);
+        // the Error result propagates structurally via the clones below.
+        if ty_has_error(lt) || ty_has_error(rt) {
+            return Ty::Error;
+        }
         // Dimension agreement for numeric operands (scales convert
         // silently at codegen; vectors must match or this is E0201).
         // A dimensionless *literal* side pins to the other side

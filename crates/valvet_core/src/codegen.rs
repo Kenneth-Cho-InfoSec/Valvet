@@ -5,7 +5,7 @@ use std::process::Command;
 use crate::ast::*;
 use crate::ast::{EnumDef, StructDef};
 use crate::diag::Ice;
-use crate::sema::{is_copy_ty, Checked};
+use crate::sema::{is_copy_ty, ty_has_error, Checked};
 use crate::units::Dim;
 
 /// C11 runtime prelude: owned strings without GC, deterministic free on NULL-check.
@@ -650,6 +650,12 @@ jfail_free:
 /// - `cur_move` threads the move-context so borrowed uses (operands, `print`,
 ///   conditions) never NULL their source while moved uses do.
 pub fn lower(checked: &Checked) -> Result<String, Ice> {
+    // Tripwire (poison types): `Ty::Error` must never reach lowering; any
+    // error aborts in sema/ownership before this point.
+    debug_assert!(
+        !checked.types.values().any(ty_has_error),
+        "Ty::Error leaked into codegen"
+    );
     let mut g = Gen {
         checked,
         out: String::new(),
@@ -935,6 +941,9 @@ impl<'a> Gen<'a> {
             Ty::Named(n) => unreachable!("unresolved type {}", n),
             Ty::Generic { base, args } if base == "Rng" && args.is_empty() => "VRng".to_string(),
             Ty::Generic { base, args } => ctype_inst(base, args),
+            // Unreachable: any error aborts before lowering (see tripwire
+            // in `lower`); maps like `Unit` so codegen stays total.
+            Ty::Error => "void".to_string(),
         }
     }
 
@@ -5911,6 +5920,8 @@ fn ctype_arg(ty: &Ty) -> String {
             .to_string(),
         // No nested references in 0.1.0; total fallback.
         Ty::Reference { .. } => "ref".to_string(),
+        // Unreachable (see `cty`); kept total for exhaustiveness.
+        Ty::Error => "Error".to_string(),
     }
 }
 

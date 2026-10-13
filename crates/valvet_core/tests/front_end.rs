@@ -883,3 +883,58 @@ fn script_statements_and_main_clash() {
     let codes = check_codes("println(1);\nfun main() {\n println(2)\n}\n");
     assert!(codes.contains(&"E0604"), "{:?}", codes);
 }
+
+// ---------- Error-reporting upgrades: snippets, poison, move notes ----------
+
+#[test]
+fn snippet_renders_source_line_and_caret() {
+    let s = src("val x = 1 as Int64\nval y = x + \"s\"\n");
+    match pipeline::front_end(&s) {
+        Ok(_) => panic!("expected failure"),
+        Err(ds) => {
+            assert_eq!(ds.len(), 1, "{:?}", pipeline::render_diags(&s, &ds));
+            let r = ds[0].render(&s);
+            assert!(r.contains("val y = x + \"s\""), "{}", r);
+            assert!(r.contains("^^^"), "{}", r);
+            assert!(r.contains("--> test.valvet:2:"), "{}", r);
+        }
+    }
+}
+
+#[test]
+fn no_cascade_unknown_var() {
+    // One root cause, one diagnostic (used to append E0201 for println).
+    assert_eq!(check_codes("println(nope)\n"), vec!["E0401"]);
+}
+
+#[test]
+fn no_cascade_binop() {
+    assert_eq!(check_codes("val x = nope + 1\n"), vec!["E0401"]);
+}
+
+#[test]
+fn no_cascade_chained() {
+    // Poison flows through `a`, `b`, `c` without further diagnostics.
+    assert_eq!(
+        check_codes("val a = nope\nval b = a + 1\nval c = b + 2\nprintln(c)\n"),
+        vec!["E0401"]
+    );
+}
+
+#[test]
+fn move_note_labels_move_site() {
+    let s = src("val v = vec![1 as Int64]\nval w = v\nprintln(v)\n");
+    match pipeline::front_end(&s) {
+        Ok(_) => panic!("expected failure"),
+        Err(ds) => {
+            assert_eq!(ds.len(), 1, "{:?}", pipeline::render_diags(&s, &ds));
+            let d = &ds[0];
+            assert_eq!(d.code, "E0301");
+            assert_eq!(d.labels.len(), 1, "{:?}", d.labels);
+            assert_eq!(d.labels[0].1, "value moved here");
+            let r = d.render(&s);
+            assert!(r.contains("note: value moved here"), "{}", r);
+            assert!(r.contains("val w = v"), "{}", r);
+        }
+    }
+}
