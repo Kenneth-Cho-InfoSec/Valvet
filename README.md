@@ -26,9 +26,7 @@ fun mean(v: Vec<Float64>): Float64 {
     total / (v.len() as Float64)
 }
 
-fun main() {
-    println(mean(vec![2.0, 4.0, 6.0, 8.0]))  // 5
-}
+println(mean(vec![2.0, 4.0, 6.0, 8.0]))  // 5
 ```
 
 Vectors, loops, functions, floats, with borrow-checked memory safety.
@@ -51,9 +49,7 @@ valvet run examples/hello.valvet
 `examples/hello.valvet`:
 
 ```valvet
-fun main() {
-    println("hello, valvet")
-}
+println("hello, valvet")
 ```
 
 ## Language tour
@@ -81,19 +77,17 @@ fun fib(n: Int32): Int32 {
 
 struct Point { x: Float64, y: Float64 }
 
-fun main() {
-    println(fib(10))              // 55
-    var total = 0
-    for (i in 1..=5) {
-        total += i                // 15
-    }
-    println(total)
-    val p = Point { x: 1.5, y: 2.5 }
-    println(p.x + p.y)            // 4
-    println(vec![1.0, 2.0, 3.0].len())  // 3
-    val o: Option<Int32> = Some(7)
-    println(match (o) { Some(x) -> x * 2, None -> 0, })  // 14
+println(fib(10))              // 55
+var total = 0
+for (i in 1..=5) {
+    total += i                // 15
 }
+println(total)
+val p = Point { x: 1.5, y: 2.5 }
+println(p.x + p.y)            // 4
+println(vec![1.0, 2.0, 3.0].len())  // 3
+val o: Option<Int32> = Some(7)
+println(match (o) { Some(x) -> x * 2, None -> 0, })  // 14
 ```
 
 Types: `Int32`, `Int64`, `Float64`, `Bool`, `String`, `()` (Unit),
@@ -111,13 +105,11 @@ fun speed(d: Float64 @m, t: Float64 @s): Float64 @m/s {
     d / t
 }
 
-fun main() {
-    println(speed(100.0, 9.58))   // 10.438413361169102
-    val v: Float64 @km/h = 72.0
-    val w: Float64 @m/s = v       // auto-scales: 20
-    println(w)
-    println(w * 10.0)             // (m/s) * s = m: 200
-}
+println(speed(100.0, 9.58))   // 10.438413361169102
+val v: Float64 @km/h = 72.0
+val w: Float64 @m/s = v       // auto-scales: 20
+println(w)
+println(w * 10.0)             // (m/s) * s = m: 200
 ```
 
 Dimensionless literals coerce (`d + 5.0` is meters); mismatched dimensions
@@ -198,9 +190,7 @@ Multi-file projects: the root is the entry file's directory:
 ```valvet
 // main.valvet
 import math::double;
-fun main() {
-    println(double(21))           // 42
-}
+println(double(21))           // 42
 ```
 
 ```valvet
