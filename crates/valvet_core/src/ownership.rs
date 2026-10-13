@@ -238,6 +238,7 @@ fn number_uses(
                     }
                 }
                 ExprKind::Loop { body } => self.walk_block(body),
+                ExprKind::Block(b) => self.walk_block(b),
                 ExprKind::Match { scrutinee, arms } => {
                     self.walk_expr(scrutinee);
                     for a in arms {
@@ -1195,6 +1196,7 @@ impl<'a> Cx<'a> {
                 }
             }
             ExprKind::Loop { body } => Self::collect_block_refs(body, cx, out),
+            ExprKind::Block(b) => Self::collect_block_refs(b, cx, out),
             ExprKind::Match { scrutinee, arms } => {
                 Self::collect_ref_vars(scrutinee, cx, out);
                 for a in arms {
@@ -1879,6 +1881,26 @@ impl<'a> Cx<'a> {
                 }
                 // NOTE: `break v` moves were recorded during stmt checks above;
                 // a moved break value stays moved after (conservative union).
+                self.scopes.pop();
+                let moved_body = self.moved_snapshot();
+                self.restore_snapshot(&before);
+                self.apply_moved(&moved_body.vars, &moved_body.spans);
+            }
+            ExprKind::Block(b) => {
+                // Desugared statement sequence: scoped like a value-loop
+                // body; a tail (never present in our desugars) inherits
+                // the ambient move context like `if` tails.
+                let before = self.moved_snapshot();
+                self.scopes.push(HashMap::new());
+                for s in &b.stmts {
+                    self.check_stmt(s);
+                }
+                if let Some(t) = &b.tail {
+                    if let Some(seq) = self.tail_of.get(&b.id).copied() {
+                        self.cur = seq;
+                    }
+                    self.check_expr(t, move_ctx);
+                }
                 self.scopes.pop();
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);

@@ -1,0 +1,4 @@
+val v = vec![41 as Int64, 42 as Int64, 43 as Int64]
+println(v[^1])
+println(v[^3])
+println(v[0])

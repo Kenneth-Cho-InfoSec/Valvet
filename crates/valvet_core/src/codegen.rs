@@ -4859,6 +4859,18 @@ impl<'a> Gen<'a> {
                     _ => "0".to_string(),
                 }
             }
+            ExprKind::Block(b) => {
+                // Desugared statement sequence: emit statements inline;
+                // our desugars never carry a tail.
+                let fn_ret = self.fn_ret.clone();
+                for s in &b.stmts {
+                    self.emit_stmt(s, &fn_ret)?;
+                }
+                match &b.tail {
+                    Some(t) => self.emit_expr(t)?,
+                    None => "0".to_string(),
+                }
+            }
             ExprKind::StructLit { name, fields, .. } => {
                 // Compound literal; field values inherit the ambient move
                 // context (construction consumes owned fields).

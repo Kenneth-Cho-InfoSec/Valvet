@@ -577,6 +577,7 @@ fn scan_expr(e: &crate::ast::Expr, saw_try: &mut bool, saw_ret_val: &mut bool) {
             }
         }
         Loop { body, .. } => scan_block(body, saw_try, saw_ret_val),
+        Block(b) => scan_block(b, saw_try, saw_ret_val),
         Try { expr } => {
             *saw_try = true;
             scan_expr(expr, saw_try, saw_ret_val);
@@ -799,6 +800,7 @@ fn renumber_expr(e: &mut crate::ast::Expr, next: &mut crate::ast::NodeId) {
             }
         }
         Loop { body } => renumber_block(body, next),
+        Block(b) => renumber_block(b, next),
     }
 }
 

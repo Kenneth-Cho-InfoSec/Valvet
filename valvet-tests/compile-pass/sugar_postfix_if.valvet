@@ -1,0 +1,7 @@
+val ok = true
+println(21) if ok
+println(22) unless ok
+println(23)
+if (ok) {
+println(24) if ok
+}

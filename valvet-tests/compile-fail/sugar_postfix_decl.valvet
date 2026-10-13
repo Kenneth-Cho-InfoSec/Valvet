@@ -1,0 +1,3 @@
+val c = true
+val y = 1 if c
+println(y)

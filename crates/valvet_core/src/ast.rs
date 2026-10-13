@@ -421,6 +421,9 @@ pub enum ExprKind {
     Loop {
         body: Box<Block>,
     },
+    /// Desugared statement sequence (`println(a, b)`, chained comparisons):
+    /// parser-only sugar; our desugars never carry a tail.
+    Block(Block),
     /// `expr?` — Result/Option error propagation (T-Prop).
     Try {
         expr: Box<Expr>,

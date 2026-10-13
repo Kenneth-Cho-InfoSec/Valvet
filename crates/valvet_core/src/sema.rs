@@ -443,6 +443,7 @@ fn expr_tree_has_return(e: &Expr) -> bool {
                 })
         }
         ExprKind::Loop { body, .. } => block_tree_has_return(body),
+        ExprKind::Block(b) => block_tree_has_return(b),
         ExprKind::StructLit { fields, .. } => {
             fields.iter().any(|(_, _, f)| expr_tree_has_return(f))
         }
@@ -1372,6 +1373,15 @@ impl Cx {
                     .any(|s| self.stmt_has_local_borrow(s, params))
                     || body
                         .tail
+                        .as_ref()
+                        .map(|t| self.contains_local_borrow(t, params))
+                        .unwrap_or(false)
+            }
+            ExprKind::Block(b) => {
+                b.stmts
+                    .iter()
+                    .any(|s| self.stmt_has_local_borrow(s, params))
+                    || b.tail
                         .as_ref()
                         .map(|t| self.contains_local_borrow(t, params))
                         .unwrap_or(false)
@@ -2485,6 +2495,13 @@ impl Cx {
             ExprKind::Match { scrutinee, arms } => {
                 let (t, d) = self.check_match(scrutinee, arms, e.span, &self.fn_ret.clone(), true);
                 self.set_dim(e.id, d);
+                t
+            }
+            ExprKind::Block(b) => {
+                // Desugared statement sequence (A3 multi-`println`, chained
+                // comparisons): check like a value block, take its type.
+                let (t, _) = self.check_block_expr(b);
+                self.set_dim(e.id, self.dim_of(b.id));
                 t
             }
             ExprKind::Loop { body } => {

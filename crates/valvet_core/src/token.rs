@@ -19,6 +19,8 @@ pub enum Tok {
     // Reserved but deferred (parsed as keyword, rejected in parser)
     Match,
     Defer,
+    Unless,
+    Until,
     Unsafe,
     Extern,
     Struct,
@@ -113,6 +115,8 @@ pub fn keyword(word: &str) -> Option<Tok> {
         "var" => Tok::Var,
         "if" => Tok::If,
         "else" => Tok::Else,
+        "unless" => Tok::Unless,
+        "until" => Tok::Until,
         "while" => Tok::While,
         "return" => Tok::Return,
         "true" => Tok::True,

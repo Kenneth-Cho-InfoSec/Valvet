@@ -990,3 +990,43 @@ fn broken_top_level_statement_errors() {
     // vanish silently and continue with later lines).
     assert_eq!(check_codes("println(o? ? 5)\n"), vec!["E0005"]);
 }
+
+#[test]
+fn sugar_unless_until_accepted() {
+    check_ok("unless (false) {\nprintln(1)\n}\nvar i = 0\nuntil (i == 1) {\ni = i + 1\n}\n");
+}
+
+#[test]
+fn sugar_unless_let_rejected() {
+    assert_eq!(
+        check_codes("val o = Some(1 as Int64)\nunless let Some(x) = o {\nprintln(x)\n}\n"),
+        vec!["E0005"]
+    );
+}
+
+#[test]
+fn sugar_postfix_if_accepted() {
+    check_ok("val ok = true\nprintln(1) if ok\nprintln(2) unless ok\n");
+}
+
+#[test]
+fn sugar_postfix_decl_rejected() {
+    // Postfix conditions apply to action statements, not declarations.
+    assert_eq!(check_codes("val c = true\nval y = 1 if c\n"), vec!["E0004"]);
+}
+
+#[test]
+fn sugar_postfix_next_line_is_new_statement() {
+    // A newline before `if` means two statements, not postfix.
+    check_ok("val ok = true\nprintln(1)\nif (ok) {\nprintln(2)\n}\n");
+}
+
+#[test]
+fn sugar_println_multi_accepted() {
+    check_ok("println(1, \"a\", true)\n");
+}
+
+#[test]
+fn sugar_index_from_end_accepted() {
+    check_ok("val v = vec![1 as Int64]\nprintln(v[^1])\n");
+}
