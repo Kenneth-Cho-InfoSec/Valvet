@@ -1,0 +1,5 @@
+var vs = vec![1 as Int64, 2 as Int64, 3 as Int64]
+while let Some(x) = vs.pop() {
+println(x)
+}
+println(vs.len())

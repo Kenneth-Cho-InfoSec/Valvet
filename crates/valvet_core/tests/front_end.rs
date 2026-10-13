@@ -988,7 +988,7 @@ fn no_cascade_if_no_else_value() {
 fn broken_top_level_statement_errors() {
     // A top-level statement that fails to parse must diagnose (used to
     // vanish silently and continue with later lines).
-    assert_eq!(check_codes("println(o? ? 5)\n"), vec!["E0005"]);
+    assert_eq!(check_codes("println(o ??)\n"), vec!["E0005"]);
 }
 
 #[test]
@@ -1029,4 +1029,51 @@ fn sugar_println_multi_accepted() {
 #[test]
 fn sugar_index_from_end_accepted() {
     check_ok("val v = vec![1 as Int64]\nprintln(v[^1])\n");
+}
+
+#[test]
+fn sugar_coalesce_some_none() {
+    check_ok("val o = Some(1 as Int64)\nprintln(o ?? 2 as Int64)\nval n: Option<Int64> = None\nprintln(n ?? 2 as Int64)\n");
+}
+
+#[test]
+fn sugar_coalesce_int_rejected() {
+    // `??` on a non-Option is one match-scrutinee error, nothing more.
+    assert_eq!(check_codes("println(5 ?? 6)\n"), vec!["E0201"]);
+}
+
+#[test]
+fn sugar_chained_cmp_accepted() {
+    check_ok("val x = 5 as Int64\nprintln((0 as Int64) < x < (10 as Int64))\nprintln(1 < 2 < 3)\n");
+}
+
+#[test]
+fn sugar_while_let_accepted() {
+    check_ok("var vs = vec![1 as Int64]\nwhile let Some(x) = vs.pop() {\nprintln(x)\n}\n");
+}
+
+#[test]
+fn sugar_until_let_rejected() {
+    assert_eq!(
+        check_codes("var vs = vec![1 as Int64]\nuntil let Some(x) = vs.pop() {\nprintln(x)\n}\n"),
+        vec!["E0005"]
+    );
+}
+
+#[test]
+fn sugar_if_let_chain_accepted() {
+    check_ok("val o = Some(5 as Int64)\nif let Some(x) = o && x > (3 as Int64) {\nprintln(x)\n} else {\nprintln(0)\n}\n");
+}
+
+#[test]
+fn sugar_if_let_double_chain_accepted() {
+    check_ok("val a = Some(1 as Int64)\nval b = Some(2 as Int64)\nif let Some(x) = a && let Some(y) = b {\nprintln(x + y)\n} else {\nprintln(0)\n}\n");
+}
+
+#[test]
+fn sugar_iflet_or_needs_parens() {
+    assert_eq!(
+        check_codes("val o = Some(1 as Int64)\nif let Some(x) = o || true {\nprintln(x)\n}\n"),
+        vec!["E0005"]
+    );
 }

@@ -4279,6 +4279,25 @@ impl Cx {
         value: bool,
     ) -> (Ty, Dim) {
         let st = self.check_expr(scrutinee);
+        // Hopeless category error (e.g. `5 ?? 6` desugar): variant patterns
+        // against a concrete non-enum scrutinee can never match. Diagnose
+        // once and poison instead of cascading per-arm errors.
+        let hopeless = match &st {
+            Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str | Ty::Unit | Ty::Struct(_) => {
+                true
+            }
+            Ty::Generic { base, .. } => base == "Vec" || base == "Mat" || base == "Factor",
+            _ => false,
+        };
+        if hopeless && arms.iter().any(|a| matches!(&a.pat, Pat::Variant { .. })) {
+            self.err(
+                "E0201",
+                span,
+                format!("cannot match on {} with variant patterns", st.name()),
+                Some("match on an enum, `Option`, `Result`, or `Missing` value".into()),
+            );
+            return (Ty::Error, Dim::dimensionless());
+        }
         let mut first_ty: Option<Ty> = None;
         let mut first_dim: Option<Dim> = None;
         let mut result = Ty::Unit;

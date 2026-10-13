@@ -1,0 +1,4 @@
+val o = Some(1 as Int64)
+if let Some(x) = o || true {
+println(x)
+}
