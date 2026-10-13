@@ -1,6 +1,12 @@
 # Plan: R parity gaps, the Valvet way (R-GAPS track)
 
-Status: accepted; P0 in progress (M1 `Mat` + M2 `sort`/`order` shipped:
+Status: SHIPPED IN FULL (0.3.0 track). P0 (M1 `Mat`, M2 sort/order),
+P1 (F1 Factors, F2 strings + regex, F3 dates), P2 (D1 verbs + `|>`,
+D2 plot grammar, D3 distributions), P3 (S1 lm/glm, S2 tests, Jacobi
+eigen/SVD), P4 (C1 map/filter/fold/split_apply) all landed with
+fixtures, oracles, and ASan sweeps. Stage 2 closures deferred
+(explicitly; no port demanded them). Commits d62064b..HEAD.
+Original status line (M1 `Mat` + M2 `sort`/`order` shipped:
 M1 is a dense row-major Float64 matrix with `mat_zeros`/`mat_identity`/
 `mat_from_rows` constructors, `rows`/`cols`/`transpose`/`clone` methods,
 and LU-backed `matmul`/`lu_solve`/`det`/`inverse`/`cholesky` (partial

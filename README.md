@@ -97,9 +97,9 @@ fun main() {
 ```
 
 Types: `Int32`, `Int64`, `Float64`, `Bool`, `String`, `()` (Unit),
-structs, enums, `Option<T>`, `Result<T, E>`, `Vec<T>`, and references
-(`&T`, `&mut T`) with borrow checking. `println` handles primitives plus
-`Vec`/`Option`/`Result` of printable types (`[1, 2]`, `Some(7)`/`None`,
+structs, enums, `Option<T>`, `Result<T, E>`, `Vec<T>`, `Mat`, `Factor`,
+and references (`&T`, `&mut T`) with borrow checking. `println` handles primitives plus
+`Vec`/`Option`/`Result`/`Mat`/`Factor` of printable types (`[1, 2]`, `Some(7)`/`None`,
 `Ok(1)`/`Err(e)`); `print` remains as a deprecated alias (warns `W1002`).
 
 Units of measure: annotate numeric bindings, parameters, and returns with
@@ -152,6 +152,46 @@ println(sq(seed(vec![3.0], 0 as Int64)).d)  // d(x^2)/dx at 3 = 6
 Deterministic parallelism: `par_sum(v, nthreads)` sums `Vec<Float64>` on a
 thread pool with fixed blocks and ordered combining, so every thread count
 gives bit-identical results (a fixture pins 1/2/3/4/8-thread agreement).
+
+R-parity track (0.3.0): dense `Mat` matrices with LU-backed kernels
+(`matmul`, `lu_solve`, `det`, `inverse`, `cholesky`, symmetric Jacobi
+`eigen_*`, one-sided Jacobi `svd_*`; shape errors are `Result`, never
+traps), `Factor` levels/codes with level verbs, `|>` pipes and dplyr-style
+frame verbs (`frame_arrange`, `frame_mutate`/`frame_summarise` over a flat
+`ColExpr`), layered `Plot` specs with facets and log scales, `map`/`filter`/
+`fold`/`split_apply` over named functions, and pure-Valvet stdlib for strings
+(`std::str`, incl. Thompson-NFA `std::re`), dates (`std::date`), distributions
+(`std::dist`), modeling (`std::model`: formulas, `lm`, binomial `glm`), and
+hypothesis tests (`std::infer`: t, chi-square, correlation, Mann-Whitney):
+
+```valvet
+import std::frame::DynamicFrame;
+import std::model::formula_parse;
+import std::model::formula_new;
+import std::model::model_frame;
+import std::model::ModelFrame;
+import std::model::lm;
+import std::model::LmFit;
+
+fun no_mf(): ModelFrame {
+    return ModelFrame { x: mat_identity(1 as Int64), y: vec![0.0], names: vec![""] };
+}
+
+fun main() {
+    val f = DynamicFrame { names: vec!["x", "y"], cols: vec![vec!["1", "2", "3"], vec!["2", "4", "5"]], nrows: 3 as Int64 };
+    val fo = match (formula_parse("y ~ x")) { Some(v) -> v, None -> formula_new("?", vec!["?"]), };
+    val mf = match (model_frame(&f, fo)) { Ok(v) -> v, Err(_) -> no_mf(), };
+    val fit = match (lm(mf)) { Ok(v) -> v, Err(_) -> LmFit { coef: vec![0.0], se: vec![0.0], fitted: vec![0.0], resid: vec![0.0], r2: 0.0, sigma: 0.0, names: vec![""] }, };
+    println(fit.coef)   // [0.66666666666666663, 1.5]
+    println(fit.r2)     // 0.96428571428571419
+}
+```
+
+Ownership stays exact throughout (no GC): owned values move by value
+(`push` mutates in place; `get`/indexing/`for` clone out); pass `.clone()`
+to keep a copy. Method receivers borrow; `&T` borrows support field reads
+but stored `&`-borrows freeze reassignment for the scope, so stdlib threads
+state with `q = f(q)` move-plus-reassign and clones at divergence points.
 
 Multi-file projects: the root is the entry file's directory:
 
