@@ -4429,11 +4429,52 @@ impl Cx {
                 self.record_vec_inst(elem);
                 t
             }
+            "sort" => {
+                // In-place stable sort (bottom-up mergesort, NaN sorts
+                // last); numeric, Bool, and String elements only.
+                if !args.is_empty() {
+                    self.err("E0201", span, "`sort` takes no arguments", None);
+                }
+                match elem {
+                    Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str => Ty::Unit,
+                    other => {
+                        self.err(
+                            "E0201",
+                            span,
+                            format!("`sort` needs Int32/Int64/Float64/Bool/String elements, found Vec<{}>", other.name()),
+                            None,
+                        );
+                        Ty::Unit
+                    }
+                }
+            }
+            "order" => {
+                // Permutation indices such that `v[order[i]]` is sorted;
+                // ties keep original order (stable). Same element gate.
+                if !args.is_empty() {
+                    self.err("E0201", span, "`order` takes no arguments", None);
+                }
+                match elem {
+                    Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str => {
+                        self.record_vec_inst(&Ty::Int64);
+                        vec_of(Ty::Int64)
+                    }
+                    other => {
+                        self.err(
+                            "E0201",
+                            span,
+                            format!("`order` needs Int32/Int64/Float64/Bool/String elements, found Vec<{}>", other.name()),
+                            None,
+                        );
+                        vec_of(Ty::Int64)
+                    }
+                }
+            }
             _ => {
                 self.err(
                     "E0401",
                     method_span,
-                    format!("unknown method `{}` (available on Vec: len, push, pop, get, clone, cast, add_scalar, add, mul, dot, shuffle, sample)", method),
+                    format!("unknown method `{}` (available on Vec: len, push, pop, get, clone, cast, add_scalar, add, mul, dot, shuffle, sample, sort, order)", method),
                     Some("map/filter/mask take closures or slices (deferred)".into()),
                 );
                 Ty::Unit

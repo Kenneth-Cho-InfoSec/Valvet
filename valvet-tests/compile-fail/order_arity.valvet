@@ -1,0 +1,4 @@
+fun main() {
+    val v = vec![2, 1];
+    println(v.order(0));
+}

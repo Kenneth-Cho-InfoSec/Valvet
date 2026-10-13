@@ -65,6 +65,16 @@ static int vstr_eq(VStr a, VStr b) {
     if (alen == 0) return 1;
     return memcmp(a.s, b.s, (size_t)alen) == 0;
 }
+/// M2 lexicographic order (byte-wise; shorter prefix sorts first).
+static int vstr_lt(VStr a, VStr b) {
+    int64_t alen = a.s ? a.len : 0, blen = b.s ? b.len : 0;
+    int64_t n = alen < blen ? alen : blen;
+    if (n > 0) {
+        int c = memcmp(a.s, b.s, (size_t)n);
+        if (c != 0) return c < 0;
+    }
+    return alen < blen;
+}
 /// J1 conversions + string kernels (all allocate fresh owned values).
 static VStr vstr_from_i32(int32_t v) {
     char buf[32];
@@ -2260,6 +2270,86 @@ impl<'a> Gen<'a> {
             et = et,
             elem = elem_copy
         ));
+        // M2 stable sort (bottom-up mergesort) + order permutation.
+        // Comparison is a total order with NaN last (R-like na.last);
+        // merge takes the left run unless the right is strictly less,
+        // so both are stable and ties keep original order.
+        if matches!(t, Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str) {
+            let cmp = |x: &str, y: &str| {
+                match &t {
+                Ty::Float64 => format!("(({x}) < ({y}) ? -1 : (({x}) > ({y}) ? 1 : (({x}) == ({y}) ? 0 : ((({x}) != ({x})) ? ((({y}) != ({y})) ? 0 : 1) : -1))))"),
+                Ty::Str => format!("((vstr_lt({x}, {y})) ? -1 : ((vstr_lt({y}, {x})) ? 1 : 0))"),
+                _ => format!("(({x}) < ({y}) ? -1 : (({x}) > ({y}) ? 1 : 0))"),
+            }
+            };
+            // One mergesort pass skeleton; {l}/{r} are the element reads
+            // from the left/right runs, {dst} the destination slot.
+            // NOTE: substituted as a value (single braces), unlike the
+            // format! templates around it.
+            let pass = "for (int64_t lo = 0; lo < v->len; lo += 2 * w) { int64_t mid = lo + w < v->len ? lo + w : v->len; int64_t hi = lo + 2 * w < v->len ? lo + 2 * w : v->len; int64_t i = lo, j = mid, k = lo;";
+            let merge = |l: &str, r: &str, dst: &str, dl: &str, dr: &str| {
+                format!("while (i < mid && j < hi) {{ if ({c} < 0) {{ tmp[k++] = {r}; j++; }} else {{ tmp[k++] = {l}; i++; }} }} while (i < mid) {{ tmp[k++] = {l}; i++; }} while (j < hi) {{ tmp[k++] = {r}; j++; }} for (k = lo; k < hi; ++k) {{ {dst} = tmp[k]; }} }}",
+                    c = cmp(dr, dl))
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static void vvec_{iname}_sort({vct} *v) {{",
+                    "if (v->len < 2) return;",
+                    "{et} *tmp = ({et} *)malloc((size_t)v->len * sizeof({et}));",
+                    "if (!tmp) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "for (int64_t w = 1; w < v->len; w *= 2) {{",
+                    "{pass}",
+                    "{merge}",
+                    "}}",
+                    "free(tmp);",
+                    "}}\n"
+                ),
+                iname = iname,
+                vct = ct,
+                et = et,
+                pass = pass,
+                merge = merge(
+                    "v->data[i]",
+                    "v->data[j]",
+                    "v->data[k]",
+                    "v->data[i]",
+                    "v->data[j]"
+                ),
+            ));
+            // order() references VVec_Int64 helpers, so its definition is
+            // gated on that instantiation existing (sema records it
+            // whenever `order` is called; without a call nothing references
+            // the missing helpers). Sort is self-contained like shuffle.
+            if self.has_inst("Vec", &[Ty::Int64]) {
+                self.out.push_str(&format!(
+                    concat!(
+                        "static VVec_Int64 vvec_{iname}_order({vct} *v) {{",
+                        "VVec_Int64 idx = vvec_Vec_Int64_new();",
+                        "for (int64_t i = 0; i < v->len; ++i) {{ vvec_Vec_Int64_push(&idx, i); }}",
+                        "if (v->len < 2) return idx;",
+                        "int64_t *tmp = (int64_t *)malloc((size_t)v->len * sizeof(int64_t));",
+                        "if (!tmp) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                        "for (int64_t w = 1; w < v->len; w *= 2) {{",
+                        "{pass}",
+                        "{merge}",
+                        "}}",
+                        "free(tmp);",
+                        "return idx;",
+                        "}}\n"
+                    ),
+                    iname = iname,
+                    vct = ct,
+                    pass = pass,
+                    merge = merge(
+                        "idx.data[i]",
+                        "idx.data[j]",
+                        "idx.data[k]",
+                        "v->data[idx.data[i]]",
+                        "v->data[idx.data[j]]"
+                    ),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -4413,6 +4503,10 @@ impl<'a> Gen<'a> {
                         self.cur_move = sv;
                         format!("vvec_{}_sample({}, (int64_t)({}), &{})", iname, rptr, nv, o)
                     }
+                    // M2: in-place stable sort; ordered index permutation.
+                    // Receiver borrows through the pointer model like push.
+                    "sort" => format!("vvec_{}_sort({})", iname, rptr),
+                    "order" => format!("vvec_{}_order({})", iname, rptr),
                     _ => return Err(Ice("unknown Vec method".into())),
                 }
             }

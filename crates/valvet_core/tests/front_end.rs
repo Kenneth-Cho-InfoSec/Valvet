@@ -569,6 +569,23 @@ fn vec_unknown_method_rejected() {
 }
 
 #[test]
+fn vec_sort_accepted() {
+    check_ok("fun main() {\n var v = vec![3, 1, 2]\n v.sort()\n print(v.len())\n}\n");
+    check_ok("fun main() {\n val v = vec![\"b\", \"a\"]\n print(v.order())\n}\n");
+    check_ok("fun main() {\n var v = vec![true, false]\n v.sort()\n print(v.len())\n}\n");
+}
+
+#[test]
+fn vec_sort_rejected() {
+    let codes = check_codes("fun main() {\n var v = vec![3, 1]\n v.sort(1)\n print(v.len())\n}\n");
+    assert!(codes.contains(&"E0201"), "{:?}", codes);
+    let codes = check_codes("struct S { x: Int32 }\nfun main() {\n var v = vec![S { x: 1 }]\n v.sort()\n print(v.len())\n}\n");
+    assert!(codes.contains(&"E0201"), "{:?}", codes);
+    let codes = check_codes("fun main() {\n val v = vec![2, 1]\n print(v.order(0))\n}\n");
+    assert!(codes.contains(&"E0201"), "{:?}", codes);
+}
+
+#[test]
 fn vec_push_wrong_type_rejected() {
     let codes =
         check_codes("fun main() {\n var v = vec![1.0]\n v.push(\"s\")\n print(v.len())\n}\n");
