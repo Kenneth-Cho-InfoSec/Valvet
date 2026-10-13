@@ -1640,7 +1640,7 @@ impl Cx {
                         "unreachable tail expression after diverging control flow",
                         None,
                     );
-                    Ty::Unit
+                    Ty::Error
                 } else {
                     self.check_expr(e)
                 }
@@ -2199,7 +2199,7 @@ impl Cx {
                             format!("`{}` used as a value; it is only callable", name),
                             None,
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                     None => {
                         // function names are not first-class values in 0.1.0
@@ -2289,7 +2289,7 @@ impl Cx {
                                 format!("cannot dereference {}", t.name()),
                                 None,
                             );
-                            Ty::Unit
+                            Ty::Error
                         }
                     },
                 }
@@ -2380,7 +2380,7 @@ impl Cx {
                                 lhs: None,
                                 rhs: Some(value.as_ref()),
                             });
-                            if res != pt {
+                            if res != pt && !ty_has_error(&res) && !ty_has_error(&pt) {
                                 self.err(
                                     "E0201",
                                     e.span,
@@ -2423,7 +2423,7 @@ impl Cx {
                         );
                         // still check then-branch for error cascade reduction
                         self.check_block(then_b, &Ty::Unit);
-                        return self.insert(e.id, Ty::Unit);
+                        return self.insert(e.id, Ty::Error);
                     }
                 };
                 // Check arms in a scratch Unit-return context? Arms must not contain bare `return`
@@ -2450,7 +2450,7 @@ impl Cx {
                                 format!("`if` branches disagree: {} vs {}", t1.name(), t2.name()),
                                 None,
                             );
-                            Ty::Unit
+                            Ty::Error
                         } else if ty_has_error(&t1) || ty_has_error(&t2) {
                             Ty::Error
                         } else {
@@ -2514,7 +2514,7 @@ impl Cx {
                         "cannot mix plain `break` with `break` carrying a value in a `loop` value",
                         None,
                     );
-                    return self.insert(e.id, Ty::Unit);
+                    return self.insert(e.id, Ty::Error);
                 }
                 let mut it = ctx.breaks.iter();
                 match it.next() {
@@ -2537,7 +2537,7 @@ impl Cx {
                                     ),
                                     None,
                                 );
-                                ty = Ty::Unit;
+                                ty = Ty::Error;
                                 break;
                             }
                         }
@@ -2566,7 +2566,7 @@ impl Cx {
                             format!("`?.` needs an `Option<T>` base, found {}", bt.name()),
                             None,
                         );
-                        return self.insert(e.id, Ty::Unit);
+                        return self.insert(e.id, Ty::Error);
                     }
                 };
                 match payload {
@@ -2603,7 +2603,7 @@ impl Cx {
                             format!("`?.` payload {} has no fields", other.name()),
                             None,
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                 }
             }
@@ -2664,7 +2664,7 @@ impl Cx {
                             ),
                             Some("return a `Result`/`Option` from this function to use `?`".into()),
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                 }
             }
@@ -2694,7 +2694,7 @@ impl Cx {
                                 "`vec![]` needs an expected `Vec<T>` type; annotate the binding",
                                 None,
                             );
-                            Ty::Unit
+                            Ty::Error
                         }
                     }
                 } else {
@@ -2849,7 +2849,7 @@ impl Cx {
                             format!("`as @unit` needs a number, found {}", t.name()),
                             None,
                         );
-                        return self.insert(e.id, Ty::Unit);
+                        return self.insert(e.id, Ty::Error);
                     }
                 }
                 let want = self.eval_unit_expr(unit);
@@ -3050,7 +3050,7 @@ impl Cx {
                             format!("type {} has no fields", other.name()),
                             None,
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                 }
             }
@@ -3084,7 +3084,7 @@ impl Cx {
                             ),
                             None,
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                 }
             }
@@ -3099,7 +3099,7 @@ impl Cx {
                             "cannot borrow a temporary value (it would dangle)",
                             Some("bind it with `val`/`var` first".into()),
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                     Some(root) => {
                         if *mutable {
@@ -3115,7 +3115,7 @@ impl Cx {
                                     format!("cannot mutably borrow immutable `{}`", root),
                                     Some("declare it with `var`".into()),
                                 );
-                                return self.insert(e.id, Ty::Unit);
+                                return self.insert(e.id, Ty::Error);
                             }
                         }
                         let inner = self.check_expr(expr);
@@ -3164,7 +3164,7 @@ impl Cx {
                         } else {
                             self.err("E0401", e.span, format!("unknown type `{}`", ty), None);
                         }
-                        return self.insert(e.id, Ty::Unit);
+                        return self.insert(e.id, Ty::Error);
                     }
                 };
                 match def.variants.iter().find(|(v, _)| v == variant) {
@@ -3376,7 +3376,7 @@ impl Cx {
                         ),
                         None,
                     );
-                    Ty::Unit
+                    Ty::Error
                 }
                 None => {
                     self.err(
@@ -3385,7 +3385,7 @@ impl Cx {
                         "`None` needs an expected `Option<T>` type; annotate the binding",
                         Some("e.g. `val x: Option<Int32> = None`".into()),
                     );
-                    Ty::Unit
+                    Ty::Error
                 }
             },
             "Missing" => match expected {
@@ -3408,7 +3408,7 @@ impl Cx {
                         ),
                         None,
                     );
-                    Ty::Unit
+                    Ty::Error
                 }
                 None => {
                     self.err(
@@ -3417,7 +3417,7 @@ impl Cx {
                         "`Missing` needs an expected `Missing<T>` type; annotate the binding",
                         Some("e.g. `val x: Missing<Float64> = Missing`".into()),
                     );
-                    Ty::Unit
+                    Ty::Error
                 }
             },
             "Some" | "Present" => {
@@ -3453,7 +3453,7 @@ impl Cx {
                             ),
                             None,
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                     None => {
                         // Record the instantiation for the inferred payload.
@@ -3500,7 +3500,7 @@ impl Cx {
                             ),
                             None,
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                     None => {
                         self.err(
@@ -3512,7 +3512,7 @@ impl Cx {
                             ),
                             Some("e.g. `val x: Result<Int32, String> = Ok(1)`".into()),
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                 }
             }
@@ -4482,7 +4482,7 @@ impl Cx {
                             "`cast` target comes from the annotation; annotate the binding",
                             Some("e.g. `val f: Vec<Float64> = ints.cast()`".into()),
                         );
-                        Ty::Unit
+                        Ty::Error
                     }
                 }
             }
@@ -5293,7 +5293,7 @@ impl Cx {
                     format!("unknown functional `{}`", name),
                     None,
                 );
-                Ty::Unit
+                Ty::Error
             }
         }
     }

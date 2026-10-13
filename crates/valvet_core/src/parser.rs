@@ -164,7 +164,15 @@ impl Parser {
                             }
                             None => {
                                 self.pos = stmt_pos;
-                                self.errs.truncate(stmt_errs);
+                                if self.errs.len() == stmt_errs {
+                                    // Statement failed without a diagnostic;
+                                    // say so instead of skipping silently.
+                                    self.err_at(
+                                        "E0005",
+                                        self.cur_span(),
+                                        "expected a top-level statement",
+                                    );
+                                }
                                 self.recover();
                                 if self.pos == entry {
                                     // Recovery made no progress; force-advance to avoid stalling.

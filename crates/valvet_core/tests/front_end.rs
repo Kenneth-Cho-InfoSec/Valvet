@@ -938,3 +938,55 @@ fn move_note_labels_move_site() {
         }
     }
 }
+
+#[test]
+fn no_cascade_optfield_payload() {
+    // `?.` on a non-struct payload used to append a println E0201.
+    assert_eq!(
+        check_codes("val o = Some(1 as Int64)\nprintln(o?.nosuch)\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn no_cascade_try_mismatch() {
+    assert_eq!(
+        check_codes("val o: Option<Int64> = None\nprintln(o?)\n"),
+        vec!["E0702"]
+    );
+}
+
+#[test]
+fn no_cascade_try_init() {
+    // Init and println follow-ons are gone; only the E0702 remains.
+    assert_eq!(
+        check_codes("val o: Option<Int64> = None\nval y = o?\nprintln(y)\n"),
+        vec!["E0702"]
+    );
+}
+
+#[test]
+fn no_cascade_vec_empty_no_context() {
+    assert_eq!(check_codes("val v = vec![]\nprintln(v)\n"), vec!["E0201"]);
+}
+
+#[test]
+fn no_cascade_none_no_context() {
+    assert_eq!(check_codes("val x = None\n"), vec!["E0201"]);
+}
+
+#[test]
+fn no_cascade_if_no_else_value() {
+    // `if` as a value without `else` no longer cascades into the binding.
+    assert_eq!(
+        check_codes("val y = if (true) { 1 as Int64 }\nprintln(y)\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn broken_top_level_statement_errors() {
+    // A top-level statement that fails to parse must diagnose (used to
+    // vanish silently and continue with later lines).
+    assert_eq!(check_codes("println(o? ? 5)\n"), vec!["E0005"]);
+}
