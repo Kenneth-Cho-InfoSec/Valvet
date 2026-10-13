@@ -1,0 +1,35 @@
+import std::infer::chisq_gof;
+import std::infer::cor_test;
+import std::infer::mann_whitney;
+
+fun main() {
+    // Goodness of fit [10,20,30] vs uniform 20s: stat 10, p = e^-5.
+    val c = chisq_gof(vec![10 as Int64, 20 as Int64, 30 as Int64], vec![20.0, 20.0, 20.0]);
+    println(c.statistic);
+    println(c.df);
+    println(c.p);
+    // Correlation test with hand-checked r and t.
+    val r = cor_test(vec![1.0, 2.0, 3.0, 4.0], vec![2.0, 4.0, 5.0, 4.0]);
+    println(r.r);
+    println(r.statistic);
+    println(r.df);
+    println(r.p);
+    // Perfect correlation: infinite t, zero p.
+    val p = cor_test(vec![1.0, 2.0, 3.0], vec![2.0, 4.0, 6.0]);
+    println(p.r);
+    println(p.p);
+    // Mann-Whitney on separated samples: U=0 with normal-approx p.
+    val m = mann_whitney(vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]);
+    println(m.u);
+    println(m.z);
+    println(m.p);
+    // Ties get average ranks (symmetric swap preserves n1*n2 - U).
+    val t = mann_whitney(vec![1.0, 2.0, 2.0, 3.0], vec![2.0, 3.0, 4.0]);
+    println(t.u);
+    println(t.p);
+    // Degenerate inputs are NaN.
+    val d = chisq_gof(vec![1 as Int64], vec![1.0]);
+    println(d.p);
+    val e = mann_whitney(vec![1.0], vec![]);
+    println(e.p);
+}

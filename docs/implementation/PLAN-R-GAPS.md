@@ -146,7 +146,15 @@ inversion over the seeded `Rng`. Pure Valvet. Fixtures vs Python
 
 ## P3: modeling and testing (needs M1 + D3)
 
-**S1. Formulas + `lm`/`glm`.** Formula as data: `Formula { response:
+**S1. Formulas + `lm`/`glm`.** SHIPPED: `mat_vec`/`mat_scale_rows`/
+`mat_diag` kernels plus pure `std::model` (`Formula` data + `"y ~ x"`
+strings, na.omit frames, `lm` via normal equations, binomial IRLS with
+Fisher se, z p-values). Unwrap discipline is pre-check plus dead dummy
+(`Result` is not cloneable, `?` needs identical errors, no returns in
+match arms). Verified vs independent Python OLS/IRLS to 1e-13 with a
+multi-start MLE check (my recalled R Challenger numbers belong to
+different data; explicitly not claimed). 2 fixtures, 176/176 green,
+ASan-clean. Formula as data: `Formula { response:
 String, terms: Vec<Term> }` built by constructor fns (and later parsed
 from `"y ~ x1 + x2"` strings with the existing split machinery). `lm`
 via Cholesky on `X'X` (falls back to `lu_solve`), `glm_binomial` via
@@ -154,7 +162,13 @@ IRLS reusing the hand-built logistic pattern. `summary` returns a struct
 (coefficients, std errors from the covariance diagonal, z, p via D3
 normal CDF). Fixtures vs R's `cars`/Challenger reference values already
 in the repo.
-**S2. Hypothesis tests.** `t_test` (Student-t CDF via incomplete beta
+**S2. Hypothesis tests.** SHIPPED as pure `std::infer`: Stirling
+`lgamma` (a misremembered Lanczos coefficient forced the switch; now
+~1e-12 with zero fitted constants), gamma P/Q, incomplete-beta `t_cdf`
+(verified vs Simpson quadrature to 1e-13), even-df/Cauchy exact
+identities, one-sample/paired/Student/Welch t, chi-square gof,
+correlation test, and tie-corrected Mann-Whitney (R wilcox defaults).
+2 fixtures, 178/178 green, ASan-clean. `t_test` (Student-t CDF via incomplete beta
 continued fractions), `chisq_test` (gamma via Lanczos + series/CF),
 `cor_test` on the existing `cor`. Rank-based Mann-Whitney as the
 no-special-functions fallback if beta/gamma slip. Fixtures vs R

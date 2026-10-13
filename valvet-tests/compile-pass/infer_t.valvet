@@ -1,0 +1,45 @@
+import std::infer::lgamma;
+import std::infer::gamma_p;
+import std::infer::t_cdf;
+import std::infer::chisq_cdf;
+import std::infer::t_onesample;
+import std::infer::t_paired;
+import std::infer::t_student;
+import std::infer::t_welch;
+
+fun main() {
+    // Special functions vs exact identities (lgamma, gamma, Cauchy/df2).
+    println(lgamma(1.0));
+    println(lgamma(0.5));
+    println(lgamma(5.0));
+    println(gamma_p(1.0, 2.0));
+    println(gamma_p(2.0, 1.0));
+    println(gamma_p(0.5, 1.0));
+    println(chisq_cdf(5.0, 2 as Float64));
+    println(chisq_cdf(4.0, 4 as Float64));
+    println(t_cdf(0.0, 1.0));
+    println(t_cdf(1.0, 1.0));
+    println(t_cdf(1.0, 2.0));
+    // One-sample t on [2,4,6,8] vs hand computation.
+    val t = t_onesample(vec![2.0, 4.0, 6.0, 8.0], 3.0);
+    println(t.statistic);
+    println(t.df);
+    println(t.p);
+    // Two-sample Student and Welch.
+    val s = t_student(vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 7.0]);
+    println(s.statistic);
+    println(s.df);
+    val w = t_welch(vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 7.0]);
+    println(w.statistic);
+    println(w.df);
+    println(w.p);
+    // Paired t on differences [-1,-1,-2].
+    val pr = t_paired(vec![1.0, 2.0, 3.0], vec![2.0, 3.0, 5.0]);
+    println(pr.statistic);
+    println(pr.p);
+    // Degenerate inputs are NaN, never traps.
+    val d = t_onesample(vec![5.0], 3.0);
+    println(d.p);
+    val z = t_onesample(vec![4.0, 4.0, 4.0], 3.0);
+    println(z.p);
+}
