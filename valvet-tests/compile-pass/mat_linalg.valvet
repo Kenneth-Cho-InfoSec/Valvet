@@ -1,0 +1,66 @@
+fun main() {
+    val m = match (mat_from_rows(vec![vec![1.0, 2.0], vec![3.0, 4.0]])) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0, 0),
+    }
+    val id = mat_identity(2)
+    // Determinant of [[1,2],[3,4]] is -2.
+    println(m.det())
+    println(id.det())
+    // Multiply by identity recovers the matrix.
+    val p = match (m.clone().matmul(id)) {
+        Ok(q) -> q,
+        Err(_) -> mat_zeros(0, 0),
+    }
+    println(p)
+    // Inner-dimension mismatch is Err (expected 2, found 3).
+    val bad = match (m.clone().matmul(mat_identity(3))) {
+        Ok(q) -> q,
+        Err(e) -> mat_zeros(e.expected, e.found),
+    }
+    println(bad)
+    // Solve [[1,2],[3,4]] x = [5,11] gives [1,2].
+    val x = match (m.clone().lu_solve(vec![5.0, 11.0])) {
+        Ok(v) -> v,
+        Err(_) -> vec![0.0 - 1.0],
+    }
+    println(x)
+    // Inverse of [[1,2],[3,4]] is [[-2,1],[1.5,-0.5]].
+    val w = match (m.clone().inverse()) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0, 0),
+    }
+    println(w)
+    // Singular matrices: det is NaN, inverse/solve are Err.
+    val s = match (mat_from_rows(vec![vec![1.0, 2.0], vec![2.0, 4.0]])) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0, 0),
+    }
+    println(s.det())
+    val sinv = match (s.clone().inverse()) {
+        Ok(_) -> "ok",
+        Err(_) -> "singular",
+    }
+    println(sinv)
+    val ssol = match (s.clone().lu_solve(vec![1.0, 2.0])) {
+        Ok(_) -> "ok",
+        Err(_) -> "singular",
+    }
+    println(ssol)
+    // Cholesky of [[4,2],[2,3]] is [[2,0],[1,sqrt(2)]].
+    val q = match (mat_from_rows(vec![vec![4.0, 2.0], vec![2.0, 3.0]])) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0, 0),
+    }
+    val l = match (q.clone().cholesky()) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0, 0),
+    }
+    println(l)
+    // Non-SPD input is Err, never NaN.
+    val nspd = match (m.clone().cholesky()) {
+        Ok(_) -> "ok",
+        Err(_) -> "not-spd",
+    }
+    println(nspd)
+}

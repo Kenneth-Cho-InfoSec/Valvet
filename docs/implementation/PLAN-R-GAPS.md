@@ -1,7 +1,12 @@
 # Plan: R parity gaps, the Valvet way (R-GAPS track)
 
-Status: accepted; P0 in progress (M2 `sort`/`order` shipped: stable
-bottom-up mergesort kernel, NaN sorts last, `order` returns stable
+Status: accepted; P0 in progress (M1 `Mat` + M2 `sort`/`order` shipped:
+M1 is a dense row-major Float64 matrix with `mat_zeros`/`mat_identity`/
+`mat_from_rows` constructors, `rows`/`cols`/`transpose`/`clone` methods,
+and LU-backed `matmul`/`lu_solve`/`det`/`inverse`/`cholesky` (partial
+pivoting; shape mismatches and singular/non-SPD inputs are `Err`, `det`
+is NaN on singular; fixtures vs closed-form oracles, ASan-clean); M2 is a
+stable bottom-up mergesort kernel, NaN sorts last, `order` returns stable
 permutation indices; fixtures + unit tests green, ASan-clean). This is a parallel track to the 0.3.0
 production scope in `IMPLEMENTATION_STATUS.md` (lazy plans, Parquet/Arrow,
 SQL, par_iter, FFI/unsafe, BLAS, registry, LSP); items that land may ship

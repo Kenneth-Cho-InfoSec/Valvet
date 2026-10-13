@@ -83,6 +83,8 @@ pub fn is_copy_ty(
         Ty::Str | Ty::Named(_) => false,
         // `Vec` owns a heap buffer: copying the header would alias it.
         Ty::Generic { base, .. } if base == "Vec" => false,
+        // `Mat` owns its data buffer (see layout in codegen).
+        Ty::Generic { base, .. } if base == "Mat" => false,
         // Shared references are Copy; exclusive ones move.
         Ty::Reference { mutable, .. } => !mutable,
         Ty::Generic { args, .. } => args.iter().all(|a| is_copy_ty(a, structs, enums)),
@@ -327,6 +329,7 @@ fn is_builtin_type_name(name: &str) -> bool {
             | "Result"
             | "Missing"
             | "Rng"
+            | "Mat"
     )
 }
 
@@ -879,6 +882,7 @@ impl Cx {
                 || base == "Result"
                 || base == "Missing"
                 || base == "Rng"
+                || base == "Mat"
             {
                 for a in args {
                     self.record_ty(a);
@@ -958,7 +962,12 @@ impl Cx {
                     return Ty::Unit;
                 }
                 match (base.as_str(), resolved.len()) {
-                    ("Option", 1) | ("Result", 2) | ("Vec", 1) | ("Missing", 1) | ("Rng", 0) => {
+                    ("Option", 1)
+                    | ("Result", 2)
+                    | ("Vec", 1)
+                    | ("Missing", 1)
+                    | ("Rng", 0)
+                    | ("Mat", 0) => {
                         let t = Ty::Generic {
                             base: base.clone(),
                             args: resolved,
@@ -971,24 +980,36 @@ impl Cx {
                             "E0201",
                             span,
                             format!("unknown generic type `{}`, or wrong arity", base),
-                            Some("only `Option<T>` and `Result<T, E>` are supported".into()),
+                            Some("only `Option<T>`, `Result<T, E>`, `Vec<T>`, `Missing<T>`, `Rng` and `Mat` are supported".into()),
                         );
                         Ty::Unit
                     }
                 }
             }
-            Ty::Named(n) => match self.resolve_type(n) {
-                Some(q) if self.structs.contains_key(&q) => Ty::Struct(q),
-                Some(q) => Ty::Enum(q),
-                None => {
-                    self.err(
+            Ty::Named(n) => match n.as_str() {
+                // Bare `Mat`/`Rng` annotations (parser only makes Generics
+                // with `<...>`; these arity-0 builtins never take args).
+                "Mat" | "Rng" => {
+                    let t = Ty::Generic {
+                        base: n.clone(),
+                        args: vec![],
+                    };
+                    self.record_ty(&t);
+                    t
+                }
+                _ => match self.resolve_type(n) {
+                    Some(q) if self.structs.contains_key(&q) => Ty::Struct(q),
+                    Some(q) => Ty::Enum(q),
+                    None => {
+                        self.err(
                             "E0201",
                             span,
                             format!("unknown type `{}`", n),
                             Some("expected Int32, Int64, Float64, Bool, String, or a declared struct/enum".into()),
                         );
-                    Ty::Unit
-                }
+                        Ty::Unit
+                    }
+                },
             },
             other => other.clone(),
         }
@@ -2670,6 +2691,11 @@ impl Cx {
                         self.record_ty(&t);
                         t
                     }
+                    Ty::Generic { base, args } if base == "Mat" && args.is_empty() => {
+                        let t = self.check_mat_method(e.span, method, *method_span, call_args);
+                        self.record_ty(&t);
+                        t
+                    }
                     Ty::Str => {
                         let t = self.check_str_method(e.span, method, *method_span, call_args);
                         self.record_ty(&t);
@@ -2683,7 +2709,7 @@ impl Cx {
                             "E0401",
                             *method_span,
                             format!(
-                                "type {} has no methods (only `Vec`, `String` and `Rng` have methods)",
+                                "type {} has no methods (only `Vec`, `Mat`, `String` and `Rng` have methods)",
                                 rt.name()
                             ),
                             None,
@@ -4482,6 +4508,131 @@ impl Cx {
         }
     }
 
+    /// `Mat` methods (M1): dense Float64 matrices. Receiver borrows;
+    /// fallible kernels report `Result<_, ShapeError>` like the numeric
+    /// `Vec` kernels. `det` yields NaN on singular input (total, like
+    /// float division); `lu_solve`/`inverse` reject it with `Err`.
+    fn check_mat_method(
+        &mut self,
+        span: Span,
+        method: &str,
+        method_span: Span,
+        args: &[Expr],
+    ) -> Ty {
+        let mat_ty = || Ty::Generic {
+            base: "Mat".to_string(),
+            args: vec![],
+        };
+        let shape_err = Ty::Struct("ShapeError".to_string());
+        let res_mat = || Ty::Generic {
+            base: "Result".to_string(),
+            args: vec![mat_ty(), shape_err.clone()],
+        };
+        match method {
+            "rows" | "cols" => {
+                if !args.is_empty() {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`{}` takes no arguments", method),
+                        None,
+                    );
+                }
+                Ty::Int64
+            }
+            "transpose" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`transpose` takes no arguments", None);
+                }
+                self.record_ty(&mat_ty());
+                mat_ty()
+            }
+            "matmul" => {
+                if args.len() != 1 {
+                    self.err("E0201", span, "`matmul` takes exactly 1 argument", None);
+                    return res_mat();
+                }
+                let at = self.check_expr(&args[0]);
+                if at != mat_ty() {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`matmul` expects Mat, found {}", at.name()),
+                        None,
+                    );
+                }
+                res_mat()
+            }
+            "lu_solve" => {
+                if args.len() != 1 {
+                    self.err("E0201", span, "`lu_solve` takes exactly 1 argument", None);
+                    return Ty::Generic {
+                        base: "Result".to_string(),
+                        args: vec![
+                            Ty::Generic {
+                                base: "Vec".to_string(),
+                                args: vec![Ty::Float64],
+                            },
+                            shape_err.clone(),
+                        ],
+                    };
+                }
+                let at = self.check_expr(&args[0]);
+                let want = Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![Ty::Float64],
+                };
+                if at != want {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`lu_solve` expects Vec<Float64>, found {}", at.name()),
+                        None,
+                    );
+                }
+                self.record_vec_inst(&Ty::Float64);
+                Ty::Generic {
+                    base: "Result".to_string(),
+                    args: vec![want, shape_err.clone()],
+                }
+            }
+            "det" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`det` takes no arguments", None);
+                }
+                Ty::Float64
+            }
+            "inverse" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`inverse` takes no arguments", None);
+                }
+                res_mat()
+            }
+            "cholesky" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`cholesky` takes no arguments", None);
+                }
+                res_mat()
+            }
+            "clone" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`clone` takes no arguments", None);
+                }
+                self.record_ty(&mat_ty());
+                mat_ty()
+            }
+            _ => {
+                self.err(
+                    "E0401",
+                    method_span,
+                    format!("unknown method `{}` (available on Mat: rows, cols, transpose, matmul, lu_solve, det, inverse, cholesky, clone)", method),
+                    None,
+                );
+                Ty::Unit
+            }
+        }
+    }
+
     /// `String` methods (J1): splitting, trimming, and total parsing.
     /// Parsing yields `Option` (never traps): `None` on any malformed input.
     fn check_str_method(
@@ -4724,6 +4875,7 @@ impl Cx {
             Ty::Generic { base, args } if base == "Result" => {
                 args.len() == 2 && Self::printable(&args[0]) && Self::printable(&args[1])
             }
+            Ty::Generic { base, args } if base == "Mat" => args.is_empty(),
             _ => false,
         }
     }
@@ -4739,6 +4891,9 @@ impl Cx {
                 for a in args {
                     Self::record_print_insts(a, out);
                 }
+            }
+            Ty::Generic { base, args } if base == "Mat" => {
+                out.insert(Self::inst_key(base, args));
             }
             _ => {}
         }
@@ -4767,7 +4922,7 @@ impl Cx {
                     "E0201",
                     span,
                     format!(
-                        "`{}` supports Int32/Int64/Float64/Bool/String, Vec<T>, Option<T>, Result<T, E>, Missing<T> (of printable types); found {}",
+                        "`{}` supports Int32/Int64/Float64/Bool/String, Vec<T>, Option<T>, Result<T, E>, Missing<T>, Mat (of printable types); found {}",
                         name,
                         t.name()
                     ),
@@ -4870,6 +5025,97 @@ impl Cx {
                 );
             }
             return Ty::Float64;
+        } else if name == "mat_zeros" || name == "mat_identity" {
+            // M1: `mat_zeros(r, c)` / `mat_identity(n)` (Int args).
+            let want_n = if name == "mat_zeros" { 2 } else { 1 };
+            let mat_ty = Ty::Generic {
+                base: "Mat".to_string(),
+                args: vec![],
+            };
+            if args.len() != want_n {
+                self.err(
+                    "E0201",
+                    span,
+                    format!(
+                        "`{}` takes exactly {} argument(s), found {}",
+                        name,
+                        want_n,
+                        args.len()
+                    ),
+                    None,
+                );
+                return mat_ty;
+            }
+            for a in args {
+                let at = self.check_expr(a);
+                if at != Ty::Int64 && at != Ty::Int32 {
+                    self.err(
+                        "E0201",
+                        a.span,
+                        format!("`{}` expects Int dimensions, found {}", name, at.name()),
+                        None,
+                    );
+                }
+            }
+            self.record_ty(&mat_ty);
+            return mat_ty;
+        } else if name == "mat_from_rows" {
+            // M1: `mat_from_rows(Vec<Vec<Float64>>): Result<Mat, String>`
+            // (ragged input is `Err`, never a trap).
+            if args.len() != 1 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!(
+                        "`mat_from_rows` takes exactly 1 argument, found {}",
+                        args.len()
+                    ),
+                    None,
+                );
+                return Ty::Generic {
+                    base: "Result".to_string(),
+                    args: vec![
+                        Ty::Generic {
+                            base: "Mat".to_string(),
+                            args: vec![],
+                        },
+                        Ty::Str,
+                    ],
+                };
+            }
+            let at = self.check_expr(&args[0]);
+            let want = Ty::Generic {
+                base: "Vec".to_string(),
+                args: vec![Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![Ty::Float64],
+                }],
+            };
+            if at != want {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!(
+                        "`mat_from_rows` expects Vec<Vec<Float64>>, found {}",
+                        at.name()
+                    ),
+                    None,
+                );
+            } else {
+                self.record_ty(&at);
+            }
+            let t = Ty::Generic {
+                base: "Result".to_string(),
+                args: vec![
+                    Ty::Generic {
+                        base: "Mat".to_string(),
+                        args: vec![],
+                    },
+                    Ty::Str,
+                ],
+            };
+            self.record_ty(&t);
+            return t;
         } else if name == "write_file" {
             // J6: `write_file(path, content): Result<Int64, String>`
             // (bytes written).

@@ -716,6 +716,7 @@ enum LNode {
     Struct(String),
     Enum(String),
     Vec(String),
+    Mat(String),
     Union(String),
 }
 
@@ -1154,6 +1155,12 @@ impl<'a> Gen<'a> {
                 self.out.push_str(&format!("{}.data = NULL;\n", lval));
                 self.out.push_str(&format!("{}.len = 0;\n", lval));
             }
+            Ty::Generic { base, args } if base == "Mat" && args.is_empty() => {
+                // Neutering a moved-from Mat: drop skips NULL buffers.
+                self.out.push_str(&format!("{}.data = NULL;\n", lval));
+                self.out.push_str(&format!("{}.rows = 0;\n", lval));
+                self.out.push_str(&format!("{}.cols = 0;\n", lval));
+            }
             Ty::Generic { base, args } => {
                 let variants = self.generic_variants(base, args);
                 if variants
@@ -1235,6 +1242,13 @@ impl<'a> Gen<'a> {
             }
             Ty::Generic { base, args } if base == "Vec" => {
                 format!("{}.data = NULL;\n{}.len = 0;\n", lval, lval)
+            }
+            Ty::Generic { base, args } if base == "Mat" && args.is_empty() => {
+                let _ = args;
+                format!(
+                    "{}.data = NULL;\n{}.rows = 0;\n{}.cols = 0;\n",
+                    lval, lval, lval
+                )
             }
             Ty::Generic { base, args } => {
                 let mut out = String::new();
@@ -1384,6 +1398,8 @@ impl<'a> Gen<'a> {
                     if let Some(key) = self.inst_key_for(base, args) {
                         if base == "Vec" {
                             out.push(LNode::Vec(key));
+                        } else if base == "Mat" {
+                            out.push(LNode::Mat(key));
                         } else {
                             out.push(LNode::Union(key));
                         }
@@ -1419,6 +1435,8 @@ impl<'a> Gen<'a> {
             }
             let node = if base == "Vec" {
                 LNode::Vec(key.clone())
+            } else if base == "Mat" {
+                LNode::Mat(key.clone())
             } else {
                 LNode::Union(key.clone())
             };
@@ -1531,10 +1549,24 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// One `Mat` layout (dense row-major Float64 matrix).
+    fn emit_mat_layout(&mut self, key: &str) -> Result<(), Ice> {
+        let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
+        if base != "Mat" || !args.is_empty() {
+            return Ok(());
+        }
+        let ct = ctype_inst(&base, &args);
+        self.out.push_str(&format!(
+            "typedef struct {{ double *data; int64_t rows; int64_t cols; }} {};\n",
+            ct
+        ));
+        Ok(())
+    }
+
     /// One `Option`/`Result` tagged-union layout.
     fn emit_union_layout(&mut self, key: &str) -> Result<(), Ice> {
         let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
-        if base == "Vec" {
+        if base == "Vec" || base == "Mat" {
             return Ok(());
         }
         let ct = ctype_inst(&base, &args);
@@ -1578,6 +1610,7 @@ impl<'a> Gen<'a> {
                 LNode::Struct(n) => self.emit_struct_layout(n)?,
                 LNode::Enum(n) => self.emit_enum_layout(n)?,
                 LNode::Vec(key) => self.emit_vec_layout(key)?,
+                LNode::Mat(key) => self.emit_mat_layout(key)?,
                 LNode::Union(key) => self.emit_union_layout(key)?,
             }
         }
@@ -1679,6 +1712,13 @@ impl<'a> Gen<'a> {
                         ));
                     }
                 }
+            } else if base == "Mat" && args.is_empty() {
+                // M1: Mat drop/clone declarations (kernels defined below).
+                let ct = ctype_inst(&base, &args);
+                let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
+                self.out.push_str(&format!(
+                    "static void v_drop_{iname}({ct} *v);\nstatic {ct} v_clone_{iname}({ct} v);\n"
+                ));
             } else {
                 let t = Ty::Generic {
                     base: base.clone(),
@@ -1716,6 +1756,10 @@ impl<'a> Gen<'a> {
                 self.emit_vec_fns(&args)?;
                 self.emit_vec_drop(&args)?;
                 self.emit_vec_clone(&args)?;
+                continue;
+            }
+            if base == "Mat" && args.is_empty() {
+                self.emit_mat_fns()?;
                 continue;
             }
             if self.type_needs_drop(&t) {
@@ -2399,6 +2443,103 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// M1 dense-matrix runtime: drop/clone plus constructors and the
+    /// LU-backed kernels (transpose, matmul, lu_solve, det, inverse).
+    /// Row-major `double` buffer; empty matrices hold NULL (drop skips it).
+    /// Fallible kernels report `Result<_, ShapeError>`; `from_rows` reports
+    /// `Result<Mat, String>` (ragged rows are data, not shapes).
+    fn emit_mat_fns(&mut self) -> Result<(), Ice> {
+        let mat_ty = Ty::Generic {
+            base: "Mat".to_string(),
+            args: vec![],
+        };
+        let f64_vec = Ty::Generic {
+            base: "Vec".to_string(),
+            args: vec![Ty::Float64],
+        };
+        let shape = Ty::Struct("ShapeError".to_string());
+        let ct = ctype_inst("Mat", &[]);
+        let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Float64));
+        let vvct = ctype_inst("Vec", std::slice::from_ref(&f64_vec));
+        let shape_ct = ctype_name("ShapeError");
+        let rct = ctype_inst("Result", &[mat_ty.clone(), shape.clone()]);
+        let rvct = ctype_inst("Result", &[f64_vec.clone(), shape.clone()]);
+        let rsct = ctype_inst("Result", &[mat_ty.clone(), Ty::Str]);
+        // Drop + clone (C23: no implicit declarations; defined once here).
+        self.out.push_str(&format!(
+            "static void v_drop_Mat_({ct} *v) {{\nif (v->data) {{ free(v->data); v->data = NULL; }}\nv->rows = 0; v->cols = 0;\n}}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {ct} v_clone_Mat_({ct} v) {{\n{ct} c = {{NULL, v.rows, v.cols}};\nint64_t n = v.rows * v.cols;\nif (n > 0) {{\nc.data = (double *)malloc((size_t)n * sizeof(double));\nif (!c.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{ c.data[i] = v.data[i]; }}\n}}\nreturn c;\n}}\n"
+        ));
+        // Constructors (negative dimensions trap like OOB indexing).
+        self.out.push_str(&format!(
+            "static {ct} vmat_zeros(int64_t r, int64_t c) {{\nif (r < 0 || c < 0) {{ fprintf(stderr, \"negative matrix dimension\\n\"); abort(); }}\n{ct} m = {{NULL, r, c}};\nint64_t n = r * c;\nif (n > 0) {{\nm.data = (double *)calloc((size_t)n, sizeof(double));\nif (!m.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\n}}\nreturn m;\n}}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {ct} vmat_identity(int64_t n) {{\nif (n < 0) {{ fprintf(stderr, \"negative matrix dimension\\n\"); abort(); }}\n{ct} m = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ m.data[i * n + i] = 1.0; }}\nreturn m;\n}}\n"
+        ));
+        // `from_rows` only when its `Result<Mat, String>` layout exists
+        // (mirrors the Vec kernel gates: kernels reference layouts).
+        let want_rows = self.has_inst("Result", &[mat_ty.clone(), Ty::Str]);
+        if want_rows {
+            self.out.push_str(&format!(
+            "static {rsct} vmat_from_rows({vvct} *rows) {{\nint64_t r = rows->len;\nint64_t c = r > 0 ? rows->data[0].len : 0;\nfor (int64_t i = 1; i < r; ++i) {{\nif (rows->data[i].len != c) {{\n{rsct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = vstr_from_c(\"ragged rows\") }} }} }};\nreturn o;\n}}\n}}\n{ct} m = vmat_zeros(r, c);\nfor (int64_t i = 0; i < r; ++i) {{\nfor (int64_t j = 0; j < c; ++j) {{ m.data[i * c + j] = rows->data[i].data[j]; }}\n}}\n{rsct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n"
+        ));
+        }
+        // Methods.
+        self.out.push_str(&format!(
+            "static int64_t vmat_rows({ct} *v) {{ return v->rows; }}\nstatic int64_t vmat_cols({ct} *v) {{ return v->cols; }}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {ct} vmat_transpose({ct} *v) {{\n{ct} m = vmat_zeros(v->cols, v->rows);\nfor (int64_t i = 0; i < v->rows; ++i) {{\nfor (int64_t j = 0; j < v->cols; ++j) {{ m.data[j * v->rows + i] = v->data[i * v->cols + j]; }}\n}}\nreturn m;\n}}\n"
+        ));
+        let shape_lit = |r: &str, a: &str, b: &str| {
+            format!(
+                "({}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({}){{ .v_expected = {}, .v_found = {} }} }} }} }}",
+                r, shape_ct, a, b
+            )
+        };
+        // matmul/inverse need `Result<Mat, ShapeError>`; lu_solve needs
+        // `Result<Vec<Float64>, ShapeError>` (gated like Vec kernels).
+        let want_mm = self.has_inst("Result", &[mat_ty.clone(), shape.clone()]);
+        let want_sol = self.has_inst("Result", &[f64_vec.clone(), shape.clone()]);
+        if want_mm {
+            self.out.push_str(&format!(
+            "static {rct} vmat_matmul({ct} *a, {ct} *b) {{\nif (a->cols != b->rows) {{ return {shape}; }}\n{ct} m = vmat_zeros(a->rows, b->cols);\nfor (int64_t i = 0; i < a->rows; ++i) {{\nfor (int64_t k = 0; k < a->cols; ++k) {{\ndouble x = a->data[i * a->cols + k];\nfor (int64_t j = 0; j < b->cols; ++j) {{ m.data[i * b->cols + j] += x * b->data[k * b->cols + j]; }}\n}}\n}}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n",
+            shape = shape_lit(&rct, "a->cols", "b->rows")
+        ));
+        }
+        // Partial-pivot LU (in place, row-major). Returns 0 on singular.
+        self.out.push_str(
+            "static int vmat_lu(double *a, int64_t n, int64_t *piv) {\nint sgn = 1;\nfor (int64_t k = 0; k < n; ++k) { piv[k] = k; }\nfor (int64_t k = 0; k < n; ++k) {\nint64_t p = k;\ndouble best = a[piv[k] * n + k] < 0 ? -(a[piv[k] * n + k]) : a[piv[k] * n + k];\nfor (int64_t i = k + 1; i < n; ++i) {\ndouble v = a[piv[i] * n + k];\ndouble av = v < 0 ? -v : v;\nif (av > best) { best = av; p = i; }\n}\nif (best == 0.0) { return 0; }\nif (p != k) { int64_t t = piv[k]; piv[k] = piv[p]; piv[p] = t; sgn = -sgn; }\nfor (int64_t i = k + 1; i < n; ++i) {\ndouble f = a[piv[i] * n + k] / a[piv[k] * n + k];\na[piv[i] * n + k] = f;\nfor (int64_t j = k + 1; j < n; ++j) { a[piv[i] * n + j] -= f * a[piv[k] * n + j]; }\n}\n}\nreturn sgn;\n}\n",
+        );
+        self.out.push_str(&format!(
+            "static double vmat_det({ct} *v) {{\nif (v->rows != v->cols) {{ return 0.0 / 0.0; }}\nint64_t n = v->rows;\nif (n == 0) {{ return 1.0; }}\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nint64_t *piv = (int64_t *)malloc((size_t)(n + 1) * sizeof(int64_t));\nif (!piv) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nint sgn = vmat_lu(a, n, piv);\ndouble d = 0.0;\nif (sgn != 0) {{\nd = (double)sgn;\nfor (int64_t k = 0; k < n; ++k) {{ d *= a[piv[k] * n + k]; }}\n}} else {{ d = 0.0 / 0.0; }}\nfree(a); free(piv);\nreturn d;\n}}\n"
+        ));
+        if want_sol {
+            self.out.push_str(&format!(
+            "static {rvct} vmat_lu_solve({ct} *v, {vct} *b) {{\nif (v->rows != v->cols || b->len != v->rows) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->rows, .v_found = b->len }} }} }} }};\nreturn o;\n}}\nint64_t n = v->rows;\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nint64_t *piv = (int64_t *)malloc((size_t)(n + 1) * sizeof(int64_t));\nif (!piv) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *y = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!y) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nint ok = vmat_lu(a, n, piv);\n{rvct} o;\nif (!ok) {{\no = ({rvct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\n}} else {{\nfor (int64_t i = 0; i < n; ++i) {{\ndouble s = b->data[piv[i]];\nfor (int64_t j = 0; j < i; ++j) {{ s -= a[piv[i] * n + j] * y[j]; }}\ny[i] = s;\n}}\n{vct} x = {{NULL, 0, 0}};\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\n}}\nfor (int64_t i = n - 1; i >= 0; --i) {{\ndouble s = y[i];\nfor (int64_t j = i + 1; j < n; ++j) {{ s -= a[piv[i] * n + j] * x.data[j]; }}\nx.data[i] = s / a[piv[i] * n + i];\nif (i == 0) {{ break; }}\n}}\no = ({rvct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\n}}\nfree(a); free(piv); free(y);\nreturn o;\n}}\n"
+        ));
+        }
+        if want_mm && want_sol {
+            self.out.push_str(&format!(
+            "static {rct} vmat_inverse({ct} *v) {{\nif (v->rows != v->cols) {{ return {shape}; }}\nint64_t n = v->rows;\n{ct} m = vmat_zeros(n, n);\nfor (int64_t j = 0; j < n; ++j) {{\n{vct} b = {{NULL, 0, 0}};\nif (n > 0) {{\nb.data = (double *)malloc((size_t)n * sizeof(double));\nif (!b.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nb.len = n; b.cap = n;\nfor (int64_t i = 0; i < n; ++i) {{ b.data[i] = i == j ? 1.0 : 0.0; }}\n}}\n{rvct} s = vmat_lu_solve(v, &b);\nfree(b.data);\nif (s.tag != 0) {{\nfree(m.data);\n{rct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\nreturn o;\n}}\nfor (int64_t i = 0; i < n; ++i) {{ m.data[i * n + j] = s.u.v0.v___0.data[i]; }}\nfree(s.u.v0.v___0.data);\n}}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n",
+            shape = shape_lit(&rct, "v->rows", "v->cols")
+        ));
+        }
+        // Cholesky-Banachiewicz (lower L with A = L L^T). Non-square and
+        // non-SPD inputs are Err (non-positive pivot, never NaN).
+        if want_mm {
+            self.out.push_str(&format!(
+            "static {rct} vmat_cholesky({ct} *v) {{\nif (v->rows != v->cols) {{ return {shape}; }}\nint64_t n = v->rows;\n{ct} m = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{\nfor (int64_t j = 0; j <= i; ++j) {{\ndouble s = v->data[i * n + j];\nfor (int64_t k = 0; k < j; ++k) {{ s -= m.data[i * n + k] * m.data[j * n + k]; }}\nif (i == j) {{\nif (!(s > 0.0)) {{ free(m.data);\n{rct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\nreturn o; }}\nm.data[i * n + i] = sqrt(s);\n}} else {{\nm.data[i * n + j] = s / m.data[j * n + j];\n}}\n}}\n}}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n",
+            shape = shape_lit(&rct, "v->rows", "v->cols")
+        ));
+        }
+        let _ = (rct, rvct, rsct, vvct, vct, ct);
+        Ok(())
+    }
+
     /// Value-returning `Vec` method call. Receiver borrowed via `rptr`
     /// (`&slot`); owned arguments transfer (caller nulls via consume).
     /// `res_ty` is the checked result type (needed by `cast`).
@@ -2470,6 +2611,38 @@ impl<'a> Gen<'a> {
                 Ok(format!("vvec_{}_dot({}, &{})", iname, rptr, o))
             }
             _ => Err(Ice("unknown Vec method".into())),
+        }
+    }
+
+    /// M1 value-returning `Mat` method call. Receiver borrowed via `rptr`
+    /// (`&slot`); owned arguments transfer (caller nulls via consume).
+    fn emit_mat_method(&mut self, method: &str, r: &str, args: &[Expr]) -> Result<String, Ice> {
+        let rptr = format!("&{}", r);
+        match method {
+            "rows" => Ok(format!("vmat_rows({})", rptr)),
+            "cols" => Ok(format!("vmat_cols({})", rptr)),
+            "transpose" => Ok(format!("vmat_transpose({})", rptr)),
+            "det" => Ok(format!("vmat_det({})", rptr)),
+            "cholesky" => Ok(format!("vmat_cholesky({})", rptr)),
+            "clone" => Ok(format!("v_clone_Mat_({})", r)),
+            "inverse" => Ok(format!("vmat_inverse({})", rptr)),
+            "matmul" => {
+                let a = args.first().ok_or_else(|| Ice("method arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let o = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vmat_matmul({}, &{})", rptr, o))
+            }
+            "lu_solve" => {
+                let a = args.first().ok_or_else(|| Ice("method arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let o = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vmat_lu_solve({}, &{})", rptr, o))
+            }
+            _ => Err(Ice("unknown Mat method".into())),
         }
     }
 
@@ -2556,6 +2729,13 @@ impl<'a> Gen<'a> {
                 body.push_str(&format!("{};\n}}\n", el));
                 body.push_str("printf(\"]\");\n");
             }
+            ("Mat", []) => {
+                body.push_str("printf(\"[\");\n");
+                body.push_str("for (int64_t i = 0; i < v.rows; ++i) { if (i) printf(\", \"); printf(\"[\");\n");
+                body.push_str("for (int64_t j = 0; j < v.cols; ++j) { if (j) printf(\", \"); vfmt_f64(v.data[i * v.cols + j]); }\n");
+                body.push_str("printf(\"]\"); }\n");
+                body.push_str("printf(\"]\");\n");
+            }
             ("Option", [t]) => {
                 let some = self.fmt_call(t, &format!("v.u.{}.{}", cmember(0), cfield("_0")))?;
                 body.push_str("if (v.tag == 1) { printf(\"None\"); }\n");
@@ -2615,6 +2795,11 @@ impl<'a> Gen<'a> {
                 ))
             }
             Ty::Generic { base, args } if base == "Result" && args.len() == 2 => Ok(format!(
+                "vfmt_{}({})",
+                iname_of(&ctype_inst(base, args)),
+                path
+            )),
+            Ty::Generic { base, args } if base == "Mat" && args.is_empty() => Ok(format!(
                 "vfmt_{}({})",
                 iname_of(&ctype_inst(base, args)),
                 path
@@ -3697,6 +3882,9 @@ impl<'a> Gen<'a> {
                         {
                             format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
                         }
+                        Ty::Generic { base, args } if base == "Mat" && args.is_empty() => {
+                            format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
+                        }
                         Ty::Generic { base, args } if base == "Result" && args.len() == 2 => {
                             format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
                         }
@@ -3742,6 +3930,32 @@ impl<'a> Gen<'a> {
                     };
                     self.cur_move = saved;
                     format!("v_par_sum_wrap(&{}, {})", v, n)
+                } else if name == "mat_zeros" || name == "mat_identity" || name == "mat_from_rows" {
+                    // M1 matrix constructors (sema checked arity/types).
+                    // Int dims are Copy; the row vector borrows (mat_str).
+                    let mut parts = vec![];
+                    for a in args {
+                        let saved = self.cur_move;
+                        self.cur_move = false;
+                        let t = self.ty_of(a.id);
+                        let v = if self.moves(&t) {
+                            self.mat_str(a)?
+                        } else {
+                            self.emit_expr(a)?
+                        };
+                        self.cur_move = saved;
+                        parts.push(v);
+                    }
+                    match name.as_str() {
+                        "mat_zeros" => format!(
+                            "vmat_zeros((int64_t)({}), (int64_t)({}))",
+                            parts[0], parts[1]
+                        ),
+                        "mat_identity" => {
+                            format!("vmat_identity((int64_t)({}))", parts[0])
+                        }
+                        _ => format!("vmat_from_rows(&{})", parts[0]),
+                    }
                 } else if name == "read_file"
                     || name == "csv_rows"
                     || name == "csv_bad_rows"
@@ -4454,6 +4668,15 @@ impl<'a> Gen<'a> {
                     let r = self.mat_str(receiver)?;
                     self.cur_move = saved;
                     return self.emit_str_method(method, &r, args);
+                }
+                // M1 `Mat` methods (receiver borrows through the pointer
+                // model like `Vec`; fallible kernels return by value).
+                if matches!(&rt, Ty::Generic { base, args } if base == "Mat" && args.is_empty()) {
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let r = self.mat_str(receiver)?;
+                    self.cur_move = saved;
+                    return self.emit_mat_method(method, &r, args);
                 }
                 let (elem_ty, iname) = match &rt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
