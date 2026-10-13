@@ -70,6 +70,10 @@ pub struct Checked {
     /// Composite instantiations printed via `println` (keys into
     /// `generic_insts`); codegen emits format helpers exactly for these.
     pub print_insts: std::collections::HashSet<String>,
+    /// Stage-1 functionals: (kind, arg types) kernels for `map`/`filter`/
+    /// `fold`/`split_apply` over named functions; codegen emits one C
+    /// kernel per entry (deduped).
+    pub fun_kernels: Vec<(String, Vec<Ty>)>,
 }
 
 /// Structural Copy analysis: an ADT is Copy iff all its fields/payloads are.
@@ -133,6 +137,7 @@ pub fn check_with_files(
         structs: HashMap::new(),
         enums: HashMap::new(),
         generic_insts: HashMap::new(),
+        fun_kernels: vec![],
         cur_module: String::new(),
         cur_file: String::new(),
         mod_files: mod_files.clone(),
@@ -247,6 +252,7 @@ pub fn check_with_files(
             // Pipeline stamps owning sources after (sema never sees text).
             files: vec![],
             print_insts: cx.print_insts,
+            fun_kernels: cx.fun_kernels,
             dims: cx.dims,
             param_dims: pdims2,
         }),
@@ -289,6 +295,8 @@ struct Cx {
     /// Composite instantiations actually printed (`println(v)`); codegen
     /// emits `vfmt_`/`vprint_` helpers exactly for these (gated, like kernels).
     print_insts: std::collections::HashSet<String>,
+    /// Stage-1 functional kernels (see `Checked::fun_kernels`).
+    fun_kernels: Vec<(String, Vec<Ty>)>,
     /// NodeId -> resolved dimension (units of measure; absent =
     /// dimensionless). Exported via `Checked::dims` for scale conversions.
     dims: HashMap<NodeId, Dim>,
@@ -4699,6 +4707,54 @@ impl Cx {
                 }
                 res_mat()
             }
+            // Symmetric Jacobi eigen decomposition (values descending, R
+            // convention) and one-sided Jacobi SVD (needs rows >= cols).
+            // Each is self-contained (recomputed per accessor, documented).
+            "eigen_values" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`eigen_values` takes no arguments", None);
+                }
+                self.record_vec_inst(&Ty::Float64);
+                Ty::Generic {
+                    base: "Result".to_string(),
+                    args: vec![
+                        Ty::Generic {
+                            base: "Vec".to_string(),
+                            args: vec![Ty::Float64],
+                        },
+                        shape_err.clone(),
+                    ],
+                }
+            }
+            "eigen_vectors" | "svd_u" | "svd_vt" => {
+                if !args.is_empty() {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`{}` takes no arguments", method),
+                        None,
+                    );
+                }
+                // SVD internals stage through Vec<Float64> buffers.
+                self.record_vec_inst(&Ty::Float64);
+                res_mat()
+            }
+            "svd_s" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`svd_s` takes no arguments", None);
+                }
+                self.record_vec_inst(&Ty::Float64);
+                Ty::Generic {
+                    base: "Result".to_string(),
+                    args: vec![
+                        Ty::Generic {
+                            base: "Vec".to_string(),
+                            args: vec![Ty::Float64],
+                        },
+                        shape_err.clone(),
+                    ],
+                }
+            }
             "clone" => {
                 if !args.is_empty() {
                     self.err("E0201", span, "`clone` takes no arguments", None);
@@ -4710,7 +4766,339 @@ impl Cx {
                 self.err(
                     "E0401",
                     method_span,
-                    format!("unknown method `{}` (available on Mat: rows, cols, transpose, matmul, mat_vec, mat_scale_rows, mat_diag, lu_solve, det, inverse, cholesky, clone)", method),
+                    format!("unknown method `{}` (available on Mat: rows, cols, transpose, matmul, mat_vec, mat_scale_rows, mat_diag, eigen_values, eigen_vectors, svd_u, svd_s, svd_vt, lu_solve, det, inverse, cholesky, clone)", method),
+                    None,
+                );
+                Ty::Unit
+            }
+        }
+    }
+
+    /// Resolve a Stage-1 function operand to (param types, return type).
+    /// Only bare `fun` items qualify (never `main`, methods, or builtins).
+    fn fun_value_sig(&mut self, arg: &Expr, what: &str) -> Option<(Vec<Ty>, Ty)> {
+        let fname = match &arg.kind {
+            ExprKind::Var(n) => n.clone(),
+            _ => {
+                self.err(
+                    "E0401",
+                    arg.span,
+                    format!(
+                        "`{}` needs a named function (e.g. `{}(v, double_it)`); closures and call expressions are deferred",
+                        what, what
+                    ),
+                    None,
+                );
+                return None;
+            }
+        };
+        if fname == "main" {
+            self.err(
+                "E0401",
+                arg.span,
+                format!("`{}` cannot take `main` as a function", what),
+                None,
+            );
+            return None;
+        }
+        let id = match self.resolve_fun(&fname) {
+            Some(id) => id,
+            None => {
+                self.err(
+                    "E0401",
+                    arg.span,
+                    format!("`{}`: unknown function `{}`", what, fname),
+                    Some("pass a `fun` item defined with `fun`".into()),
+                );
+                return None;
+            }
+        };
+        self.sigs.get(&id).cloned()
+    }
+
+    /// Record one functional C kernel instantiation (deduped).
+    fn record_fun_kernel(&mut self, kind: &str, tys: Vec<Ty>) {
+        let entry = (kind.to_string(), tys);
+        if !self.fun_kernels.contains(&entry) {
+            self.fun_kernels.push(entry);
+        }
+    }
+
+    /// C1 Stage-1 functionals over named functions. The function argument
+    /// must be a bare `fun` item (no closures, no methods, no builtins);
+    /// its signature is checked structurally against the element types.
+    /// Records the C kernel instantiation for codegen.
+    fn check_functional(&mut self, span: Span, name: &str, args: &[Expr]) -> Ty {
+        let scalar = |t: &Ty| matches!(t, Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str);
+        let vec_of = |t: Ty| Ty::Generic {
+            base: "Vec".to_string(),
+            args: vec![t],
+        };
+        match name {
+            "map" => {
+                if args.len() != 2 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`map` takes exactly 2 arguments, found {}", args.len()),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let vt = self.check_expr(&args[0]);
+                let t = match vt {
+                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                        args[0].clone()
+                    }
+                    _ => {
+                        self.err(
+                            "E0201",
+                            args[0].span,
+                            format!("`map` expects Vec<T> first, found {}", vt.name()),
+                            None,
+                        );
+                        return Ty::Unit;
+                    }
+                };
+                if !scalar(&t) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!(
+                            "`map` supports Int32/Int64/Float64/Bool/String elements, found {}",
+                            t.name()
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let Some((ps, r)) = self.fun_value_sig(&args[1], "map") else {
+                    return Ty::Unit;
+                };
+                if ps.len() != 1 || ps[0] != t {
+                    self.err(
+                        "E0201",
+                        args[1].span,
+                        format!(
+                            "`map` function must take exactly one {} (found {})",
+                            t.name(),
+                            if ps.is_empty() {
+                                "no arguments".to_string()
+                            } else {
+                                ps.iter().map(|p| p.name()).collect::<Vec<_>>().join(", ")
+                            }
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                if !scalar(&r) {
+                    self.err(
+                        "E0201",
+                        args[1].span,
+                        format!(
+                            "`map` function must return a scalar/String (found {})",
+                            r.name()
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                self.record_vec_inst(&t);
+                self.record_vec_inst(&r);
+                let key = vec![t.clone(), r.clone()];
+                self.record_fun_kernel("map", key);
+                vec_of(r)
+            }
+            "filter" => {
+                if args.len() != 2 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`filter` takes exactly 2 arguments, found {}", args.len()),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let vt = self.check_expr(&args[0]);
+                let t = match vt {
+                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                        args[0].clone()
+                    }
+                    _ => {
+                        self.err(
+                            "E0201",
+                            args[0].span,
+                            format!("`filter` expects Vec<T> first, found {}", vt.name()),
+                            None,
+                        );
+                        return Ty::Unit;
+                    }
+                };
+                if !scalar(&t) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!(
+                            "`filter` supports Int32/Int64/Float64/Bool/String elements, found {}",
+                            t.name()
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let Some((ps, r)) = self.fun_value_sig(&args[1], "filter") else {
+                    return Ty::Unit;
+                };
+                if ps.len() != 1 || ps[0] != t || r != Ty::Bool {
+                    self.err(
+                        "E0201",
+                        args[1].span,
+                        format!("`filter` predicate must be `({}) -> Bool`", t.name()),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                self.record_vec_inst(&t);
+                let key = vec![t.clone()];
+                self.record_fun_kernel("filter", key);
+                vec_of(t)
+            }
+            "fold" => {
+                if args.len() != 3 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`fold` takes exactly 3 arguments, found {}", args.len()),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let vt = self.check_expr(&args[0]);
+                let t = match vt {
+                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                        args[0].clone()
+                    }
+                    _ => {
+                        self.err(
+                            "E0201",
+                            args[0].span,
+                            format!("`fold` expects Vec<T> first, found {}", vt.name()),
+                            None,
+                        );
+                        return Ty::Unit;
+                    }
+                };
+                if !scalar(&t) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!(
+                            "`fold` supports Int32/Int64/Float64/Bool/String elements, found {}",
+                            t.name()
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let a = self.check_expr(&args[1]);
+                if !scalar(&a) {
+                    self.err(
+                        "E0201",
+                        args[1].span,
+                        format!(
+                            "`fold` accumulator must be a scalar/String (found {})",
+                            a.name()
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let Some((ps, r)) = self.fun_value_sig(&args[2], "fold") else {
+                    return Ty::Unit;
+                };
+                if ps.len() != 2 || ps[0] != a || ps[1] != t || r != a {
+                    self.err(
+                        "E0201",
+                        args[2].span,
+                        format!(
+                            "`fold` function must be `({}, {}) -> {}`",
+                            a.name(),
+                            t.name(),
+                            a.name()
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                self.record_vec_inst(&t);
+                self.record_vec_inst(&a);
+                let key = vec![a.clone(), t.clone()];
+                self.record_fun_kernel("fold", key);
+                a
+            }
+            "split_apply" => {
+                // Honest tapply core: per-level Float64 groups through a
+                // named `(Vec<Float64>) -> Float64` combine (level order).
+                if args.len() != 3 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "`split_apply` takes exactly 3 arguments, found {}",
+                            args.len()
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let ft = self.check_expr(&args[0]);
+                if !matches!(&ft, Ty::Generic { base, args } if base == "Factor" && args.is_empty())
+                {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`split_apply` expects Factor first, found {}", ft.name()),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let vt = self.check_expr(&args[1]);
+                let want = vec_of(Ty::Float64);
+                if vt != want {
+                    self.err(
+                        "E0201",
+                        args[1].span,
+                        format!(
+                            "`split_apply` expects Vec<Float64> second, found {}",
+                            vt.name()
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let Some((ps, r)) = self.fun_value_sig(&args[2], "split_apply") else {
+                    return Ty::Unit;
+                };
+                if ps.len() != 1 || ps[0] != want || r != Ty::Float64 {
+                    self.err(
+                        "E0201",
+                        args[2].span,
+                        "`split_apply` combine must be `(Vec<Float64>) -> Float64`".to_string(),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                self.record_vec_inst(&Ty::Float64);
+                self.record_ty(&ft);
+                self.record_fun_kernel("split_apply", vec![]);
+                want
+            }
+            _ => {
+                self.err(
+                    "E0401",
+                    span,
+                    format!("unknown functional `{}`", name),
                     None,
                 );
                 Ty::Unit
@@ -5396,6 +5784,11 @@ impl Cx {
             };
             self.record_ty(&f);
             return f;
+        } else if name == "map" || name == "filter" || name == "fold" || name == "split_apply" {
+            // C1 (Stage 1): functionals over NAMED functions (closures are
+            // deferred; anything but a bare `fun` name is E0401). Element
+            // and result types are scalars/String (first-order kernels).
+            return self.check_functional(span, name, args);
         } else if name == "write_file" {
             // J6: `write_file(path, content): Result<Int64, String>`
             // (bytes written).

@@ -1567,7 +1567,14 @@ impl<'a> Cx<'a> {
                     ),
             ),
             ExprKind::Call { name, args } => {
-                let borrow_only = name == "print" || name == "println";
+                let borrow_only = name == "print"
+                    || name == "println"
+                    // C1 functionals borrow their data (kernels clone what
+                    // they keep; fold clones owned inits at the boundary).
+                    || name == "map"
+                    || name == "filter"
+                    || name == "fold"
+                    || name == "split_apply";
                 for a in args {
                     let moves = !borrow_only && self.moves_ty(a.id);
                     self.check_expr(a, moves);

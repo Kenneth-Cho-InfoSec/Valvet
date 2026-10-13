@@ -176,10 +176,26 @@ no-special-functions fallback if beta/gamma slip. Fixtures vs R
 
 ## P4: functionals (needs closure Stage 1)
 
-**C1. `map/filter/fold`.** With function items as values: `map(v, f)`,
+**C1. `map/filter/fold`.** SHIPPED as compiler builtins over NAMED
+functions (Stage 1 core without Fn types: the fun operand lowers to its
+C symbol into a monomorphic kernel; anything but a bare `fun` name is
+E0401 with a closures-deferred message). `map`/`filter`/`fold` (scalar/
+String elements and results, owned values clone at the kernel boundary)
+plus `split_apply` (per-level Float64 groups in level order through a
+named combine). Data borrows (ownership checker extended). 3 fixtures
+vs Python comprehensions, 182/182 green, ASan-clean. Stage 2 (capturing
+closures) explicitly deferred: no port has demanded it. With function items as values: `map(v, f)`,
 `filter(v, pred)`, `fold(v, init, f)` over `Vec`, plus `split_apply`
 (group indices + named combine fn) covering the honest core of
 `tapply`. Capturing closures (Stage 2) only if real ports demand it.
+
+## Postscript: Jacobi eigen/SVD (M1 tail, shipped with C1)
+Symmetric cyclic-Jacobi `eigen_values`/`eigen_vectors` (descending, R
+convention) and one-sided Jacobi `svd_u`/`svd_s`/`svd_vt` (rows >= cols;
+`Err` otherwise), each self-contained per accessor. Fixed sweep caps
+with exact-zero exits (total, no tuning). Verified to 1e-12
+(orthonormality, reconstruction, closed forms). Also links `-lm`
+explicitly (some drivers need it for sqrt). 1 fixture, ASan-clean.
 
 ## Order and verification
 

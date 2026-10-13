@@ -1,0 +1,7 @@
+fun bad(x: Int64): Float64 {
+    return x as Float64;
+}
+
+fun main() {
+    println(map(vec![1.0], bad));
+}

@@ -685,6 +685,7 @@ pub fn lower(checked: &Checked) -> Result<String, Ice> {
             )
             .collect(),
         print_insts: checked.print_insts.clone(),
+        fun_kernels: checked.fun_kernels.clone(),
         structs: checked.structs.clone(),
         enums: checked.enums.clone(),
         generic_insts: checked.generic_insts.clone(),
@@ -764,6 +765,8 @@ struct Gen<'a> {
     /// Composite instantiations printed via `println` (keys into
     /// `generic_insts`); format helpers emit exactly for these.
     print_insts: std::collections::HashSet<String>,
+    /// Stage-1 functional kernels (see sema's `Checked::fun_kernels`).
+    fun_kernels: Vec<(String, Vec<Ty>)>,
     /// NodeId -> resolved dimension (units of measure; absent =
     /// dimensionless). Drives `*k` scale conversions.
     dims: HashMap<NodeId, Dim>,
@@ -1854,6 +1857,13 @@ impl<'a> Gen<'a> {
                 self.emit_inst_clone(&base, &args)?;
             }
         }
+        // C1 functional kernels over named functions (need vec layouts
+        // above; user-function prototypes were emitted before definitions).
+        // Sema deduped entries; check order is deterministic.
+        let fkeys = self.fun_kernels.clone();
+        for (kind, tys) in &fkeys {
+            self.emit_fun_kernel(kind, tys)?;
+        }
         // J1 string kernels (need vec/union layouts above to exist).
         self.emit_str_kernels()?;
         // J2 CSV/JSON/file kernels (need vec/union layouts above to exist).
@@ -2713,7 +2723,40 @@ impl<'a> Gen<'a> {
         self.out.push_str(&format!(
             "static {vct} vmat_diag({ct} *v) {{\n{vct} x = {{NULL, 0, 0}};\nint64_t n = v->rows < v->cols ? v->rows : v->cols;\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\nfor (int64_t i = 0; i < n; ++i) {{ x.data[i] = v->data[i * v->cols + i]; }}\n}}\nreturn x;\n}}\n"
         ));
-        let _ = (rct, rvct, rsct, vvct, vct, ct);
+        // Symmetric Jacobi eigen decomposition + one-sided Jacobi SVD
+        // (shared helpers below; wrappers gated on their Result layouts).
+        // Fixed 100-sweep cap with exact-zero early exit: total, no tuning
+        // knobs. Eigenpairs sort descending (R convention).
+        if want_sol || want_mm {
+            self.out.push_str(
+            "static void vmat_jacobi(double *a, double *v, int64_t n) {\nfor (int64_t s = 0; s < 100; ++s) {\ndouble off = 0.0;\nfor (int64_t p = 0; p < n; ++p) {\nfor (int64_t q = p + 1; q < n; ++q) { double t = a[p * n + q]; off += t * t; }\n}\nif (off == 0.0) { break; }\nfor (int64_t p = 0; p < n; ++p) {\nfor (int64_t q = p + 1; q < n; ++q) {\ndouble apq = a[p * n + q];\nif (apq == 0.0) { continue; }\ndouble app = a[p * n + p];\ndouble aqq = a[q * n + q];\ndouble tau = (aqq - app) / (2.0 * apq);\ndouble ab = tau < 0 ? -tau : tau;\ndouble t = (tau >= 0 ? 1.0 : -1.0) / (ab + sqrt(tau * tau + 1.0));\ndouble c = 1.0 / sqrt(t * t + 1.0);\ndouble sn = c * t;\ndouble appn = c * c * app - 2.0 * sn * c * apq + sn * sn * aqq;\ndouble aqqn = sn * sn * app + 2.0 * sn * c * apq + c * c * aqq;\nfor (int64_t k = 0; k < n; ++k) {\nif (k == p || k == q) { continue; }\ndouble akp = a[k * n + p];\ndouble akq = a[k * n + q];\na[k * n + p] = c * akp - sn * akq;\na[p * n + k] = a[k * n + p];\na[k * n + q] = sn * akp + c * akq;\na[q * n + k] = a[k * n + q];\n}\na[p * n + p] = appn;\na[q * n + q] = aqqn;\na[p * n + q] = 0.0;\na[q * n + p] = 0.0;\nif (v) {\nfor (int64_t k = 0; k < n; ++k) {\ndouble vkp = v[k * n + p];\ndouble vkq = v[k * n + q];\nv[k * n + p] = c * vkp - sn * vkq;\nv[k * n + q] = sn * vkp + c * vkq;\n}\n}\n}\n}\n}\n}\n",
+        );
+            self.out.push_str(
+            "static int vmat_svd_full(double *w, int64_t m, int64_t n, double *u, double *sg, double *vt) {\nif (m < n) { return 0; }\nfor (int64_t s = 0; s < 30; ++s) {\ndouble off = 0.0;\nfor (int64_t p = 0; p < n; ++p) {\nfor (int64_t q = p + 1; q < n; ++q) {\ndouble g = 0.0;\nfor (int64_t k = 0; k < m; ++k) { g += w[k * n + p] * w[k * n + q]; }\noff += g * g;\n}\n}\nif (off == 0.0) { break; }\nfor (int64_t p = 0; p < n; ++p) {\nfor (int64_t q = p + 1; q < n; ++q) {\ndouble al = 0.0;\ndouble be = 0.0;\ndouble ga = 0.0;\nfor (int64_t k = 0; k < m; ++k) {\ndouble x = w[k * n + p];\ndouble y = w[k * n + q];\nal += x * x;\nbe += y * y;\nga += x * y;\n}\nif (ga == 0.0) { continue; }\ndouble tau = (be - al) / (2.0 * ga);\ndouble ab = tau < 0 ? -tau : tau;\ndouble t = (tau >= 0 ? 1.0 : -1.0) / (ab + sqrt(tau * tau + 1.0));\ndouble c = 1.0 / sqrt(t * t + 1.0);\ndouble sn = c * t;\nfor (int64_t k = 0; k < m; ++k) {\ndouble x = w[k * n + p];\ndouble y = w[k * n + q];\nw[k * n + p] = c * x - sn * y;\nw[k * n + q] = sn * x + c * y;\n}\nfor (int64_t k = 0; k < n; ++k) {\ndouble x = vt[k * n + p];\ndouble y = vt[k * n + q];\nvt[k * n + p] = c * x - sn * y;\nvt[k * n + q] = sn * x + c * y;\n}\n}\n}\n}\nfor (int64_t j = 0; j < n; ++j) {\ndouble s = 0.0;\nfor (int64_t k = 0; k < m; ++k) { double x = w[k * n + j]; s += x * x; }\nsg[j] = sqrt(s);\nfor (int64_t k = 0; k < m; ++k) { u[k * n + j] = 0.0; }\n}\nfor (int64_t i = 0; i < n; ++i) {\nint64_t b = i;\nfor (int64_t j = i + 1; j < n; ++j) { if (sg[j] > sg[b]) { b = j; } }\nif (b != i) {\ndouble t = sg[i]; sg[i] = sg[b]; sg[b] = t;\nfor (int64_t k = 0; k < m; ++k) { double x = w[k * n + i]; w[k * n + i] = w[k * n + b]; w[k * n + b] = x; }\nfor (int64_t k = 0; k < n; ++k) { double x = vt[k * n + i]; vt[k * n + i] = vt[k * n + b]; vt[k * n + b] = x; }\n}\n}\nfor (int64_t j = 0; j < n; ++j) {\nif (sg[j] > 0.0) {\nfor (int64_t k = 0; k < m; ++k) { u[k * n + j] = w[k * n + j] / sg[j]; }\n}\n}\nfor (int64_t i = 0; i < n; ++i) {\nfor (int64_t j = i + 1; j < n; ++j) { double x = vt[i * n + j]; vt[i * n + j] = vt[j * n + i]; vt[j * n + i] = x; }\n}\nreturn 1;\n}\n",
+        );
+        }
+        // Eigen/SVD wrappers (gated on their own Result layouts; the
+        // helpers above gate on either).
+        if want_sol {
+            self.out.push_str(&format!(
+            "static {rvct} vmat_eigen_values({ct} *v) {{\nif (v->rows != v->cols) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->rows, .v_found = v->cols }} }} }} }};\nreturn o;\n}}\nint64_t n = v->rows;\n{vct} x = {{NULL, 0, 0}};\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nvmat_jacobi(a, (double *)0, n);\nfor (int64_t i = 0; i < n; ++i) {{ x.data[i] = a[i * n + i]; }}\nfree(a);\nfor (int64_t i = 0; i < n; ++i) {{\nint64_t b = i;\nfor (int64_t j = i + 1; j < n; ++j) {{ if (x.data[j] > x.data[b]) {{ b = j; }} }}\nif (b != i) {{ double t = x.data[i]; x.data[i] = x.data[b]; x.data[b] = t; }}\n}}\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
+        ));
+            self.out.push_str(&format!(
+            "static {rvct} vmat_svd_s({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\n{vct} x = {{NULL, 0, 0}};\nif (n > 0) {{\nx.data = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\ndouble *w = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!w) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < m * n; ++i) {{ w[i] = v->data[i]; }}\ndouble *u = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!u) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *vt = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!vt) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{\nfor (int64_t j = 0; j < n; ++j) {{ vt[i * n + j] = i == j ? 1.0 : 0.0; }}\n}}\nif (!vmat_svd_full(w, m, n, u, x.data, vt)) {{\nfree(w); free(u); free(vt); free(x.data);\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn o;\n}}\nfree(w); free(u); free(vt);\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
+        ));
+        }
+        if want_mm {
+            self.out.push_str(&format!(
+            "static {rct} vmat_eigen_vectors({ct} *v) {{\nif (v->rows != v->cols) {{ return {shape}; }}\nint64_t n = v->rows;\n{ct} o = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ o.data[i * n + i] = 1.0; }}\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nvmat_jacobi(a, o.data, n);\ndouble *d = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!d) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{ d[i] = a[i * n + i]; }}\nfree(a);\nfor (int64_t i = 0; i < n; ++i) {{\nint64_t b = i;\nfor (int64_t j = i + 1; j < n; ++j) {{ if (d[j] > d[b]) {{ b = j; }} }}\nif (b != i) {{\ndouble t = d[i]; d[i] = d[b]; d[b] = t;\nfor (int64_t k = 0; k < n; ++k) {{ double u = o.data[k * n + i]; o.data[k * n + i] = o.data[k * n + b]; o.data[k * n + b] = u; }}\n}}\n}}\nfree(d);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n",
+            shape = shape_lit(&rct, "v->rows", "v->cols")
+        ));
+            self.out.push_str(&format!(
+            "static {rct} vmat_svd_u({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\n{ct} o = vmat_zeros(m, n);\ndouble *w = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!w) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < m * n; ++i) {{ w[i] = v->data[i]; }}\ndouble *sg = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!sg) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *vt = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!vt) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{\nfor (int64_t j = 0; j < n; ++j) {{ vt[i * n + j] = i == j ? 1.0 : 0.0; }}\n}}\nif (!vmat_svd_full(w, m, n, o.data, sg, vt)) {{\nfree(w); free(sg); free(vt); free(o.data);\n{rct} r = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn r;\n}}\nfree(w); free(sg); free(vt);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n"
+        ));
+            self.out.push_str(&format!(
+            "static {rct} vmat_svd_vt({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\n{ct} o = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ o.data[i * n + i] = 1.0; }}\ndouble *w = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!w) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < m * n; ++i) {{ w[i] = v->data[i]; }}\ndouble *u = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!u) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *sg = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!sg) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nif (!vmat_svd_full(w, m, n, u, sg, o.data)) {{\nfree(w); free(u); free(sg); free(o.data);\n{rct} r = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn r;\n}}\nfree(w); free(u); free(sg);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n"
+        ));
+        }
         Ok(())
     }
 
@@ -2801,6 +2844,11 @@ impl<'a> Gen<'a> {
             "transpose" => Ok(format!("vmat_transpose({})", rptr)),
             "det" => Ok(format!("vmat_det({})", rptr)),
             "cholesky" => Ok(format!("vmat_cholesky({})", rptr)),
+            "eigen_values" => Ok(format!("vmat_eigen_values({})", rptr)),
+            "eigen_vectors" => Ok(format!("vmat_eigen_vectors({})", rptr)),
+            "svd_u" => Ok(format!("vmat_svd_u({})", rptr)),
+            "svd_s" => Ok(format!("vmat_svd_s({})", rptr)),
+            "svd_vt" => Ok(format!("vmat_svd_vt({})", rptr)),
             "clone" => Ok(format!("v_clone_Mat_({})", r)),
             "inverse" => Ok(format!("vmat_inverse({})", rptr)),
             "matmul" => {
@@ -2865,6 +2913,188 @@ impl<'a> Gen<'a> {
                 Ok(format!("vfactor_relevel({}, {})", rptr, v))
             }
             _ => Err(Ice("unknown Factor method".into())),
+        }
+    }
+
+    /// C1 Stage-1 functional kernels: one C loop per (kind, types)
+    /// instantiation, taking the named function as a pointer (sema
+    /// recorded exactly the used ones). Owned elements clone into the
+    /// callee (which frees its params); results transfer fresh.
+    fn emit_fun_kernel(&mut self, kind: &str, tys: &[Ty]) -> Result<(), Ice> {
+        let bad = || Ice(format!("bad functional kernel {}<..>", kind));
+        match kind {
+            "map" => {
+                let (t, u) = match tys {
+                    [t, u] => (t.clone(), u.clone()),
+                    _ => return Err(bad()),
+                };
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let vu = ctype_inst("Vec", std::slice::from_ref(&u));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let uin = vu.strip_prefix('V').unwrap_or(&vu).to_string();
+                let ct = self.cty(&t);
+                let cu = self.cty(&u);
+                let arg = if self.type_needs_drop(&t) {
+                    self.clone_call(&t, "v->data[i]")
+                } else {
+                    "v->data[i]".to_string()
+                };
+                self.out.push_str(&format!(
+                    "static {vu} vmap_{tin}_{uin}({vt} *v, {cu} (*f)({ct})) {{\n{vu} o = vvec_{uin}_new();\nfor (int64_t i = 0; i < v->len; ++i) {{\n{ct} a = {arg};\nvvec_{uin}_push(&o, f(a));\n}}\nreturn o;\n}}\n"
+                ));
+            }
+            "filter" => {
+                let t = match tys {
+                    [t] => t.clone(),
+                    _ => return Err(bad()),
+                };
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let ct = self.cty(&t);
+                let arg = if self.type_needs_drop(&t) {
+                    self.clone_call(&t, "v->data[i]")
+                } else {
+                    "v->data[i]".to_string()
+                };
+                let keep = if self.type_needs_drop(&t) {
+                    self.clone_call(&t, "v->data[i]")
+                } else {
+                    "v->data[i]".to_string()
+                };
+                self.out.push_str(&format!(
+                    "static {vt} vfilter_{tin}({vt} *v, int (*f)({ct})) {{\n{vt} o = vvec_{tin}_new();\nfor (int64_t i = 0; i < v->len; ++i) {{\n{ct} a = {arg};\nif (f(a)) {{ vvec_{tin}_push(&o, {keep}); }}\n}}\nreturn o;\n}}\n"
+                ));
+            }
+            "fold" => {
+                let (a, t) = match tys {
+                    [a, t] => (a.clone(), t.clone()),
+                    _ => return Err(bad()),
+                };
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let va = ctype_inst("Vec", std::slice::from_ref(&a));
+                let ain = va.strip_prefix('V').unwrap_or(&va).to_string();
+                let ct = self.cty(&t);
+                let ca = self.cty(&a);
+                let arg = if self.type_needs_drop(&t) {
+                    self.clone_call(&t, "v->data[i]")
+                } else {
+                    "v->data[i]".to_string()
+                };
+                self.out.push_str(&format!(
+                    "static {ca} vfold_{ain}_{tin}({vt} *v, {ca} init, {ca} (*f)({ca}, {ct})) {{\n{ca} acc = init;\nfor (int64_t i = 0; i < v->len; ++i) {{\n{ct} x = {arg};\nacc = f(acc, x);\n}}\nreturn acc;\n}}\n"
+                ));
+            }
+            "split_apply" => {
+                self.out.push_str(
+                    "static VVec_Float64 vsplit_apply(VFactor_ *f, VVec_Float64 *v, double (*c)(VVec_Float64)) {\nVVec_Float64 o = vvec_Vec_Float64_new();\nfor (int64_t li = 0; li < f->levels.len; ++li) {\nVVec_Float64 g = vvec_Vec_Float64_new();\nfor (int64_t i = 0; i < f->codes.len && i < v->len; ++i) {\nif (f->codes.data[i] == li + 1) { vvec_Vec_Float64_push(&g, v->data[i]); }\n}\nvvec_Vec_Float64_push(&o, c(g));\n}\nreturn o;\n}\n",
+                );
+            }
+            _ => return Err(bad()),
+        }
+        Ok(())
+    }
+
+    /// C symbol for a Stage-1 function operand (bare `fun` item only).
+    fn functional_sym(&self, arg: &Expr) -> Result<String, Ice> {
+        let fname = match &arg.kind {
+            ExprKind::Var(n) => n.clone(),
+            _ => return Err(Ice("functional without named function".into())),
+        };
+        let (m, f) = self
+            .resolve_fun(&fname)
+            .ok_or_else(|| Ice(format!("unknown function {}", fname)))?;
+        Ok(format!("{}_fn", cfun(&m, &f)))
+    }
+
+    /// Element type of a checked `Vec` argument.
+    fn functional_vec_elem(&self, id: NodeId) -> Result<Ty, Ice> {
+        match self.ty_of(id) {
+            Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => Ok(args[0].clone()),
+            _ => Err(Ice("functional without Vec argument".into())),
+        }
+    }
+
+    /// C1 call-site lowering for `map`/`filter`/`fold`/`split_apply`:
+    /// data borrows (kernels clone what they keep); the function operand
+    /// lowers to its C symbol (prototyped with all other funs).
+    fn emit_functional(&mut self, name: &str, e: &Expr, args: &[Expr]) -> Result<String, Ice> {
+        match name {
+            "map" => {
+                let a = args.first().ok_or_else(|| Ice("map arity".into()))?;
+                let f = args.get(1).ok_or_else(|| Ice("map arity".into()))?;
+                let t = self.functional_vec_elem(a.id)?;
+                let u = match self.ty_of(e.id) {
+                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                        args[0].clone()
+                    }
+                    _ => return Err(Ice("map without Vec result".into())),
+                };
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let v = self.mat_str(a)?;
+                self.cur_move = saved;
+                let fsym = self.functional_sym(f)?;
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let vu = ctype_inst("Vec", std::slice::from_ref(&u));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let uin = vu.strip_prefix('V').unwrap_or(&vu).to_string();
+                Ok(format!("vmap_{}_{}(&{}, {})", tin, uin, v, fsym))
+            }
+            "filter" => {
+                let a = args.first().ok_or_else(|| Ice("filter arity".into()))?;
+                let f = args.get(1).ok_or_else(|| Ice("filter arity".into()))?;
+                let t = self.functional_vec_elem(a.id)?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let v = self.mat_str(a)?;
+                self.cur_move = saved;
+                let fsym = self.functional_sym(f)?;
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                Ok(format!("vfilter_{}(&{}, {})", tin, v, fsym))
+            }
+            "fold" => {
+                let a = args.first().ok_or_else(|| Ice("fold arity".into()))?;
+                let b = args.get(1).ok_or_else(|| Ice("fold arity".into()))?;
+                let f = args.get(2).ok_or_else(|| Ice("fold arity".into()))?;
+                let t = self.functional_vec_elem(a.id)?;
+                let at = self.ty_of(e.id);
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let v = self.mat_str(a)?;
+                // Init transfers into the kernel (which frees through the
+                // fold fn): clone owned inits so the caller keeps its slot.
+                let bt = self.ty_of(b.id);
+                let init = if self.moves(&bt) {
+                    let m = self.mat_str(b)?;
+                    self.clone_call(&bt, &m)
+                } else {
+                    self.emit_expr(b)?
+                };
+                self.cur_move = saved;
+                let fsym = self.functional_sym(f)?;
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let va = ctype_inst("Vec", std::slice::from_ref(&at));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let ain = va.strip_prefix('V').unwrap_or(&va).to_string();
+                Ok(format!("vfold_{}_{}(&{}, {}, {})", ain, tin, v, init, fsym))
+            }
+            "split_apply" => {
+                let a = args
+                    .first()
+                    .ok_or_else(|| Ice("split_apply arity".into()))?;
+                let b = args.get(1).ok_or_else(|| Ice("split_apply arity".into()))?;
+                let f = args.get(2).ok_or_else(|| Ice("split_apply arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let fv = self.mat_str(a)?;
+                let vv = self.mat_str(b)?;
+                self.cur_move = saved;
+                let fsym = self.functional_sym(f)?;
+                Ok(format!("vsplit_apply(&{}, &{}, {})", fv, vv, fsym))
+            }
+            _ => Err(Ice("unknown functional".into())),
         }
     }
 
@@ -4306,6 +4536,14 @@ impl<'a> Gen<'a> {
                     }
                     self.nulls.extend(shielded);
                     format!("({}){{ {} }}", ctype_name(&q), parts.join(", "))
+                } else if name == "map"
+                    || name == "filter"
+                    || name == "fold"
+                    || name == "split_apply"
+                {
+                    // C1 Stage-1 functionals (sema checked shapes and recorded
+                    // the kernel; the function operand lowers to its C symbol).
+                    self.emit_functional(name, e, args)?
                 } else {
                     // Arguments: move owned values into the callee (callee frees params).
                     let saved = self.cur_move;
@@ -5755,7 +5993,10 @@ pub fn cc_build(c_file: &Path, exe: &Path) -> Result<(), String> {
         .arg("-pthread")
         .arg("-o")
         .arg(exe)
-        .arg(c_file);
+        .arg(c_file)
+        // Jacobi kernels (eigen/SVD) and Cholesky call sqrt: link libm
+        // explicitly (some drivers resolve it implicitly, others do not).
+        .arg("-lm");
     // libisl lives in vgcc/usr/lib; the driver needs it for cc1.
     let mut ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
     if let Ok(home) = std::env::var("HOME") {
