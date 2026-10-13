@@ -1,0 +1,4 @@
+fun main() {
+    val f = factor_from_strings(vec!["a", "b"]);
+    println(f.frobnicate());
+}

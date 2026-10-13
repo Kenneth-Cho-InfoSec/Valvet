@@ -85,6 +85,8 @@ pub fn is_copy_ty(
         Ty::Generic { base, .. } if base == "Vec" => false,
         // `Mat` owns its data buffer (see layout in codegen).
         Ty::Generic { base, .. } if base == "Mat" => false,
+        // `Factor` owns level/code buffers (see layout in codegen).
+        Ty::Generic { base, .. } if base == "Factor" => false,
         // Shared references are Copy; exclusive ones move.
         Ty::Reference { mutable, .. } => !mutable,
         Ty::Generic { args, .. } => args.iter().all(|a| is_copy_ty(a, structs, enums)),
@@ -330,6 +332,7 @@ fn is_builtin_type_name(name: &str) -> bool {
             | "Missing"
             | "Rng"
             | "Mat"
+            | "Factor"
     )
 }
 
@@ -883,6 +886,7 @@ impl Cx {
                 || base == "Missing"
                 || base == "Rng"
                 || base == "Mat"
+                || base == "Factor"
             {
                 for a in args {
                     self.record_ty(a);
@@ -967,7 +971,8 @@ impl Cx {
                     | ("Vec", 1)
                     | ("Missing", 1)
                     | ("Rng", 0)
-                    | ("Mat", 0) => {
+                    | ("Mat", 0)
+                    | ("Factor", 0) => {
                         let t = Ty::Generic {
                             base: base.clone(),
                             args: resolved,
@@ -980,7 +985,7 @@ impl Cx {
                             "E0201",
                             span,
                             format!("unknown generic type `{}`, or wrong arity", base),
-                            Some("only `Option<T>`, `Result<T, E>`, `Vec<T>`, `Missing<T>`, `Rng` and `Mat` are supported".into()),
+                            Some("only `Option<T>`, `Result<T, E>`, `Vec<T>`, `Missing<T>`, `Rng`, `Mat` and `Factor` are supported".into()),
                         );
                         Ty::Unit
                     }
@@ -989,7 +994,7 @@ impl Cx {
             Ty::Named(n) => match n.as_str() {
                 // Bare `Mat`/`Rng` annotations (parser only makes Generics
                 // with `<...>`; these arity-0 builtins never take args).
-                "Mat" | "Rng" => {
+                "Mat" | "Rng" | "Factor" => {
                     let t = Ty::Generic {
                         base: n.clone(),
                         args: vec![],
@@ -2696,6 +2701,11 @@ impl Cx {
                         self.record_ty(&t);
                         t
                     }
+                    Ty::Generic { base, args } if base == "Factor" && args.is_empty() => {
+                        let t = self.check_factor_method(e.span, method, *method_span, call_args);
+                        self.record_ty(&t);
+                        t
+                    }
                     Ty::Str => {
                         let t = self.check_str_method(e.span, method, *method_span, call_args);
                         self.record_ty(&t);
@@ -2709,7 +2719,7 @@ impl Cx {
                             "E0401",
                             *method_span,
                             format!(
-                                "type {} has no methods (only `Vec`, `Mat`, `String` and `Rng` have methods)",
+                                "type {} has no methods (only `Vec`, `Mat`, `Factor`, `String` and `Rng` have methods)",
                                 rt.name()
                             ),
                             None,
@@ -4633,6 +4643,89 @@ impl Cx {
         }
     }
 
+    /// `Factor` methods (F1): level/code accessors plus the level-algebra
+    /// verbs. Code 0 is missing (`""` on construction, `"NA"` in
+    /// `as_strings`); all verbs are total and preserve code-0 entries.
+    fn check_factor_method(
+        &mut self,
+        span: Span,
+        method: &str,
+        method_span: Span,
+        args: &[Expr],
+    ) -> Ty {
+        let fac_ty = || Ty::Generic {
+            base: "Factor".to_string(),
+            args: vec![],
+        };
+        let str_vec = || Ty::Generic {
+            base: "Vec".to_string(),
+            args: vec![Ty::Str],
+        };
+        let int_vec = || Ty::Generic {
+            base: "Vec".to_string(),
+            args: vec![Ty::Int32],
+        };
+        match method {
+            "levels" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`levels` takes no arguments", None);
+                }
+                self.record_vec_inst(&Ty::Str);
+                str_vec()
+            }
+            "codes" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`codes` takes no arguments", None);
+                }
+                self.record_vec_inst(&Ty::Int32);
+                int_vec()
+            }
+            "as_strings" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`as_strings` takes no arguments", None);
+                }
+                self.record_vec_inst(&Ty::Str);
+                str_vec()
+            }
+            "relevel" => {
+                if args.len() != 1 {
+                    self.err("E0201", span, "`relevel` takes exactly 1 argument", None);
+                    return fac_ty();
+                }
+                let at = self.check_expr(&args[0]);
+                if at != Ty::Str {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`relevel` expects String, found {}", at.name()),
+                        None,
+                    );
+                }
+                fac_ty()
+            }
+            "reorder_by_count" | "droplevels" | "clone" => {
+                if !args.is_empty() {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`{}` takes no arguments", method),
+                        None,
+                    );
+                }
+                fac_ty()
+            }
+            _ => {
+                self.err(
+                    "E0401",
+                    method_span,
+                    format!("unknown method `{}` (available on Factor: levels, codes, as_strings, relevel, reorder_by_count, droplevels, clone)", method),
+                    None,
+                );
+                Ty::Unit
+            }
+        }
+    }
+
     /// `String` methods (J1): splitting, trimming, and total parsing.
     /// Parsing yields `Option` (never traps): `None` on any malformed input.
     fn check_str_method(
@@ -4876,6 +4969,7 @@ impl Cx {
                 args.len() == 2 && Self::printable(&args[0]) && Self::printable(&args[1])
             }
             Ty::Generic { base, args } if base == "Mat" => args.is_empty(),
+            Ty::Generic { base, args } if base == "Factor" => args.is_empty(),
             _ => false,
         }
     }
@@ -4893,6 +4987,9 @@ impl Cx {
                 }
             }
             Ty::Generic { base, args } if base == "Mat" => {
+                out.insert(Self::inst_key(base, args));
+            }
+            Ty::Generic { base, args } if base == "Factor" => {
                 out.insert(Self::inst_key(base, args));
             }
             _ => {}
@@ -4922,7 +5019,7 @@ impl Cx {
                     "E0201",
                     span,
                     format!(
-                        "`{}` supports Int32/Int64/Float64/Bool/String, Vec<T>, Option<T>, Result<T, E>, Missing<T>, Mat (of printable types); found {}",
+                        "`{}` supports Int32/Int64/Float64/Bool/String, Vec<T>, Option<T>, Result<T, E>, Missing<T>, Mat, Factor (of printable types); found {}",
                         name,
                         t.name()
                     ),
@@ -4930,6 +5027,23 @@ impl Cx {
                 );
             } else {
                 Self::record_print_insts(&t, &mut self.print_insts);
+                // `Factor` printing nests `Vec<String>`/`Vec<Int32>`
+                // formatters; record those layouts too (like `Mat`, the
+                // outer key alone is not enough for codegen).
+                if matches!(&t, Ty::Generic { base, args } if base == "Factor" && args.is_empty()) {
+                    let sv = Ty::Generic {
+                        base: "Vec".to_string(),
+                        args: vec![Ty::Str],
+                    };
+                    let iv = Ty::Generic {
+                        base: "Vec".to_string(),
+                        args: vec![Ty::Int32],
+                    };
+                    Self::record_print_insts(&sv, &mut self.print_insts);
+                    Self::record_print_insts(&iv, &mut self.print_insts);
+                    self.record_vec_inst(&Ty::Str);
+                    self.record_vec_inst(&Ty::Int32);
+                }
             }
             return Ty::Unit;
         }
@@ -5116,6 +5230,51 @@ impl Cx {
             };
             self.record_ty(&t);
             return t;
+        } else if name == "factor_from_strings" {
+            // F1: `factor_from_strings(Vec<String>): Factor` (levels in
+            // first-appearance order; `""` inputs become code 0 = missing).
+            if args.len() != 1 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!(
+                        "`factor_from_strings` takes exactly 1 argument, found {}",
+                        args.len()
+                    ),
+                    None,
+                );
+                let f = Ty::Generic {
+                    base: "Factor".to_string(),
+                    args: vec![],
+                };
+                self.record_ty(&f);
+                return f;
+            }
+            let at = self.check_expr(&args[0]);
+            let want = Ty::Generic {
+                base: "Vec".to_string(),
+                args: vec![Ty::Str],
+            };
+            if at != want {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!(
+                        "`factor_from_strings` expects Vec<String>, found {}",
+                        at.name()
+                    ),
+                    None,
+                );
+            } else {
+                self.record_ty(&at);
+            }
+            self.record_vec_inst(&Ty::Int32);
+            let f = Ty::Generic {
+                base: "Factor".to_string(),
+                args: vec![],
+            };
+            self.record_ty(&f);
+            return f;
         } else if name == "write_file" {
             // J6: `write_file(path, content): Result<Int64, String>`
             // (bytes written).

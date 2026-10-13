@@ -1,0 +1,16 @@
+fun main() {
+    // relevel moves one level first and remaps codes (missing kept).
+    val f = factor_from_strings(vec!["b", "a", "b", "", "c"]);
+    println(f.clone().relevel("c"));
+    // reorder_by_count sorts levels by descending frequency;
+    // ties keep first-appearance order (stable).
+    val g = factor_from_strings(vec!["c", "a", "b", "b", "c", "c", ""]);
+    println(g.clone().reorder_by_count());
+    val t = factor_from_strings(vec!["b", "a", "b", "a"]);
+    println(t.clone().reorder_by_count());
+    // droplevels drops unused levels and compacts codes.
+    val d = factor_from_strings(vec!["b", "a", "b", "", "c", "a", "b"]);
+    println(d.clone().droplevels());
+    val e = factor_from_strings(vec!["x", "y"]);
+    println(e.clone().droplevels());
+}

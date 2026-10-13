@@ -717,6 +717,7 @@ enum LNode {
     Enum(String),
     Vec(String),
     Mat(String),
+    Factor(String),
     Union(String),
 }
 
@@ -1161,6 +1162,14 @@ impl<'a> Gen<'a> {
                 self.out.push_str(&format!("{}.rows = 0;\n", lval));
                 self.out.push_str(&format!("{}.cols = 0;\n", lval));
             }
+            Ty::Generic { base, args } if base == "Factor" && args.is_empty() => {
+                // Neutering a moved-from Factor: vec drops skip NULLs.
+                self.out
+                    .push_str(&format!("{}.levels.data = NULL;\n", lval));
+                self.out.push_str(&format!("{}.levels.len = 0;\n", lval));
+                self.out.push_str(&format!("{}.codes.data = NULL;\n", lval));
+                self.out.push_str(&format!("{}.codes.len = 0;\n", lval));
+            }
             Ty::Generic { base, args } => {
                 let variants = self.generic_variants(base, args);
                 if variants
@@ -1248,6 +1257,13 @@ impl<'a> Gen<'a> {
                 format!(
                     "{}.data = NULL;\n{}.rows = 0;\n{}.cols = 0;\n",
                     lval, lval, lval
+                )
+            }
+            Ty::Generic { base, args } if base == "Factor" && args.is_empty() => {
+                let _ = args;
+                format!(
+                    "{}.levels.data = NULL;\n{}.levels.len = 0;\n{}.codes.data = NULL;\n{}.codes.len = 0;\n",
+                    lval, lval, lval, lval
                 )
             }
             Ty::Generic { base, args } => {
@@ -1400,6 +1416,8 @@ impl<'a> Gen<'a> {
                             out.push(LNode::Vec(key));
                         } else if base == "Mat" {
                             out.push(LNode::Mat(key));
+                        } else if base == "Factor" {
+                            out.push(LNode::Factor(key));
                         } else {
                             out.push(LNode::Union(key));
                         }
@@ -1437,9 +1455,20 @@ impl<'a> Gen<'a> {
                 LNode::Vec(key.clone())
             } else if base == "Mat" {
                 LNode::Mat(key.clone())
+            } else if base == "Factor" {
+                LNode::Factor(key.clone())
             } else {
                 LNode::Union(key.clone())
             };
+            // `Factor` holds two vecs by value: order their layouts first
+            // (its generic args are empty, so this is not automatic).
+            if base == "Factor" {
+                for (b, a) in [("Vec", vec![Ty::Str]), ("Vec", vec![Ty::Int32])] {
+                    if let Some(k) = self.inst_key_for(b, &a) {
+                        d.push(LNode::Vec(k));
+                    }
+                }
+            }
             d.retain(|x| *x != node);
             deps.insert(node, d);
         }
@@ -1549,7 +1578,21 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-    /// One `Mat` layout (dense row-major Float64 matrix).
+    /// One `Factor` layout (levels + 1-based codes, 0 = missing).
+    fn emit_factor_layout(&mut self, key: &str) -> Result<(), Ice> {
+        let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
+        if base != "Factor" || !args.is_empty() {
+            return Ok(());
+        }
+        let ct = ctype_inst(&base, &args);
+        let lct = ctype_inst("Vec", std::slice::from_ref(&Ty::Str));
+        let cct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int32));
+        self.out.push_str(&format!(
+            "typedef struct {{ {} levels; {} codes; }} {};\n",
+            lct, cct, ct
+        ));
+        Ok(())
+    }
     fn emit_mat_layout(&mut self, key: &str) -> Result<(), Ice> {
         let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
         if base != "Mat" || !args.is_empty() {
@@ -1566,7 +1609,7 @@ impl<'a> Gen<'a> {
     /// One `Option`/`Result` tagged-union layout.
     fn emit_union_layout(&mut self, key: &str) -> Result<(), Ice> {
         let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
-        if base == "Vec" || base == "Mat" {
+        if base == "Vec" || base == "Mat" || base == "Factor" {
             return Ok(());
         }
         let ct = ctype_inst(&base, &args);
@@ -1611,6 +1654,7 @@ impl<'a> Gen<'a> {
                 LNode::Enum(n) => self.emit_enum_layout(n)?,
                 LNode::Vec(key) => self.emit_vec_layout(key)?,
                 LNode::Mat(key) => self.emit_mat_layout(key)?,
+                LNode::Factor(key) => self.emit_factor_layout(key)?,
                 LNode::Union(key) => self.emit_union_layout(key)?,
             }
         }
@@ -1719,6 +1763,13 @@ impl<'a> Gen<'a> {
                 self.out.push_str(&format!(
                     "static void v_drop_{iname}({ct} *v);\nstatic {ct} v_clone_{iname}({ct} v);\n"
                 ));
+            } else if base == "Factor" && args.is_empty() {
+                // F1: Factor drop/clone declarations (kernels below).
+                let ct = ctype_inst(&base, &args);
+                let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
+                self.out.push_str(&format!(
+                    "static void v_drop_{iname}({ct} *v);\nstatic {ct} v_clone_{iname}({ct} v);\n"
+                ));
             } else {
                 let t = Ty::Generic {
                     base: base.clone(),
@@ -1760,6 +1811,10 @@ impl<'a> Gen<'a> {
             }
             if base == "Mat" && args.is_empty() {
                 self.emit_mat_fns()?;
+                continue;
+            }
+            if base == "Factor" && args.is_empty() {
+                self.emit_factor_fns()?;
                 continue;
             }
             if self.type_needs_drop(&t) {
@@ -2443,6 +2498,48 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// F1 factor runtime: levels/codes store plus the level-algebra
+    /// verbs. Codes are 1-based, 0 is missing. Inputs borrow; every
+    /// result is a fresh owned value (callers free via drop glue).
+    fn emit_factor_fns(&mut self) -> Result<(), Ice> {
+        let ct = ctype_inst("Factor", &[]);
+        let lct = ctype_inst("Vec", std::slice::from_ref(&Ty::Str));
+        let cct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int32));
+        self.out.push_str(&format!(
+            "static void v_drop_Factor_({ct} *v) {{\nv_drop_Vec_String(&v->levels);\nv_drop_Vec_Int32(&v->codes);\n}}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {ct} v_clone_Factor_({ct} v) {{\n{ct} c = {{v_clone_Vec_String(v.levels), v_clone_Vec_Int32(v.codes)}};\nreturn c;\n}}\n"
+        ));
+        // Constructor: levels in first-appearance order, `""` is missing.
+        self.out.push_str(&format!(
+            "static {ct} vfactor_from_strings({lct} *s) {{\n{ct} f = {{vvec_Vec_String_new(), vvec_Vec_Int32_new()}};\nfor (int64_t i = 0; i < s->len; ++i) {{\nif (s->data[i].len == 0) {{ vvec_Vec_Int32_push(&f.codes, 0); continue; }}\nint32_t found = -1;\nfor (int64_t k = 0; k < f.levels.len; ++k) {{\nif (vstr_eq(f.levels.data[k], s->data[i])) {{ found = (int32_t)k; break; }}\n}}\nif (found < 0) {{\nvvec_Vec_String_push(&f.levels, vstr_clone(s->data[i]));\nfound = (int32_t)(f.levels.len - 1);\n}}\nvvec_Vec_Int32_push(&f.codes, found + 1);\n}}\nreturn f;\n}}\n"
+        ));
+        // Accessors clone out (never alias the store).
+        self.out.push_str(&format!(
+            "static {lct} vfactor_levels({ct} *v) {{ return v_clone_Vec_String(v->levels); }}\nstatic {cct} vfactor_codes({ct} *v) {{ return v_clone_Vec_Int32(v->codes); }}\n"
+        ));
+        // Missing codes render as NA (documented; collides with a literal
+        // "NA" level exactly like R's own NA handling).
+        self.out.push_str(&format!(
+            "static {lct} vfactor_as_strings({ct} *v) {{\n{lct} o = vvec_Vec_String_new();\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nif (c <= 0 || c > v->levels.len) {{ vvec_Vec_String_push(&o, vstr_from_c(\"NA\")); }}\nelse {{ vvec_Vec_String_push(&o, vstr_clone(v->levels.data[c - 1])); }}\n}}\nreturn o;\n}}\n"
+        ));
+        // Move one level first; unknown names return an unchanged clone.
+        self.out.push_str(&format!(
+            "static {ct} vfactor_relevel({ct} *v, VStr lvl) {{\nint64_t at = -1;\nfor (int64_t k = 0; k < v->levels.len; ++k) {{\nif (vstr_eq(v->levels.data[k], lvl)) {{ at = k; break; }}\n}}\nif (at < 0) {{ return v_clone_Factor_(*v); }}\n{ct} f = {{vvec_Vec_String_new(), vvec_Vec_Int32_new()}};\nvvec_Vec_String_push(&f.levels, vstr_clone(v->levels.data[at]));\nfor (int64_t k = 0; k < v->levels.len; ++k) {{\nif (k != at) {{ vvec_Vec_String_push(&f.levels, vstr_clone(v->levels.data[k])); }}\n}}\nint64_t n = v->levels.len;\nint32_t *map = (int32_t *)malloc((size_t)(n + 1) * sizeof(int32_t));\nif (!map) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t k = 0; k < n; ++k) {{ map[k] = (int32_t)(k < at ? k + 2 : (k == at ? 1 : k + 1)); }}\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nvvec_Vec_Int32_push(&f.codes, c <= 0 ? 0 : map[c - 1]);\n}}\nfree(map);\nreturn f;\n}}\n"
+        ));
+        // Levels by descending frequency (ties keep first-appearance order).
+        self.out.push_str(&format!(
+            "static {ct} vfactor_reorder_by_count({ct} *v) {{\nint64_t n = v->levels.len;\n{ct} f = {{vvec_Vec_String_new(), vvec_Vec_Int32_new()}};\nif (n == 0) {{ return f; }}\nint64_t *cnt = (int64_t *)calloc((size_t)n, sizeof(int64_t));\nif (!cnt) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nif (c > 0 && c <= n) {{ cnt[c - 1] += 1; }}\n}}\nint64_t *ord = (int64_t *)malloc((size_t)(n + 1) * sizeof(int64_t));\nif (!ord) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t k = 0; k < n; ++k) {{ ord[k] = k; }}\nfor (int64_t i = 1; i < n; ++i) {{\nint64_t t = ord[i];\nint64_t j = i;\nwhile (j > 0 && cnt[t] > cnt[ord[j - 1]]) {{ ord[j] = ord[j - 1]; --j; }}\nord[j] = t;\n}}\nint32_t *map = (int32_t *)malloc((size_t)(n + 1) * sizeof(int32_t));\nif (!map) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t k = 0; k < n; ++k) {{\nvvec_Vec_String_push(&f.levels, vstr_clone(v->levels.data[ord[k]]));\nmap[ord[k]] = (int32_t)(k + 1);\n}}\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nvvec_Vec_Int32_push(&f.codes, c <= 0 ? 0 : map[c - 1]);\n}}\nfree(cnt); free(ord); free(map);\nreturn f;\n}}\n"
+        ));
+        // Drop unused levels, remap surviving codes (missing preserved).
+        self.out.push_str(&format!(
+            "static {ct} vfactor_droplevels({ct} *v) {{\nint64_t n = v->levels.len;\n{ct} f = {{vvec_Vec_String_new(), vvec_Vec_Int32_new()}};\nint32_t *map = (int32_t *)calloc((size_t)(n + 1), sizeof(int32_t));\nif (!map) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nif (c > 0 && c <= n) {{ map[c - 1] = 1; }}\n}}\nint32_t next = 1;\nfor (int64_t k = 0; k < n; ++k) {{\nif (map[k]) {{\nvvec_Vec_String_push(&f.levels, vstr_clone(v->levels.data[k]));\nmap[k] = next;\nnext += 1;\n}}\n}}\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nvvec_Vec_Int32_push(&f.codes, c <= 0 ? 0 : map[c - 1]);\n}}\nfree(map);\nreturn f;\n}}\n"
+        ));
+        let _ = (ct, lct, cct);
+        Ok(())
+    }
+
     /// M1 dense-matrix runtime: drop/clone plus constructors and the
     /// LU-backed kernels (transpose, matmul, lu_solve, det, inverse).
     /// Row-major `double` buffer; empty matrices hold NULL (drop skips it).
@@ -2646,6 +2743,34 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// F1 value-returning `Factor` method call (receiver borrows via
+    /// `&slot`; the `String` argument to `relevel` borrows like `println`).
+    fn emit_factor_method(&mut self, method: &str, r: &str, args: &[Expr]) -> Result<String, Ice> {
+        let rptr = format!("&{}", r);
+        match method {
+            "levels" => Ok(format!("vfactor_levels({})", rptr)),
+            "codes" => Ok(format!("vfactor_codes({})", rptr)),
+            "as_strings" => Ok(format!("vfactor_as_strings({})", rptr)),
+            "reorder_by_count" => Ok(format!("vfactor_reorder_by_count({})", rptr)),
+            "droplevels" => Ok(format!("vfactor_droplevels({})", rptr)),
+            "clone" => Ok(format!("v_clone_Factor_({})", r)),
+            "relevel" => {
+                let a = args.first().ok_or_else(|| Ice("method arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let t = self.ty_of(a.id);
+                let v = if self.moves(&t) {
+                    self.mat_str(a)?
+                } else {
+                    self.emit_expr(a)?
+                };
+                self.cur_move = saved;
+                Ok(format!("vfactor_relevel({}, {})", rptr, v))
+            }
+            _ => Err(Ice("unknown Factor method".into())),
+        }
+    }
+
     /// Drop helper for one instantiation (`v_drop_Option_Int32`, ...).
     fn emit_inst_drop(&mut self, base: &str, args: &[Ty]) -> Result<(), Ice> {
         let ct = ctype_inst(base, args);
@@ -2736,6 +2861,13 @@ impl<'a> Gen<'a> {
                 body.push_str("printf(\"]\"); }\n");
                 body.push_str("printf(\"]\");\n");
             }
+            ("Factor", []) => {
+                body.push_str("printf(\"Factor(\");\n");
+                body.push_str("vfmt_Vec_String(v.levels);\n");
+                body.push_str("printf(\", \");\n");
+                body.push_str("vfmt_Vec_Int32(v.codes);\n");
+                body.push_str("printf(\")\");\n");
+            }
             ("Option", [t]) => {
                 let some = self.fmt_call(t, &format!("v.u.{}.{}", cmember(0), cfield("_0")))?;
                 body.push_str("if (v.tag == 1) { printf(\"None\"); }\n");
@@ -2800,6 +2932,11 @@ impl<'a> Gen<'a> {
                 path
             )),
             Ty::Generic { base, args } if base == "Mat" && args.is_empty() => Ok(format!(
+                "vfmt_{}({})",
+                iname_of(&ctype_inst(base, args)),
+                path
+            )),
+            Ty::Generic { base, args } if base == "Factor" && args.is_empty() => Ok(format!(
                 "vfmt_{}({})",
                 iname_of(&ctype_inst(base, args)),
                 path
@@ -3885,6 +4022,9 @@ impl<'a> Gen<'a> {
                         Ty::Generic { base, args } if base == "Mat" && args.is_empty() => {
                             format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
                         }
+                        Ty::Generic { base, args } if base == "Factor" && args.is_empty() => {
+                            format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
+                        }
                         Ty::Generic { base, args } if base == "Result" && args.len() == 2 => {
                             format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
                         }
@@ -3956,6 +4096,14 @@ impl<'a> Gen<'a> {
                         }
                         _ => format!("vmat_from_rows(&{})", parts[0]),
                     }
+                } else if name == "factor_from_strings" {
+                    // F1: string vector borrows (mat_str materializes rvalues).
+                    let a = args.first().ok_or_else(|| Ice("factor arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let v = self.mat_str(a)?;
+                    self.cur_move = saved;
+                    format!("vfactor_from_strings(&{})", v)
                 } else if name == "read_file"
                     || name == "csv_rows"
                     || name == "csv_bad_rows"
@@ -4677,6 +4825,15 @@ impl<'a> Gen<'a> {
                     let r = self.mat_str(receiver)?;
                     self.cur_move = saved;
                     return self.emit_mat_method(method, &r, args);
+                }
+                // F1 `Factor` methods (same borrow discipline as `Mat`).
+                if matches!(&rt, Ty::Generic { base, args } if base == "Factor" && args.is_empty())
+                {
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let r = self.mat_str(receiver)?;
+                    self.cur_move = saved;
+                    return self.emit_factor_method(method, &r, args);
                 }
                 let (elem_ty, iname) = match &rt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {

@@ -1,0 +1,36 @@
+// F1 factor helpers: level-ordered tabulation over `Factor` values.
+//
+// `factor_counts` mirrors R `table()` restricted to one factor: one row
+// per level in level order with its frequency. Missing entries (code 0)
+// are excluded, like R's default `useNA = "no"`.
+module std.factor;
+
+import std::frame::DynamicFrame;
+
+pub fun factor_counts(fac: Factor): DynamicFrame {
+    val lv = fac.levels();
+    val cd = fac.codes();
+    var counts: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < lv.len()) {
+        val want = (i + (1 as Int64)) as Int32;
+        var n = 0 as Int64;
+        var k = 0 as Int64;
+        while (k < cd.len()) {
+            if (cd[k] == want) {
+                n = n + (1 as Int64);
+            }
+            k = k + (1 as Int64);
+        }
+        counts.push(n);
+        i = i + (1 as Int64);
+    }
+    var scounts: Vec<String> = vec![];
+    var j = 0 as Int64;
+    while (j < counts.len()) {
+        scounts.push(to_string(counts[j]));
+        j = j + (1 as Int64);
+    }
+    val n = lv.len();
+    DynamicFrame { names: vec!["level", "count"], cols: vec![lv, scounts], nrows: n }
+}

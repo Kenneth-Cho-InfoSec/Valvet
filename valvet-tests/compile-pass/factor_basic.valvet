@@ -1,0 +1,25 @@
+import std::factor::factor_counts;
+
+fun show(f: Factor) {
+    println(f.levels());
+    println(f.codes());
+}
+
+fun main() {
+    // Levels in first-appearance order; "" becomes code 0 (missing).
+    val f = factor_from_strings(vec!["b", "a", "b", "", "c", "a", "b"]);
+    println(f);
+    show(f.clone());
+    // Missing renders as NA in as_strings; values round-trip otherwise.
+    println(f.clone().as_strings());
+    // Unknown relevel names return an unchanged clone (total).
+    println(f.clone().relevel("zzz"));
+    // Level-ordered tabulation (R table() semantics, NA excluded).
+    val t = factor_counts(f.clone());
+    println(t.cols);
+    // Level order preserved through clone; empty input is empty.
+    val ev: Vec<String> = vec![];
+    val e = factor_from_strings(ev);
+    println(e);
+    println(e.codes().len());
+}

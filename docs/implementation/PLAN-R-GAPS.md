@@ -54,7 +54,13 @@ reverse, duplicates).
 
 ## P1: independent stdlib (parallelizable, no language changes)
 
-**F1. Factors.** New builtin generic `Factor { levels: Vec<String>,
+**F1. Factors.** SHIPPED: builtin `Factor` (levels `Vec<String>` +
+1-based codes `Vec<Int32>`, code 0 = missing; `""` constructs missing,
+`as_strings` renders missing as `"NA"`), `factor_from_strings`,
+`levels`/`codes`/`as_strings`/`relevel`/`reorder_by_count`/`droplevels`/
+`clone`, printable, bare-`Factor` annotations, `std::factor::factor_counts`
+(table() semantics, NA excluded). 4 fixtures, 165/165 green, ASan-clean.
+New builtin generic `Factor { levels: Vec<String>,
 codes: Vec<Int32> }` (level 0 = missing). Constructors
 `factor_from_strings`, `relevel`, `reorder_by_count`, `droplevels`,
 `as_strings`, group-by integration so frames can group on factors with
