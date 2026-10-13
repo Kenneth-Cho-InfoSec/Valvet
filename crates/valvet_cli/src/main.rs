@@ -3,7 +3,7 @@ use std::process::Command;
 
 use valvet_core::{codegen, pipeline};
 
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.3.0";
 
 fn main() {
     let code = run(std::env::args().skip(1).collect());
