@@ -2632,7 +2632,64 @@ impl Parser {
                 Tok::Dot => {
                     // `.name` / `.0` = struct field access;
                     // `.name(` = method call (Phase F).
+                    // `f.(v)` = broadcast sugar (J2): `map(v, f)` over a
+                    // named function (closures deferred, like `map`).
                     self.bump();
+                    if matches!(self.cur(), Tok::LParen) {
+                        let fname = match &e.kind {
+                            ExprKind::Var(n) => n.clone(),
+                            _ => {
+                                self.err("E0005", "broadcast needs a named function (`f.(v)`)");
+                                return None;
+                            }
+                        };
+                        self.bump();
+                        let mut bargs = vec![];
+                        loop {
+                            self.skip_nls();
+                            if matches!(self.cur(), Tok::RParen) {
+                                self.bump();
+                                break;
+                            }
+                            bargs.push(self.parse_expr()?);
+                            self.skip_nls();
+                            match self.cur() {
+                                Tok::Comma => {
+                                    self.bump();
+                                }
+                                Tok::RParen => {}
+                                _ => {
+                                    self.err("E0005", "expected `,` or `)` in broadcast arguments");
+                                    return None;
+                                }
+                            }
+                        }
+                        if bargs.len() != 1 {
+                            self.err(
+                                "E0005",
+                                "broadcast takes exactly one vector (`f.(v)`; zipping is deferred)",
+                            );
+                            return None;
+                        }
+                        let end = self.prev_span().end;
+                        let v = bargs.remove(0);
+                        e = Expr {
+                            id: self.fresh(),
+                            span: Span::new(e.span.start, end),
+                            kind: ExprKind::Call {
+                                name: "map".to_string(),
+                                args: vec![
+                                    v,
+                                    Expr {
+                                        id: self.fresh(),
+                                        span: Span::new(e.span.start, end),
+                                        kind: ExprKind::Var(fname),
+                                    },
+                                ],
+                            },
+                        };
+                        continue;
+                    }
                     let (field, fspan) = match self.cur().clone() {
                         Tok::Ident(field) => {
                             let fspan = self.cur_span();

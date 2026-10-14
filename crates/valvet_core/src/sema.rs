@@ -45,8 +45,9 @@ pub struct Checked {
     pub types: HashMap<NodeId, Ty>,
     /// FunDecl id -> (param types, ret)
     pub sigs: HashMap<NodeId, (Vec<Ty>, Ty)>,
-    /// Names of all functions (for call resolution diagnostics).
-    pub fun_names: HashMap<String, NodeId>,
+    /// Functions by (qualified name, arity) for call resolution
+    /// (arity overloads share a name; diagnostics list known arities).
+    pub fun_names: HashMap<(String, usize), NodeId>,
     /// Resolved struct definitions by name.
     pub structs: HashMap<String, StructDef>,
     /// Resolved enum definitions by name.
@@ -190,16 +191,17 @@ pub fn check_with_files(
             continue;
         }
         let q = crate::resolver::qname(&f.module, &f.name);
-        if cx.fun_names.contains_key(&q) {
+        let arity = f.params.len();
+        if cx.fun_names.contains_key(&(q.clone(), arity)) {
             cx.err(
                 "E0401",
                 f.name_span,
-                format!("duplicate function `{}`", f.name),
+                format!("duplicate function `{}` with {} argument(s)", f.name, arity),
                 Some("rename one of the functions".into()),
             );
             continue;
         }
-        cx.fun_names.insert(q, f.id);
+        cx.fun_names.insert((q, arity), f.id);
         cx.sigs.insert(
             f.id,
             (
@@ -282,7 +284,7 @@ struct Cx {
     errs: Vec<Diagnostic>,
     types: HashMap<NodeId, Ty>,
     sigs: HashMap<NodeId, (Vec<Ty>, Ty)>,
-    fun_names: HashMap<String, NodeId>,
+    fun_names: HashMap<(String, usize), NodeId>,
     locals: Vec<HashMap<String, Local>>,
     loop_stack: Vec<LoopCtx>,
     /// Enclosing function return type (for `return` inside value-`loop` bodies).
@@ -670,10 +672,11 @@ impl Cx {
 
     /// Resolve a function name from the current module: own items first, then
     /// imports (bound only when `pub`, so every hit is callable). Returns the
-    /// FunDecl id for the shared signature table.
-    fn resolve_fun(&self, name: &str) -> Option<NodeId> {
+    /// FunDecl id for the shared signature table. Arity-keyed (J1): same
+    /// names with different arities coexist.
+    fn resolve_fun(&self, name: &str, arity: usize) -> Option<NodeId> {
         let own = crate::resolver::qname(&self.cur_module, name);
-        if let Some(id) = self.fun_names.get(&own) {
+        if let Some(id) = self.fun_names.get(&(own, arity)) {
             return Some(*id);
         }
         if let Some((tm, tn)) = self
@@ -681,9 +684,49 @@ impl Cx {
             .get(&(self.cur_module.clone(), name.to_string()))
         {
             let tq = crate::resolver::qname(tm, tn);
-            return self.fun_names.get(&tq).copied();
+            return self.fun_names.get(&(tq, arity)).copied();
         }
         None
+    }
+
+    /// Any-arity existence (builtin/ctor shadowing checks).
+    fn fun_name_exists(&self, name: &str) -> bool {
+        let own = crate::resolver::qname(&self.cur_module, name);
+        if self.fun_names.keys().any(|(q, _)| q == &own) {
+            return true;
+        }
+        if let Some((tm, tn)) = self
+            .aliases
+            .get(&(self.cur_module.clone(), name.to_string()))
+        {
+            let tq = crate::resolver::qname(tm, tn);
+            return self.fun_names.keys().any(|(q, _)| q == &tq);
+        }
+        false
+    }
+
+    /// Known arities for diagnostics ("takes 1 or 3 arguments").
+    fn fun_arities(&self, name: &str) -> Vec<usize> {
+        let mut out = vec![];
+        let own = crate::resolver::qname(&self.cur_module, name);
+        for (q, a) in self.fun_names.keys() {
+            if q == &own && !out.contains(a) {
+                out.push(*a);
+            }
+        }
+        if let Some((tm, tn)) = self
+            .aliases
+            .get(&(self.cur_module.clone(), name.to_string()))
+        {
+            let tq = crate::resolver::qname(tm, tn);
+            for (q, a) in self.fun_names.keys() {
+                if q == &tq && !out.contains(a) {
+                    out.push(*a);
+                }
+            }
+        }
+        out.sort_unstable();
+        out
     }
 
     /// Resolve a type name like `resolve_fun` (structs + enums share one
@@ -823,7 +866,7 @@ impl Cx {
             }
             if self.structs.contains_key(&q)
                 || self.enums.contains_key(&q)
-                || self.fun_names.contains_key(&q)
+                || self.fun_names.keys().any(|(n, _)| n == &q)
             {
                 self.err(
                     "E0401",
@@ -870,7 +913,7 @@ impl Cx {
             }
             if self.enums.contains_key(&q)
                 || self.structs.contains_key(&q)
-                || self.fun_names.contains_key(&q)
+                || self.fun_names.keys().any(|(n, _)| n == &q)
             {
                 self.err(
                     "E0401",
@@ -2290,7 +2333,7 @@ impl Cx {
                     }
                     None => {
                         // function names are not first-class values in 0.1.0
-                        if self.resolve_fun(name).is_some() {
+                        if self.fun_name_exists(name) {
                             self.err("E0800", e.span, format!("function `{}` used as a value (first-class functions deferred)", name), None);
                         } else {
                             self.err(
@@ -2899,7 +2942,7 @@ impl Cx {
                         // `f(x, args)` when the receiver type has no methods.
                         // Real methods always win (earlier arms).
                         let ufcs = self
-                            .resolve_fun(method)
+                            .resolve_fun(method, call_args.len() + 1)
                             .and_then(|fid| self.sigs.get(&fid).cloned())
                             .filter(|(pt, _)| pt.first().is_some_and(|p| p == &rt));
                         match ufcs {
@@ -3001,7 +3044,7 @@ impl Cx {
                                 format!("`{}` is an enum; use `{}::Variant(..)`", name, name),
                                 None,
                             );
-                        } else if self.resolve_fun(name).is_some() {
+                        } else if self.fun_name_exists(name) {
                             self.err(
                                 "E0201",
                                 e.span,
@@ -3410,7 +3453,7 @@ impl Cx {
             }
             ExprKind::Call { name, args }
                 if (name == "Some" || name == "Ok" || name == "Err" || name == "Present")
-                    && self.resolve_fun(name).is_none() =>
+                    && !self.fun_name_exists(name) =>
             {
                 Some((name.clone(), args.clone()))
             }
@@ -5077,7 +5120,7 @@ impl Cx {
 
     /// Resolve a Stage-1 function operand to (param types, return type).
     /// Only bare `fun` items qualify (never `main`, methods, or builtins).
-    fn fun_value_sig(&mut self, arg: &Expr, what: &str) -> Option<(Vec<Ty>, Ty)> {
+    fn fun_value_sig(&mut self, arg: &Expr, what: &str, arity: usize) -> Option<(Vec<Ty>, Ty)> {
         let fname = match &arg.kind {
             ExprKind::Var(n) => n.clone(),
             _ => {
@@ -5102,15 +5145,35 @@ impl Cx {
             );
             return None;
         }
-        let id = match self.resolve_fun(&fname) {
+        let id = match self.resolve_fun(&fname, arity) {
             Some(id) => id,
             None => {
-                self.err(
-                    "E0401",
-                    arg.span,
-                    format!("`{}`: unknown function `{}`", what, fname),
-                    Some("pass a `fun` item defined with `fun`".into()),
-                );
+                let known = self.fun_arities(&fname);
+                if known.is_empty() {
+                    self.err(
+                        "E0401",
+                        arg.span,
+                        format!("`{}`: unknown function `{}`", what, fname),
+                        Some("pass a `fun` item defined with `fun`".into()),
+                    );
+                } else {
+                    self.err(
+                        "E0201",
+                        arg.span,
+                        format!(
+                            "`{}` needs a {}-argument function, `{}` takes {}",
+                            what,
+                            arity,
+                            fname,
+                            known
+                                .iter()
+                                .map(|a| a.to_string())
+                                .collect::<Vec<_>>()
+                                .join(" or ")
+                        ),
+                        Some("define a matching overload".into()),
+                    );
+                }
                 return None;
             }
         };
@@ -5176,7 +5239,7 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[1], "map") else {
+                let Some((ps, r)) = self.fun_value_sig(&args[1], "map", 1) else {
                     return Ty::Error;
                 };
                 if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -5257,7 +5320,7 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[1], "filter") else {
+                let Some((ps, r)) = self.fun_value_sig(&args[1], "filter", 1) else {
                     return Ty::Error;
                 };
                 if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -5333,7 +5396,7 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[2], "fold") else {
+                let Some((ps, r)) = self.fun_value_sig(&args[2], "fold", 2) else {
                     return Ty::Error;
                 };
                 if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -5405,7 +5468,7 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[2], "split_apply") else {
+                let Some((ps, r)) = self.fun_value_sig(&args[2], "split_apply", 1) else {
                     return Ty::Error;
                 };
                 if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -5577,6 +5640,27 @@ impl Cx {
                 }
                 Ty::Int64
             }
+            "nchars" => {
+                // Unicode scalar count (invalid bytes count as U+FFFD
+                // each, matching the decoder below).
+                if !args.is_empty() {
+                    self.err("E0201", span, "`nchars` takes no arguments", None);
+                }
+                Ty::Int64
+            }
+            "to_upper" | "to_lower" => {
+                // Unicode-aware case fold (ASCII + Latin-1; other scalars
+                // pass through, documented).
+                if !args.is_empty() {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`{}` takes no arguments", method),
+                        None,
+                    );
+                }
+                Ty::Str
+            }
             "byte_at" => {
                 // F2: byte value at a 0-based index (traps out of bounds,
                 // exactly like `Vec` indexing).
@@ -5639,7 +5723,7 @@ impl Cx {
                     "E0401",
                     method_span,
                     format!(
-                        "unknown method `{}` (available on String: split, trim, clone, len, byte_at, slice, parse_int, parse_float)",
+                        "unknown method `{}` (available on String: split, trim, clone, len, nchars, to_upper, to_lower, byte_at, slice, parse_int, parse_float)",
                         method
                     ),
                     None,
@@ -6115,7 +6199,7 @@ impl Cx {
                 return Ty::Error;
             }
             self.record_vec_inst(&Ty::Float64);
-            let Some((ps, r)) = self.fun_value_sig(&args[1], "par_map") else {
+            let Some((ps, r)) = self.fun_value_sig(&args[1], "par_map", 1) else {
                 return Ty::Error;
             };
             if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -6321,6 +6405,53 @@ impl Cx {
             }
             self.record_ty(&want);
             return want;
+        } else if name == "sin" || name == "cos" {
+            // Libm trig (exact, correctly rounded; non-finite per IEEE).
+            if args.len() != 1 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`{}` takes exactly 1 argument, found {}", name, args.len()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let at = self.check_expr(&args[0]);
+            if at != Ty::Float64 && !ty_has_error(&at) {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!("`{}` expects Float64, found {}", name, at.name()),
+                    None,
+                );
+            }
+            return Ty::Float64;
+        } else if name == "atan2" {
+            if args.len() != 2 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`atan2` takes exactly 2 arguments, found {}", args.len()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            for (i, a) in args.iter().enumerate() {
+                let at = self.check_expr(a);
+                if at != Ty::Float64 && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        a.span,
+                        format!(
+                            "`atan2` argument {} must be Float64, found {}",
+                            i + 1,
+                            at.name()
+                        ),
+                        None,
+                    );
+                }
+            }
+            return Ty::Float64;
         } else if name == "mat_zeros" || name == "mat_identity" {
             // M1: `mat_zeros(r, c)` / `mat_identity(n)` (Int args).
             let want_n = if name == "mat_zeros" { 2 } else { 1 };
@@ -6529,11 +6660,11 @@ impl Cx {
             self.record_ty(&t);
             return t;
         } else if (name == "Some" || name == "Ok" || name == "Err" || name == "Present")
-            && self.resolve_fun(name).is_none()
+            && !self.fun_name_exists(name)
         {
             return self.check_ctor_call(id, span, name, args, None);
         }
-        if (name == "None" || name == "Missing") && self.resolve_fun(name).is_none() {
+        if (name == "None" || name == "Missing") && !self.fun_name_exists(name) {
             self.err(
                 "E0201",
                 span,
@@ -6542,7 +6673,7 @@ impl Cx {
             );
             return Ty::Error;
         }
-        let fid_opt = self.resolve_fun(name);
+        let fid_opt = self.resolve_fun(name, args.len());
         let (pt, rt) = match fid_opt.and_then(|fid| self.sigs.get(&fid)) {
             Some(s) => (s.0.clone(), s.1.clone()),
             None => {
@@ -6580,12 +6711,34 @@ impl Cx {
                     );
                     return Ty::Enum(self.resolve_type(name).unwrap_or_else(|| name.to_string()));
                 }
-                self.err(
-                    "E0401",
-                    span,
-                    format!("unknown function `{}`", name),
-                    Some("define it with `fun` before use".into()),
-                );
+                // Same name, different arity: name the known arities (E0201:
+                // the function exists, the call is wrong).
+                let known = self.fun_arities(name);
+                if known.is_empty() {
+                    self.err(
+                        "E0401",
+                        span,
+                        format!("unknown function `{}`", name),
+                        Some("define it with `fun` before use".into()),
+                    );
+                } else {
+                    let list = known
+                        .iter()
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" or ");
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "function `{}` takes {} argument(s), found {}",
+                            name,
+                            list,
+                            args.len()
+                        ),
+                        Some("define an overload or fix the call".into()),
+                    );
+                }
                 return Ty::Error;
             }
         };

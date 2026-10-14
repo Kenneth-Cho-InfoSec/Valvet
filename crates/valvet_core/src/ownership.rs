@@ -442,9 +442,9 @@ impl<'a> Cx<'a> {
     }
 
     /// Mirror of sema's `resolve_fun` (own module, then import aliases).
-    fn resolve_fun(&self, name: &str) -> Option<NodeId> {
+    fn resolve_fun(&self, name: &str, arity: usize) -> Option<NodeId> {
         let own = crate::resolver::qname(&self.cur_module, name);
-        if let Some(id) = self.checked.fun_names.get(&own) {
+        if let Some(id) = self.checked.fun_names.get(&(own, arity)) {
             return Some(*id);
         }
         if let Some((tm, tn)) = self
@@ -453,14 +453,15 @@ impl<'a> Cx<'a> {
             .get(&(self.cur_module.clone(), name.to_string()))
         {
             let tq = crate::resolver::qname(tm, tn);
-            return self.checked.fun_names.get(&tq).copied();
+            return self.checked.fun_names.get(&(tq, arity)).copied();
         }
         None
     }
 
     /// True exactly when sema's method-miss arm routes through UFCS: the
-    /// receiver type has no methods and a free function takes it first.
-    fn ufcs_hit(&self, method: &str, rt: &Ty) -> bool {
+    /// receiver type has no methods and a free function takes it first
+    /// (arity = explicit args + receiver).
+    fn ufcs_hit(&self, method: &str, rt: &Ty, nargs: usize) -> bool {
         match rt {
             Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => false,
             Ty::Generic { base, args } if base == "Mat" && args.is_empty() => false,
@@ -469,7 +470,7 @@ impl<'a> Cx<'a> {
             Ty::Generic { base, args } if base == "Rng" && args.is_empty() => false,
             Ty::Error => false,
             _ => match self
-                .resolve_fun(method)
+                .resolve_fun(method, nargs + 1)
                 .and_then(|fid| self.checked.sigs.get(&fid))
             {
                 Some((pt, _)) => pt.first().is_some_and(|p| p == rt),
@@ -1963,7 +1964,7 @@ impl<'a> Cx<'a> {
                 args,
                 ..
             } => {
-                if self.ufcs_hit(method, &self.ty_of(receiver.id)) {
+                if self.ufcs_hit(method, &self.ty_of(receiver.id), args.len()) {
                     // UFCS: the receiver is a real first argument and may
                     // move, exactly like the equivalent free call.
                     self.check_expr(receiver, self.moves_ty(receiver.id));

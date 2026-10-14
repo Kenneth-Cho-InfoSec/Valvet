@@ -1,0 +1,140 @@
+// std::time: time-of-day and durations over Int64 nanoseconds, in the
+// civil-algorithm style of std::date (pure Valvet, no zones).
+// `Time` is [0, 86400e9); `Duration` is signed. Wrapping uses Euclidean
+// modulo so negative arithmetic stays in range.
+
+module std.time;
+
+pub struct Time { nanos: Int64 }
+
+pub struct Duration { nanos: Int64 }
+
+fun day_nanos(): Int64 {
+    return 86400000000000;
+}
+
+fun euc_mod(x: Int64, n: Int64): Int64 {
+    return ((x % n) + n) % n;
+}
+
+pub fun time_from_hms(h: Int64, mi: Int64, s: Int64): Option<Time> {
+    if (h < (0 as Int64) || h > (23 as Int64)) {
+        return None;
+    }
+    if (mi < (0 as Int64) || mi > (59 as Int64)) {
+        return None;
+    }
+    if (s < (0 as Int64) || s > (59 as Int64)) {
+        return None;
+    }
+    val nanos = ((h * (60 as Int64) + mi) * (60 as Int64) + s) * 1000000000;
+    return Some(Time { nanos: nanos });
+}
+
+pub fun time_hour(t: Time): Int64 {
+    return t.nanos / 3600000000000;
+}
+
+pub fun time_minute(t: Time): Int64 {
+    return (t.nanos / 60000000000) % (60 as Int64);
+}
+
+pub fun time_second(t: Time): Int64 {
+    return (t.nanos / 1000000000) % (60 as Int64);
+}
+
+fun pad2(n: Int64): String {
+    if (n < (10 as Int64)) {
+        return "0" + to_string(n);
+    }
+    return to_string(n);
+}
+
+pub fun time_to_string(t: Time): String {
+    return pad2(time_hour(t)) + ":" + pad2(time_minute(t)) + ":" + pad2(time_second(t));
+}
+
+fun two_digits(s: String, start: Int64): Option<Int64> {
+    if (start < (0 as Int64) || start + (2 as Int64) > s.len()) {
+        return None;
+    }
+    val d = s.slice(start, start + (2 as Int64));
+    val v = match (d.parse_int()) { Some(x) -> x, None -> 0 as Int64, };
+    val ok = match (d.parse_int()) { Some(_) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    return Some(v);
+}
+
+pub fun time_parse(s: String): Option<Time> {
+    if (s.len() != (8 as Int64)) {
+        return None;
+    }
+    if (s.slice(2 as Int64, 3 as Int64) != ":") {
+        return None;
+    }
+    if (s.slice(5 as Int64, 6 as Int64) != ":") {
+        return None;
+    }
+    val ho = two_digits(s.clone(), 0 as Int64);
+    val mio = two_digits(s.clone(), 3 as Int64);
+    val so = two_digits(s.clone(), 6 as Int64);
+    val h = match (ho) { Some(x) -> x, None -> 0 as Int64, };
+    val h_ok = match (ho) { Some(_) -> true, None -> false, };
+    val mi = match (mio) { Some(x) -> x, None -> 0 as Int64, };
+    val mi_ok = match (mio) { Some(_) -> true, None -> false, };
+    val ss = match (so) { Some(x) -> x, None -> 0 as Int64, };
+    val ss_ok = match (so) { Some(_) -> true, None -> false, };
+    if (!h_ok || !mi_ok || !ss_ok) {
+        return None;
+    }
+    return time_from_hms(h, mi, ss);
+}
+
+pub fun duration_from_hms(h: Int64, mi: Int64, s: Int64): Duration {
+    val nanos = ((h * (60 as Int64) + mi) * (60 as Int64) + s) * 1000000000;
+    return Duration { nanos: nanos };
+}
+
+pub fun duration_from_secs(s: Float64): Duration {
+    return Duration { nanos: (s * 1000000000.0) as Int64 };
+}
+
+pub fun duration_as_secs(d: Duration): Float64 {
+    return (d.nanos as Float64) / 1000000000.0;
+}
+
+pub fun duration_add(a: Duration, b: Duration): Duration {
+    return Duration { nanos: a.nanos + b.nanos };
+}
+
+pub fun duration_sub(a: Duration, b: Duration): Duration {
+    return Duration { nanos: a.nanos - b.nanos };
+}
+
+pub fun duration_neg(d: Duration): Duration {
+    return Duration { nanos: 0 as Int64 - d.nanos };
+}
+
+pub fun duration_compare(a: Duration, b: Duration): Int64 {
+    if (a.nanos < b.nanos) {
+        return 0 as Int64 - (1 as Int64);
+    }
+    if (a.nanos > b.nanos) {
+        return 1 as Int64;
+    }
+    return 0 as Int64;
+}
+
+pub fun time_plus(t: Time, d: Duration): Time {
+    return Time { nanos: euc_mod(t.nanos + d.nanos, day_nanos()) };
+}
+
+pub fun time_minus(t: Time, d: Duration): Time {
+    return Time { nanos: euc_mod(t.nanos - d.nanos, day_nanos()) };
+}
+
+pub fun time_diff(a: Time, b: Time): Duration {
+    return Duration { nanos: euc_mod(a.nanos - b.nanos, day_nanos()) };
+}

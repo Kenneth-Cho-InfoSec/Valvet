@@ -165,8 +165,9 @@ real uses (defaults-by-arity, scalar/vec variants).
 2. Call-site updates (inventory from grep — verify each during
    implementation):
    - `S:6294` user-call path: resolve with `args.len()`; unknown-arity →
-     E0401 naming the known arities ("`f` takes 1 or 3 arguments, found
-     2" — better than today's unknown-function error; keep code E0401).
+     E0201 naming the known arities ("`f` takes 1 or 3 arguments, found
+     2" — the existing `arity.valvet` fixture pins E0201 for this case;
+     E0401 stays for truly unknown names).
    - UFCS arm (`S:~2886`, `resolve_fun(method)`): resolve with
      `call_args.len() + 1`.
    - `S:2277`, `S:2988`, `S:3397`, `S:6281`, `S:6285` (ctor guards,

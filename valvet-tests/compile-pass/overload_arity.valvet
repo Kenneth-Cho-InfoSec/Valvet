@@ -1,0 +1,26 @@
+fun add(a: Int64, b: Int64): Int64 {
+a + b
+}
+fun add(a: Int64): Int64 {
+a * (2 as Int64)
+}
+fun fact(n: Int64): Int64 {
+if (n < (2 as Int64)) {
+1 as Int64
+} else {
+n * fact(n - (1 as Int64))
+}
+}
+fun fact(n: Int64, acc: Int64): Int64 {
+if (n < (2 as Int64)) {
+acc
+} else {
+fact(n - (1 as Int64), acc * n)
+}
+}
+fun main() {
+println(add(1 as Int64, 2 as Int64))
+println(add(21 as Int64))
+println(fact(5 as Int64))
+println(fact(5 as Int64, 1 as Int64))
+}

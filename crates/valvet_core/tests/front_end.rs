@@ -115,7 +115,7 @@ fn codegen_int_main_returns() {
     let s = src("fun add(a: Int32, b: Int32): Int32 { a + b }\nfun main(): Int32 { add(1, 2) }\n");
     let checked = pipeline::front_end(&s).expect("front end");
     let c = valvet_core::codegen::lower(&checked).expect("lower");
-    assert!(c.contains("v_add_fn("));
+    assert!(c.contains("v_add_a2_fn("));
     // Tail values materialize before scope frees (owned locals stay live).
     assert!(c.contains("return _vt"));
 }
@@ -346,7 +346,7 @@ fn match_guard_falls_through() {
     // Sequential ifs (correct) rather than else-if chain (wrong on guard-false).
     // Scoped to the lowered function: the shared prelude legitimately
     // contains `else if` chains of its own.
-    let body = &c[c.find("v_f_fn").expect("lowered f")..];
+    let body = &c[c.find("v_f_a1_fn").expect("lowered f")..];
     assert!(
         !body.contains("else if"),
         "guard fallthrough needs sequential ifs"
@@ -702,7 +702,7 @@ fn file_mode_basic_import() {
     let checked = pipeline::front_end_file(&dir.join("main.valvet")).expect("check");
     let c = valvet_core::codegen::lower(&checked).expect("lower");
     assert!(
-        c.contains("v_math___double_fn"),
+        c.contains("v_math___double_a1_fn"),
         "imported fns mangle with their module"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -785,7 +785,7 @@ fn file_mode_forward_call_gets_prototype() {
     let checked = pipeline::front_end(&s).expect("front end");
     let c = valvet_core::codegen::lower(&checked).expect("lower");
     assert!(
-        c.contains("v_f_fn(void);"),
+        c.contains("v_f_a0_fn(void);"),
         "prototypes must precede definitions"
     );
 }
@@ -1378,4 +1378,58 @@ fn par_map_arity_rejected() {
 #[test]
 fn match_guard_call_accepted() {
     check_ok("fun p(s: String): Bool {\nreturn s.len() > (1 as Int64);\n}\nfun main() {\nprintln(match (\"ab\") { s if p(s) -> 1 as Int64, _ -> 0 as Int64, })\n}\n");
+}
+
+#[test]
+fn broadcast_accepted() {
+    check_ok("fun double(x: Float64): Float64 {\nx * 2.0\n}\nfun main() {\nval v = vec![1.0]\nprintln(double.(v))\n}\n");
+}
+
+#[test]
+fn broadcast_arity_rejected() {
+    // Two E0005s: the arity error plus the systemic recovery cascade for
+    // abortive in-function parses (same as unclosed calls/indices).
+    assert_eq!(
+        check_codes("fun double(x: Float64): Float64 {\nx * 2.0\n}\nfun main() {\nval v = vec![1.0]\nprintln(double.(v, v))\n}\n"),
+        vec!["E0005", "E0005"]
+    );
+}
+
+#[test]
+fn str_unicode_accepted() {
+    check_ok("fun main() {\nprintln(\"hello\".nchars())\nprintln(\"HeLLo\".to_upper())\nprintln(\"HeLLo\".to_lower())\n}\n");
+}
+
+#[test]
+fn trig_builtins_accepted() {
+    check_ok("fun main() {\nprintln(sin(1.0))\nprintln(cos(1.0))\nprintln(atan2(1.0, 2.0))\n}\n");
+}
+
+#[test]
+fn trig_builtins_reject_int() {
+    assert_eq!(
+        check_codes("fun main() {\nprintln(sin(1))\n}\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn overload_arity_accepted() {
+    check_ok("fun add(a: Int64, b: Int64): Int64 {\na + b\n}\nfun add(a: Int64): Int64 {\na * (2 as Int64)\n}\nfun main() {\nprintln(add(1 as Int64, 2 as Int64))\nprintln(add(21 as Int64))\n}\n");
+}
+
+#[test]
+fn overload_arities_listed() {
+    assert_eq!(
+        check_codes("fun add(a: Int64, b: Int64): Int64 {\na + b\n}\nfun main() {\nprintln(add(1 as Int64))\n}\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn overload_duplicate_rejected() {
+    assert_eq!(
+        check_codes("fun dup(x: Int64): Int64 {\nx\n}\nfun dup(x: Int64): Int64 {\nx\n}\nfun main() {\nprintln(1)\n}\n"),
+        vec!["E0401"]
+    );
 }

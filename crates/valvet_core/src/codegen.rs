@@ -709,7 +709,7 @@ pub fn lower(checked: &Checked) -> Result<String, Ice> {
             .program
             .funs
             .iter()
-            .map(|f| (f.module.clone(), f.name.clone()))
+            .map(|f| (f.module.clone(), f.name.clone(), f.params.len()))
             .collect(),
         type_set: checked
             .program
@@ -801,7 +801,7 @@ struct Gen<'a> {
     /// Import aliases from sema: (from, local) -> (target module, target name).
     aliases: HashMap<(String, String), (String, String)>,
     /// All functions by (module, name) for callee-module resolution.
-    fun_set: std::collections::HashSet<(String, String)>,
+    fun_set: std::collections::HashSet<(String, String, usize)>,
     /// All struct/enum types by (module, name) for qualifier resolution.
     type_set: std::collections::HashSet<(String, String)>,
     /// Composite instantiations printed via `println` (keys into
@@ -862,13 +862,13 @@ impl<'a> Gen<'a> {
     /// Declared parameter dimensions of a user function, in order
     /// (sema already validated names; unknown units fall back to
     /// dimensionless here — sema reported them).
-    fn callee_param_dims(&self, module: &str, name: &str) -> Vec<Dim> {
+    fn callee_param_dims(&self, module: &str, name: &str, arity: usize) -> Vec<Dim> {
         match self
             .checked
             .program
             .funs
             .iter()
-            .find(|f| f.module == module && f.name == name)
+            .find(|f| f.module == module && f.name == name && f.params.len() == arity)
         {
             Some(f) => f
                 .params
@@ -885,16 +885,24 @@ impl<'a> Gen<'a> {
     /// Resolve a callee name from the current module: own items first, then
     /// imports (mirrors sema's `resolve_fun`; sema already rejected bad
     /// programs, so misses here are ICEs). Returns (module, name).
-    fn resolve_fun(&self, name: &str) -> Option<(String, String)> {
+    fn resolve_fun(&self, name: &str, arity: usize) -> Option<(String, String)> {
         if self
             .fun_set
-            .contains(&(self.cur_module.clone(), name.to_string()))
+            .contains(&(self.cur_module.clone(), name.to_string(), arity))
         {
             return Some((self.cur_module.clone(), name.to_string()));
         }
-        self.aliases
+        if let Some((tm, tn)) = self
+            .aliases
             .get(&(self.cur_module.clone(), name.to_string()))
             .cloned()
+        {
+            if self.fun_set.contains(&(tm.clone(), tn.clone(), arity)) {
+                return Some((tm, tn));
+            }
+            return None;
+        }
+        None
     }
 
     /// Resolve a type name like `resolve_fun` (structs + enums share one
@@ -937,13 +945,13 @@ impl<'a> Gen<'a> {
             self.out.push_str(&format!(
                 "static {} {}_fn(void);\n",
                 ret,
-                cfun(&f.module, &f.name)
+                cfun(&f.module, &f.name, f.params.len())
             ));
         } else {
             self.out.push_str(&format!(
                 "static {} {}_fn({});\n",
                 ret,
-                cfun(&f.module, &f.name),
+                cfun(&f.module, &f.name, f.params.len()),
                 f.params
                     .iter()
                     .map(|p| format!("{} {}", self.cty(&p.ty), mangle(&p.name)))
@@ -1966,6 +1974,16 @@ impl<'a> Gen<'a> {
         // `byte_at`/`slice` trap out of bounds like `Vec` indexing.
         self.out
             .push_str("static int64_t vstr_len(VStr v) { return v.s ? v.len : 0; }\n");
+        // Unicode scalar count: structural UTF-8 decode (overlongs and
+        // surrogates count once; invalid bytes count as U+FFFD each).
+        self.out.push_str(
+            "static int64_t vstr_nchars(VStr v) {\nint64_t n = v.s ? v.len : 0, c = 0, i = 0;\nwhile (i < n) {{\nunsigned char b = (unsigned char)v.s[i];\nint64_t w = 1;\nif (b < 0x80) w = 1;\nelse if ((b & 0xE0) == 0xC0) w = 2;\nelse if ((b & 0xF0) == 0xE0) w = 3;\nelse if ((b & 0xF8) == 0xF0) w = 4;\nint64_t k = 1;\nwhile (k < w && i + k < n && (((unsigned char)v.s[i + k] & 0xC0) == 0x80)) k++;\nif (k < w) i += 1; else i += w;\nc++;\n}}\nreturn c;\n}\n",
+        );
+        // ASCII + Latin-1 case fold (length-preserving ranges only; other
+        // scalars pass through; `ß`/Turkish dotted-I out of scope).
+        self.out.push_str(
+            "static VStr vstr_case(VStr v, int up) {\nint64_t n = v.s ? v.len : 0;\nchar *p = (char *)malloc((size_t)n + 1);\nif (!p) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n;) {{\nunsigned char b = (unsigned char)v.s[i];\nif (up && b >= 'a' && b <= 'z') {{ p[i] = (char)(b - 32); i++; }}\nelse if (!up && b >= 'A' && b <= 'Z') {{ p[i] = (char)(b + 32); i++; }}\nelse if (i + 1 < n && b == 0xC3) {{\nunsigned char c2 = (unsigned char)v.s[i + 1];\nif (up && c2 >= 0xA0 && c2 <= 0xBE && c2 != 0xB7) {{ p[i] = (char)b; p[i + 1] = (char)(c2 - 32); i += 2; }}\nelse if (!up && c2 >= 0x80 && c2 <= 0x9E && c2 != 0x97) {{ p[i] = (char)b; p[i + 1] = (char)(c2 + 32); i += 2; }}\nelse {{ p[i] = (char)b; i++; }}\n}} else {{ p[i] = (char)b; i++; }}\n}}\np[n] = '\\0';\nreturn (VStr){p, n};\n}\nstatic VStr vstr_to_upper(VStr v) { return vstr_case(v, 1); }\nstatic VStr vstr_to_lower(VStr v) { return vstr_case(v, 0); }\n",
+        );
         self.out.push_str(
             "static int64_t vstr_byte_at(VStr v, int64_t i) {\nint64_t n = v.s ? v.len : 0;\nif (i < 0 || i >= n) { fprintf(stderr, \"index out of bounds\\n\"); abort(); }\nreturn (int64_t)((unsigned char)v.s[i]);\n}\n",
         );
@@ -2063,6 +2081,9 @@ impl<'a> Gen<'a> {
             "trim" => Ok(format!("vstr_trim({})", r)),
             "clone" => Ok(format!("vstr_clone({})", r)),
             "len" => Ok(format!("vstr_len({})", r)),
+            "nchars" => Ok(format!("vstr_nchars({})", r)),
+            "to_upper" => Ok(format!("vstr_to_upper({})", r)),
+            "to_lower" => Ok(format!("vstr_to_lower({})", r)),
             "byte_at" => {
                 let a = args.first().ok_or_else(|| Ice("byte_at arity".into()))?;
                 let saved = self.cur_move;
@@ -3154,15 +3175,15 @@ impl<'a> Gen<'a> {
     }
 
     /// C symbol for a Stage-1 function operand (bare `fun` item only).
-    fn functional_sym(&self, arg: &Expr) -> Result<String, Ice> {
+    fn functional_sym(&self, arg: &Expr, arity: usize) -> Result<String, Ice> {
         let fname = match &arg.kind {
             ExprKind::Var(n) => n.clone(),
             _ => return Err(Ice("functional without named function".into())),
         };
         let (m, f) = self
-            .resolve_fun(&fname)
+            .resolve_fun(&fname, arity)
             .ok_or_else(|| Ice(format!("unknown function {}", fname)))?;
-        Ok(format!("{}_fn", cfun(&m, &f)))
+        Ok(format!("{}_fn", cfun(&m, &f, arity)))
     }
 
     /// Element type of a checked `Vec` argument.
@@ -3192,7 +3213,7 @@ impl<'a> Gen<'a> {
                 self.cur_move = false;
                 let v = self.mat_str(a)?;
                 self.cur_move = saved;
-                let fsym = self.functional_sym(f)?;
+                let fsym = self.functional_sym(f, 1)?;
                 let vt = ctype_inst("Vec", std::slice::from_ref(&t));
                 let vu = ctype_inst("Vec", std::slice::from_ref(&u));
                 let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
@@ -3207,7 +3228,7 @@ impl<'a> Gen<'a> {
                 self.cur_move = false;
                 let v = self.mat_str(a)?;
                 self.cur_move = saved;
-                let fsym = self.functional_sym(f)?;
+                let fsym = self.functional_sym(f, 1)?;
                 let vt = ctype_inst("Vec", std::slice::from_ref(&t));
                 let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
                 Ok(format!("vfilter_{}(&{}, {})", tin, v, fsym))
@@ -3231,7 +3252,7 @@ impl<'a> Gen<'a> {
                     self.emit_expr(b)?
                 };
                 self.cur_move = saved;
-                let fsym = self.functional_sym(f)?;
+                let fsym = self.functional_sym(f, 2)?;
                 let vt = ctype_inst("Vec", std::slice::from_ref(&t));
                 let va = ctype_inst("Vec", std::slice::from_ref(&at));
                 let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
@@ -3249,7 +3270,7 @@ impl<'a> Gen<'a> {
                 let fv = self.mat_str(a)?;
                 let vv = self.mat_str(b)?;
                 self.cur_move = saved;
-                let fsym = self.functional_sym(f)?;
+                let fsym = self.functional_sym(f, 1)?;
                 Ok(format!("vsplit_apply(&{}, &{}, {})", fv, vv, fsym))
             }
             _ => Err(Ice("unknown functional".into())),
@@ -3712,13 +3733,13 @@ impl<'a> Gen<'a> {
             self.out.push_str(&format!(
                 "static {} {}_fn(void) {{\n",
                 ret,
-                cfun(&f.module, &f.name)
+                cfun(&f.module, &f.name, f.params.len())
             ));
         } else {
             self.out.push_str(&format!(
                 "static {} {}_fn({}) {{\n",
                 ret,
-                cfun(&f.module, &f.name),
+                cfun(&f.module, &f.name, f.params.len()),
                 f.params
                     .iter()
                     .map(|p| format!("{} {}", self.cty(&p.ty), mangle(&p.name)))
@@ -4582,6 +4603,28 @@ impl<'a> Gen<'a> {
                         Ty::Str => format!("vstr_clone({})", inner),
                         _ => return Err(Ice("to_string of non-scalar".into())),
                     }
+                } else if name == "sin" || name == "cos" {
+                    // Libm trig over borrowed Float64 (sema checked).
+                    let a = args.first().ok_or_else(|| Ice("sin/cos arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.emit_expr(a)?;
+                    self.cur_move = saved;
+                    if name == "sin" {
+                        format!("sin({})", inner)
+                    } else {
+                        format!("cos({})", inner)
+                    }
+                } else if name == "atan2" {
+                    if args.len() != 2 {
+                        return Err(Ice("atan2 arity".into()));
+                    }
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let y = self.emit_expr(&args[0])?;
+                    let x = self.emit_expr(&args[1])?;
+                    self.cur_move = saved;
+                    format!("atan2({}, {})", y, x)
                 } else if name == "sys_run" || name == "sys_capture" {
                     // std::sys subprocess spawns (sema gated exp out).
                     let a = args.first().ok_or_else(|| Ice("sys_run arity".into()))?;
@@ -4637,7 +4680,7 @@ impl<'a> Gen<'a> {
                     let saved = self.cur_move;
                     self.cur_move = false;
                     let v = self.mat_str(a)?;
-                    let sym = self.functional_sym(f)?;
+                    let sym = self.functional_sym(f, 1)?;
                     let t = self.ty_of(b.id);
                     let n = if self.moves(&t) {
                         self.mat_str(b)?
@@ -5470,7 +5513,7 @@ impl<'a> Gen<'a> {
                     // UFCS (C2): sema routes method-less receivers to a free
                     // function; lower as that call (sema guaranteed it).
                     _ => {
-                        if self.resolve_fun(method).is_some() {
+                        if self.resolve_fun(method, args.len() + 1).is_some() {
                             let mut uargs = vec![(**receiver).clone()];
                             uargs.extend(args.iter().cloned());
                             return self.emit_user_call(method, &uargs);
@@ -6005,8 +6048,8 @@ impl<'a> Gen<'a> {
         let mut parts = vec![];
         let mut moved_tmps = vec![];
         // Declared parameter dimensions (for scale conversion).
-        let pdims = match self.resolve_fun(name) {
-            Some((m, n)) => self.callee_param_dims(&m, &n),
+        let pdims = match self.resolve_fun(name, args.len()) {
+            Some((m, n)) => self.callee_param_dims(&m, &n, args.len()),
             None => vec![],
         };
         // Shield (as in struct literals): an argument that
@@ -6032,9 +6075,13 @@ impl<'a> Gen<'a> {
         }
         self.cur_move = saved;
         let (cmod, cname) = self
-            .resolve_fun(name)
+            .resolve_fun(name, args.len())
             .ok_or_else(|| Ice(format!("unknown function {}", name)))?;
-        let call = format!("{}_fn({})", cfun(&cmod, &cname), parts.join(", "));
+        let call = format!(
+            "{}_fn({})",
+            cfun(&cmod, &cname, args.len()),
+            parts.join(", ")
+        );
         for t in moved_tmps {
             self.null_slot(&t);
         }
@@ -6268,18 +6315,22 @@ fn mangle(name: &str) -> String {
 }
 
 /// C name for a function in a module: entry keeps `v_name`; others get
-/// `v_<mod>___<name>` (dots in the module path become `_`). The triple
-/// underscore cannot arise from `mangle` (which only ever doubles), so the
-/// split is unambiguous in practice; user idents are `__`-escaped first.
-fn cfun(module: &str, name: &str) -> String {
-    if module.is_empty() {
-        return mangle(name);
-    }
-    format!(
-        "v_{}___{}",
-        module.replace('_', "__").replace('.', "_"),
-        name.replace('_', "__")
-    )
+/// `v_<mod>___<name>` (dots in the module path become `_`). Arity always
+/// suffixes (`_a2`; J1 overloads would otherwise collide in C). The triple
+/// underscore cannot arise from `mangle` (which only ever doubles), and the
+/// `_aN` suffix cannot collide with escaping (user `__` always doubles), so
+/// the split is unambiguous in practice.
+fn cfun(module: &str, name: &str, arity: usize) -> String {
+    let base = if module.is_empty() {
+        mangle(name)
+    } else {
+        format!(
+            "v_{}___{}",
+            module.replace('_', "__").replace('.', "_"),
+            name.replace('_', "__")
+        )
+    };
+    format!("{}_a{}", base, arity)
 }
 
 /// Mirror of the parser's place conversion, for emitting nested place
