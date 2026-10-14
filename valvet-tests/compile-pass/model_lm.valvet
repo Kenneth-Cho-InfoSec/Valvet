@@ -40,8 +40,9 @@ fun main() {
     val f = DynamicFrame { names: vec!["speed", "dist"], cols: vec![vec!["4", "7", "8", "9", "10"], vec!["2", "22", "16", "10", "18"]], nrows: 5 as Int64 };
     val mf = match (model_frame(&f, fo)) { Ok(v) -> v, Err(_) -> no_mf(), };
     show_lm(mf);
-    // na.omit drops the unparseable row before fitting.
-    val g = DynamicFrame { names: vec!["speed", "dist"], cols: vec![vec!["4", "bad", "8"], vec!["2", "22", "16"]], nrows: 3 as Int64 };
+    // na.omit drops the missing row before fitting (a non-missing,
+    // non-numeric cell would make `speed` a factor instead).
+    val g = DynamicFrame { names: vec!["speed", "dist"], cols: vec![vec!["4", "", "8"], vec!["2", "22", "16"]], nrows: 3 as Int64 };
     val fo2 = match (formula_parse("dist ~ speed")) { Some(v) -> v, None -> formula_new("?", vec!["?"]), };
     val mf2 = match (model_frame(&g, fo2)) { Ok(v) -> v, Err(_) -> no_mf(), };
     println(mf2.y.len());

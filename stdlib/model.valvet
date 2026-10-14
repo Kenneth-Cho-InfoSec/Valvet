@@ -22,6 +22,7 @@ import std::math::exp;
 import std::dist::normal_cdf;
 import std::infer::f_p;
 import std::infer::chisq_p;
+import std::csv::is_na;
 
 fun vec_add(a: Vec<Float64>, b: Vec<Float64>): Vec<Float64> {
     var out: Vec<Float64> = vec![];
@@ -354,19 +355,44 @@ pub fun model_frame(f: &DynamicFrame, fo: Formula): Result<ModelFrame, String> {
         }
         ti = ti + (1 as Int64);
     }
-    var tcs: Vec<Vec<String>> = vec![];
+    // Expanded design registry: parallel name and float-column lists.
+    // Numeric mains parse to floats (NaN = missing); factors expand to
+    // treatment dummies (reference dropped, NaN = missing cell).
+    var xnames: Vec<String> = vec![];
+    var xcols: Vec<Vec<Float64>> = vec![];
+    var xsrc: Vec<String> = vec![];
     var mi = 0 as Int64;
     while (mi < mains.len()) {
         if (!has_col(f, mains[mi].clone())) {
             return Err("missing column: " + mains[mi].clone());
         }
-        tcs.push(need_col(f, mains[mi].clone()));
+        val col = need_col(f, mains[mi].clone());
+        if (col_is_numeric(col.clone())) {
+            xnames.push(mains[mi].clone());
+            xcols.push(parse_num_col(col));
+            xsrc.push(mains[mi].clone());
+        } else {
+            val levels = factor_levels(col.clone());
+            if (levels.len() < (2 as Int64)) {
+                return Err("single-level factor: " + mains[mi].clone());
+            }
+            val dummies = dummy_expand(col, levels.clone());
+            val tnames = treatment_names(mains[mi].clone(), levels);
+            var di = 1 as Int64;
+            while (di < dummies.len()) {
+                xnames.push(tnames[di - (1 as Int64)].clone());
+                xcols.push(dummies[di].clone());
+                xsrc.push(mains[mi].clone());
+                di = di + (1 as Int64);
+            }
+        }
         mi = mi + (1 as Int64);
     }
-    // Interaction inputs: one string column per crossed term.
-    // Empty term lists (hand-built `Formula`s only; the parser never
-    // emits them) are filtered first: `if`/`else` is a value position,
-    // so the skip cannot live inside the work loops below.
+    // Interaction inputs: index lists into the registry. Each crossed
+    // raw term resolves to its expanded columns (one for numeric, the
+    // dummies for factors); every combination becomes a product column
+    // labeled from the expanded names. Empty term lists (hand-built
+    // `Formula`s only) are filtered first.
     var inters: Vec<Interaction> = vec![];
     var fi = 0 as Int64;
     while (fi < fo.interactions.len()) {
@@ -376,24 +402,39 @@ pub fun model_frame(f: &DynamicFrame, fo: Formula): Result<ModelFrame, String> {
         }
         fi = fi + (1 as Int64);
     }
-    var ics: Vec<Vec<Vec<String>>> = vec![];
+    var ixs: Vec<Vec<Int64>> = vec![];
+    var ixnames: Vec<String> = vec![];
     var ii = 0 as Int64;
     while (ii < inters.len()) {
         val inter = inters[ii].terms.clone();
-        var cols: Vec<Vec<String>> = vec![];
-        var ki = 0 as Int64;
-        while (ki < inter.len()) {
-            if (!has_col(f, inter[ki].clone())) {
-                return Err("missing column: " + inter[ki].clone());
+        var groups: Vec<Vec<Int64>> = vec![];
+        var gi = 0 as Int64;
+        while (gi < inter.len()) {
+            val g = find_indices(xsrc.clone(), inter[gi].clone());
+            if (g.len() == (0 as Int64)) {
+                return Err("missing column: " + inter[gi].clone());
             }
-            cols.push(need_col(f, inter[ki].clone()));
-            ki = ki + (1 as Int64);
+            groups.push(g);
+            gi = gi + (1 as Int64);
         }
-        ics.push(cols);
+        val combos = cross_groups(groups);
+        var qi = 0 as Int64;
+        while (qi < combos.len()) {
+            val combo = combos[qi].clone();
+            var label = xnames[combo[0 as Int64]].clone();
+            var li = 1 as Int64;
+            while (li < combo.len()) {
+                label = label + ":" + xnames[combo[li]].clone();
+                li = li + (1 as Int64);
+            }
+            ixs.push(combo);
+            ixnames.push(label);
+            qi = qi + (1 as Int64);
+        }
         ii = ii + (1 as Int64);
     }
-    // na.omit: keep rows where the response, every main, and every
-    // interaction input parse.
+    // na.omit: keep rows where the response and every registered and
+    // interaction column parse (NaN = missing).
     var rows: Vec<Vec<Float64>> = vec![];
     var ys: Vec<Float64> = vec![];
     var r = 0 as Int64;
@@ -405,8 +446,8 @@ pub fun model_frame(f: &DynamicFrame, fo: Formula): Result<ModelFrame, String> {
             var ok = true;
             var vals: Vec<Float64> = vec![];
             var k = 0 as Int64;
-            while (k < tcs.len()) {
-                val xv = match (tcs[k][r].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+            while (k < xcols.len()) {
+                val xv = xcols[k][r];
                 if (xv != xv) {
                     ok = false;
                 }
@@ -414,12 +455,12 @@ pub fun model_frame(f: &DynamicFrame, fo: Formula): Result<ModelFrame, String> {
                 k = k + (1 as Int64);
             }
             var q = 0 as Int64;
-            while (q < ics.len()) {
-                val cols = ics[q].clone();
+            while (q < ixs.len()) {
+                val cols = ixs[q].clone();
                 var prod = 1.0;
                 var j = 0 as Int64;
                 while (j < cols.len()) {
-                    val xv = match (cols[j][r].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+                    val xv = xcols[cols[j]][r];
                     if (xv != xv) {
                         ok = false;
                     }
@@ -447,21 +488,14 @@ pub fun model_frame(f: &DynamicFrame, fo: Formula): Result<ModelFrame, String> {
     var names: Vec<String> = vec![];
     names.push("(Intercept)");
     var ni = 0 as Int64;
-    while (ni < mains.len()) {
-        names.push(mains[ni]);
+    while (ni < xnames.len()) {
+        names.push(xnames[ni].clone());
         ni = ni + (1 as Int64);
     }
-    var qi = 0 as Int64;
-    while (qi < inters.len()) {
-        val iterms = inters[qi].terms.clone();
-        var label = iterms[0 as Int64].clone();
-        var li = 1 as Int64;
-        while (li < iterms.len()) {
-            label = label + ":" + iterms[li].clone();
-            li = li + (1 as Int64);
-        }
-        names.push(label);
-        qi = qi + (1 as Int64);
+    var nq = 0 as Int64;
+    while (nq < ixnames.len()) {
+        names.push(ixnames[nq].clone());
+        nq = nq + (1 as Int64);
     }
     var ragged = false;
     var w = rows[0 as Int64].len();
@@ -951,4 +985,170 @@ pub fun breusch_pagan(mf: &ModelFrame, fit: &LmFit): Result<BpTest, String> {
     val stat = (n as Float64) * r2;
     val df = ((p - (1 as Int64)) as Float64);
     return Ok(BpTest { statistic: stat, df: df, p: chisq_p(stat, df) });
+}
+
+pub fun factor_levels(col: Vec<String>): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val cell = col[i].clone();
+        if (!is_na(&cell)) {
+            out = push_unique(out, cell);
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun dummy_expand(col: Vec<String>, levels: Vec<String>): Vec<Vec<Float64>> {
+    var out: Vec<Vec<Float64>> = vec![];
+    var li = 0 as Int64;
+    while (li < levels.len()) {
+        var column: Vec<Float64> = vec![];
+        var i = 0 as Int64;
+        while (i < col.len()) {
+            val cell = col[i].clone();
+            if (is_na(&cell)) {
+                column.push(0.0 / 0.0);
+            } else {
+                if (cell == levels[li]) {
+                    column.push(1.0);
+                } else {
+                    column.push(0.0);
+                }
+            }
+            i = i + (1 as Int64);
+        }
+        out.push(column);
+        li = li + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun treatment_names(base: String, levels: Vec<String>): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 1 as Int64;
+    while (i < levels.len()) {
+        out.push(base + levels[i].clone());
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun col_is_numeric(col: Vec<String>): Bool {
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val cell = col[i].clone();
+        if (!is_na(&cell)) {
+            val ok = match (cell.parse_float()) { Some(_) -> true, None -> false, };
+            if (!ok) {
+                return false;
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    return true;
+}
+
+fun parse_num_col(col: Vec<String>): Vec<Float64> {
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val v = match (col[i].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+        out.push(v);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun find_indices(xsrc: Vec<String>, term: String): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < xsrc.len()) {
+        if (xsrc[i] == term) {
+            out.push(i);
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun cross_groups(groups: Vec<Vec<Int64>>): Vec<Vec<Int64>> {
+    var first: Vec<Int64> = vec![];
+    var out: Vec<Vec<Int64>> = vec![first];
+    var gi = 0 as Int64;
+    while (gi < groups.len()) {
+        var next: Vec<Vec<Int64>> = vec![];
+        var ci = 0 as Int64;
+        while (ci < out.len()) {
+            var ki = 0 as Int64;
+            while (ki < groups[gi].len()) {
+                var combo = out[ci].clone();
+                combo.push(groups[gi][ki]);
+                next.push(combo);
+                ki = ki + (1 as Int64);
+            }
+            ci = ci + (1 as Int64);
+        }
+        out = next;
+        gi = gi + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun wlm(mf: &ModelFrame, w: Vec<Float64>): Result<LmFit, String> {
+    if (w.len() != mf.y.len()) {
+        return Err("weights length must match rows");
+    }
+    var i = 0 as Int64;
+    while (i < w.len()) {
+        if (w[i] < 0.0) {
+            return Err("weights must be non-negative");
+        }
+        i = i + (1 as Int64);
+    }
+    // Scale rows by sqrt(w) (mirrors `lm`'s solve chain on X'WX, X'Wy).
+    var sw: Vec<Float64> = vec![];
+    var k = 0 as Int64;
+    while (k < w.len()) {
+        sw.push(sqrt(w[k]));
+        k = k + (1 as Int64);
+    }
+    val xs = match (mf.x.clone().mat_scale_rows(sw.clone())) { Ok(v) -> v, Err(_) -> no_mat(), };
+    var yw: Vec<Float64> = vec![];
+    var j = 0 as Int64;
+    while (j < mf.y.len()) {
+        yw.push(mf.y[j] * sw[j]);
+        j = j + (1 as Int64);
+    }
+    val xt = xs.transpose();
+    val xtx = match (xt.clone().matmul(xs.clone())) { Ok(v) -> v, Err(_) -> no_mat(), };
+    val xty = match (xt.clone().mat_vec(yw)) { Ok(v) -> v, Err(_) -> no_vec(), };
+    if (xtx.rows() != xtx.cols() || xtx.rows() != xty.len() || xtx.det() == 0.0) {
+        return Err("singular design");
+    }
+    val beta = match (xtx.clone().lu_solve(xty)) { Ok(v) -> v, Err(_) -> no_vec(), };
+    val fitted = match (mf.x.clone().mat_vec(beta.clone())) { Ok(v) -> v, Err(_) -> no_vec(), };
+    val resid = vec_sub(mf.y.clone(), fitted.clone());
+    val n = mf.y.len();
+    val p = beta.len();
+    val rss = sum_sq(resid.clone(), 0.0);
+    val tss = sum_sq(mf.y.clone(), vec_mean(mf.y.clone()));
+    var r2 = 0.0 / 0.0;
+    if (tss != 0.0) {
+        r2 = 1.0 - rss / tss;
+    }
+    var sigma = 0.0;
+    if (n > p) {
+        sigma = sqrt(rss / ((n - p) as Float64));
+    }
+    val xtx_inv = match (xtx.clone().inverse()) { Ok(v) -> v, Err(_) -> no_mat(), };
+    val dg = xtx_inv.mat_diag();
+    var se: Vec<Float64> = vec![];
+    var s = 0 as Int64;
+    while (s < dg.len()) {
+        se.push(sigma * sqrt(dg[s]));
+        s = s + (1 as Int64);
+    }
+    return Ok(LmFit { coef: beta, se: se, fitted: fitted, resid: resid, r2: r2, sigma: sigma, names: mf.names.clone() });
 }

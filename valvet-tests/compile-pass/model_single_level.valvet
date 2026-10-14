@@ -1,0 +1,22 @@
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::model::formula_parse;
+import std::model::model_frame;
+fun go(): Int32 {
+val h = vec!["g", "y"]
+val r0 = vec!["a", "1.0"]
+val r1 = vec!["a", "2.0"]
+val t = frame_from_table(CsvTable { header: h, rows: vec![r0, r1] })
+let Some(fo) = formula_parse("y ~ g") else {
+return 1
+}
+let Ok(mf) = model_frame(&t, fo) else {
+println("frame rejected")
+return 0
+}
+println("unexpected ok")
+return 2
+}
+fun main() {
+println(go())
+}
