@@ -17,6 +17,9 @@ const PRELUDE: &str = r#"
 #include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <limits.h>
+#include <sys/wait.h>
 
 static int32_t v_f2i32(double v) {
     if (isnan(v)) return 0;
@@ -93,6 +96,37 @@ static VStr vstr_from_f64(double v) {
 }
 static VStr vstr_from_bool(int v) {
     return vstr_from_c(v ? "true" : "false");
+}
+/// Scripting subprocess + environment reads (std::sys): `vsys_run`
+/// inherits stdio and returns the exit status; `vsys_capture` returns
+/// stdout up to 1MB (stderr inherits); missing env names are `None`.
+static int64_t vsys_run(VStr cmd) {
+    if (!cmd.s) return 127;
+    int rc = system(cmd.s);
+    if (rc == -1) return 127;
+    if (WIFEXITED(rc)) return (int64_t)WEXITSTATUS(rc);
+    return 125;
+}
+static VStr vsys_capture(VStr cmd) {
+    if (!cmd.s) return (VStr){NULL, 0};
+    FILE *p = popen(cmd.s, "r");
+    if (!p) return (VStr){NULL, 0};
+    size_t cap = (size_t)1 << 20, n = 0;
+    char *buf = (char *)malloc(cap + 1);
+    if (!buf) { fprintf(stderr, "alloc error\n"); abort(); }
+    size_t r;
+    while ((r = fread(buf + n, 1, cap - n, p)) > 0) {
+        n += r;
+        if (n == cap) break;
+    }
+    pclose(p);
+    buf[n] = '\0';
+    return (VStr){buf, (int64_t)n};
+}
+static VStr vsys_cwd(void) {
+    char buf[4096];
+    if (!getcwd(buf, sizeof buf)) return (VStr){NULL, 0};
+    return vstr_from_c(buf);
 }
 static VStr vstr_trim(VStr v) {
     int64_t a = 0, b = v.s ? v.len : 0;
@@ -702,6 +736,7 @@ pub fn lower(checked: &Checked) -> Result<String, Ice> {
     g.out.push_str(PRELUDE_J2);
     g.out.push('\n');
     g.emit_adts()?;
+    g.emit_sys_helpers()?;
     // Prototypes for every function (cross-module calls + forward references;
     // C23 rejects implicit declarations). `main` is never called: no proto.
     for f in &checked.program.funs {
@@ -1651,6 +1686,21 @@ impl<'a> Gen<'a> {
     }
 
     /// One `Option`/`Result` tagged-union layout.
+    fn emit_sys_helpers(&mut self) -> Result<(), Ice> {
+        // `vsys_getenv` names `VOption_String`, which only exists once
+        // ADT layouts are emitted; define it here when instantiated.
+        let need = self
+            .generic_insts
+            .values()
+            .any(|(base, args)| base == "Option" && args.len() == 1 && matches!(&args[0], Ty::Str));
+        if !need {
+            return Ok(());
+        }
+        self.out.push_str(
+            "static VOption_String vsys_getenv(VStr k) {\n    if (!k.s) return (VOption_String){ .tag = 1 };\n    const char *v = getenv(k.s);\n    if (!v) return (VOption_String){ .tag = 1 };\n    return (VOption_String){ .tag = 0, .u = { .v0 = { .v___0 = vstr_from_c(v) } } };\n}\n",
+        );
+        Ok(())
+    }
     fn emit_union_layout(&mut self, key: &str) -> Result<(), Ice> {
         let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
         if base == "Vec" || base == "Mat" || base == "Factor" {
@@ -4433,6 +4483,30 @@ impl<'a> Gen<'a> {
                         Ty::Str => format!("vstr_clone({})", inner),
                         _ => return Err(Ice("to_string of non-scalar".into())),
                     }
+                } else if name == "sys_run" || name == "sys_capture" {
+                    // std::sys subprocess spawns (sema gated exp out).
+                    let a = args.first().ok_or_else(|| Ice("sys_run arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.mat_str(a)?;
+                    self.cur_move = saved;
+                    if name == "sys_run" {
+                        format!("vsys_run({})", inner)
+                    } else {
+                        format!("vsys_capture({})", inner)
+                    }
+                } else if name == "sys_getenv" {
+                    let a = args.first().ok_or_else(|| Ice("sys_getenv arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.mat_str(a)?;
+                    self.cur_move = saved;
+                    format!("vsys_getenv({})", inner)
+                } else if name == "sys_cwd" {
+                    if !args.is_empty() {
+                        return Err(Ice("sys_cwd arity".into()));
+                    }
+                    "vsys_cwd()".to_string()
                 } else if name == "rng_seeded" {
                     // J5 seeded xoshiro256++ (seed bits feed splitmix64).
                     let a = args.first().ok_or_else(|| Ice("rng_seeded arity".into()))?;

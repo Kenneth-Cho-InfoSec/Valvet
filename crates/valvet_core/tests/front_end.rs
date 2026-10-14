@@ -1221,3 +1221,29 @@ fn repl_echo_rejects_statements() {
     assert!(!pipeline::is_bare_expr("nope("));
     assert!(!pipeline::is_bare_expr(""));
 }
+
+#[test]
+fn sys_run_accepted_imp() {
+    check_ok("fun main() {\nprintln(sys_run(\"true\"))\nprintln(sys_capture(\"echo hi\"))\n}\n");
+}
+
+#[test]
+fn sys_run_rejected_exp() {
+    assert_eq!(
+        check_codes("mode exp;\nfun main() {\nprintln(sys_run(\"true\"))\n}\n"),
+        vec!["E0401"]
+    );
+}
+
+#[test]
+fn sys_run_arity_checked() {
+    assert_eq!(
+        check_codes("fun main() {\nprintln(sys_run(\"a\", \"b\"))\n}\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn sys_getenv_option() {
+    check_ok("fun main() {\nval v = sys_getenv(\"HOME\")\nif let None = v {\nprintln(0)\n} else {\nprintln(1)\n}\n}\n");
+}

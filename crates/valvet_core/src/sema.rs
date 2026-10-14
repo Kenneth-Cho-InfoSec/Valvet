@@ -151,6 +151,7 @@ pub fn check_with_files(
         generic_insts: HashMap::new(),
         fun_kernels: vec![],
         cur_module: String::new(),
+        mode: prog.mode,
         cur_file: String::new(),
         mod_files: mod_files.clone(),
         aliases: HashMap::new(),
@@ -294,6 +295,8 @@ struct Cx {
     generic_insts: HashMap<String, (String, Vec<Ty>)>,
     /// Module whose items are being registered/checked ("" for the entry).
     cur_module: String,
+    /// Entry mode (imp/exp): gates effectful builtins (`sys_run`).
+    mode: Mode,
     /// Display path of `cur_module` ("" when unknown — diagnostics unstamped).
     cur_file: String,
     /// Owning module -> display path (empty in single-source mode).
@@ -5872,6 +5875,87 @@ impl Cx {
                 }
             }
             return Ty::Unit;
+        }
+        // Scripting subprocess spawns (std::sys): imp only, since `mode
+        // exp` is hermetic. `sys_run` inherits stdio and returns the exit
+        // status; `sys_capture` returns stdout (stderr inherits).
+        if name == "sys_run" || name == "sys_capture" {
+            if self.mode == Mode::Exp {
+                self.err(
+                    "E0401",
+                    span,
+                    format!("`{}` needs imp mode (`mode exp` is hermetic)", name),
+                    Some("drop `mode exp;` or avoid subprocesses".into()),
+                );
+                return Ty::Error;
+            }
+            if args.len() != 1 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`{}` takes exactly 1 argument, found {}", name, args.len()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let at = self.check_expr(&args[0]);
+            if at != Ty::Str && !ty_has_error(&at) {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!("`{}` expects a command `String`, found {}", name, at.name()),
+                    None,
+                );
+            }
+            if name == "sys_run" {
+                return Ty::Int64;
+            }
+            self.record_ty(&Ty::Str);
+            return Ty::Str;
+        }
+        // Scripting environment reads (std::sys): read-only, allowed in
+        // every mode. `sys_getenv` maps missing names to `None`.
+        if name == "sys_getenv" {
+            if args.len() != 1 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!(
+                        "`sys_getenv` takes exactly 1 argument, found {}",
+                        args.len()
+                    ),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let at = self.check_expr(&args[0]);
+            if at != Ty::Str && !ty_has_error(&at) {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!("`sys_getenv` expects a `String` name, found {}", at.name()),
+                    None,
+                );
+            }
+            let ot = Ty::Generic {
+                base: "Option".to_string(),
+                args: vec![Ty::Str],
+            };
+            self.record_ty(&ot);
+            return ot;
+        }
+        if name == "sys_cwd" {
+            if !args.is_empty() {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`sys_cwd` takes no arguments, found {}", args.len()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            self.record_ty(&Ty::Str);
+            return Ty::Str;
         }
         // `to_string` (J1): total conversions to `String` for the four
         // printable scalar types. Floats format with full precision.

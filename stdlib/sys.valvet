@@ -1,0 +1,22 @@
+// std::sys: scripting runtime (imp mode). Subprocess spawns are gated to
+// imp (`mode exp` is hermetic); environment reads work everywhere.
+// `run` inherits stdio and returns the exit status; `capture` returns
+// stdout up to 1MB (stderr inherits, exit status dropped).
+
+module std.sys;
+
+pub fun run(cmd: String): Int64 {
+return sys_run(cmd)
+}
+
+pub fun capture(cmd: String): String {
+return sys_capture(cmd)
+}
+
+pub fun getenv(name: String): Option<String> {
+return sys_getenv(name)
+}
+
+pub fun cwd(): String {
+return sys_cwd()
+}
