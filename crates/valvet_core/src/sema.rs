@@ -6070,6 +6070,41 @@ impl Cx {
                 );
             }
             return Ty::Float64;
+        } else if name == "seq" {
+            // Stepped integer sequence `seq(lo, hi, by): Vec<Int64>`
+            // (R-compatible emptiness; `by == 0` traps; bounds must not
+            // overflow Int64).
+            if args.len() != 3 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`seq` takes exactly 3 arguments, found {}", args.len()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            for (i, a) in args.iter().enumerate() {
+                let at = self.check_expr(a);
+                if at != Ty::Int64 && at != Ty::Int32 && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        a.span,
+                        format!(
+                            "`seq` argument {} must be an Int, found {}",
+                            i + 1,
+                            at.name()
+                        ),
+                        None,
+                    );
+                }
+            }
+            let vt = Ty::Generic {
+                base: "Vec".to_string(),
+                args: vec![Ty::Int64],
+            };
+            self.record_vec_inst(&Ty::Int64);
+            self.record_ty(&vt);
+            return vt;
         } else if name == "mat_zeros" || name == "mat_identity" {
             // M1: `mat_zeros(r, c)` / `mat_identity(n)` (Int args).
             let want_n = if name == "mat_zeros" { 2 } else { 1 };

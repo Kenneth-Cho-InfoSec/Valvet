@@ -1457,12 +1457,48 @@ impl<'a> Cx<'a> {
                 ty, variant, sub, ..
             } => {
                 let ename = match ty {
+                    Some(t) if t == "Option" || t == "Result" || t == "Missing" => t.clone(),
                     Some(t) => t.clone(),
                     None => match scrut_ty {
                         Ty::Enum(n) => n.clone(),
+                        Ty::Generic { base, .. }
+                            if base == "Option" || base == "Result" || base == "Missing" =>
+                        {
+                            base.clone()
+                        }
                         _ => return vec![],
                     },
                 };
+                // Builtin generic payloads resolve structurally (mirrors
+                // sema's check_pat; silent fallbacks: sema already errored).
+                if ename == "Option" || ename == "Result" || ename == "Missing" {
+                    let payload: Vec<Ty> = match (ename.as_str(), variant.as_str(), scrut_ty) {
+                        ("Option", "Some", Ty::Generic { args, .. }) if args.len() == 1 => {
+                            vec![args[0].clone()]
+                        }
+                        ("Option", "None", Ty::Generic { args, .. }) if args.len() == 1 => {
+                            vec![]
+                        }
+                        ("Missing", "Present", Ty::Generic { args, .. }) if args.len() == 1 => {
+                            vec![args[0].clone()]
+                        }
+                        ("Missing", "Missing", Ty::Generic { args, .. }) if args.len() == 1 => {
+                            vec![]
+                        }
+                        ("Result", "Ok", Ty::Generic { args, .. }) if args.len() == 2 => {
+                            vec![args[0].clone()]
+                        }
+                        ("Result", "Err", Ty::Generic { args, .. }) if args.len() == 2 => {
+                            vec![args[1].clone()]
+                        }
+                        _ => return vec![],
+                    };
+                    let mut out = vec![];
+                    for (sp, pt) in sub.iter().zip(payload.iter()) {
+                        out.extend(self.arm_bindings(sp, pt));
+                    }
+                    return out;
+                }
                 let def = match self.checked.enums.get(&ename) {
                     Some(d) => d,
                     None => return vec![],
@@ -1646,9 +1682,12 @@ impl<'a> Cx<'a> {
                 else_b,
                 ..
             } => {
-                // Success path continues inline (no arm join): bindings join
-                // the current scope; an owned capture moves a variable
-                // scrutinee (mirrors `check_match_arm`).
+                // Success path continues inline (no arm join): check the
+                // scrutinee first (it cannot be "after" its own move),
+                // then declare bindings in the current scope; an owned
+                // capture moves a variable scrutinee (mirrors
+                // `check_match_arm`).
+                self.check_expr(scrutinee, false);
                 let st = self.ty_of(scrutinee.id);
                 let bindings = self.arm_bindings(pat, &st);
                 if let ExprKind::Var(n) = &scrutinee.kind {
@@ -1665,7 +1704,6 @@ impl<'a> Cx<'a> {
                 for (name, ty) in &bindings {
                     self.declare(name.clone(), ty.clone());
                 }
-                self.check_expr(scrutinee, false);
                 for s in &else_b.stmts {
                     self.check_stmt(s);
                 }

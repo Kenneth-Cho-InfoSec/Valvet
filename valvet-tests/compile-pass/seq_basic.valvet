@@ -1,0 +1,4 @@
+println(seq(1, 5, 1))
+println(seq(5, 1, -2))
+println(seq(1, 5, -1))
+println(seq(0, 0, 1))

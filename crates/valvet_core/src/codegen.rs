@@ -2312,6 +2312,26 @@ impl<'a> Gen<'a> {
                 vct = vct,
             ));
         }
+        // Stepped integer sequence `seq(lo, hi, by)`: empty when the step
+        // cannot reach (wrong direction); `by == 0` aborts (trap).
+        if self.has_inst("Vec", &[Ty::Int64]) {
+            let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int64));
+            self.out.push_str(&format!(
+                concat!(
+                    "static {vct} v_seq_wrap(int64_t lo, int64_t hi, int64_t by) {{",
+                    "{vct} o = vvec_Vec_Int64_new();",
+                    "if (by == 0) {{ fprintf(stderr, \"seq step is zero\\n\"); abort(); }}",
+                    "if ((by > 0 && lo <= hi) || (by < 0 && lo >= hi)) {{",
+                    "int64_t x = lo;",
+                    "for (;;) {{ vvec_Vec_Int64_push(&o, x);",
+                    " if (x == hi) break;",
+                    " if ((by > 0 && x > hi - by) || (by < 0 && x < hi - by)) break;",
+                    " x += by; }} }}",
+                    "return o; }}\n"
+                ),
+                vct = vct,
+            ));
+        }
         Ok(())
     }
 
@@ -4530,6 +4550,20 @@ impl<'a> Gen<'a> {
                     };
                     self.cur_move = saved;
                     format!("v_par_sum_wrap(&{}, {})", v, n)
+                } else if name == "seq" {
+                    // Stepped sequence: Int args are Copy (borrow to coerce).
+                    if args.len() != 3 {
+                        return Err(Ice("seq arity".into()));
+                    }
+                    let mut parts = vec![];
+                    for a in args {
+                        let saved = self.cur_move;
+                        self.cur_move = false;
+                        let v = self.emit_expr(a)?;
+                        self.cur_move = saved;
+                        parts.push(format!("(int64_t)({})", v));
+                    }
+                    format!("v_seq_wrap({}, {}, {})", parts[0], parts[1], parts[2])
                 } else if name == "mat_zeros" || name == "mat_identity" || name == "mat_from_rows" {
                     // M1 matrix constructors (sema checked arity/types).
                     // Int dims are Copy; the row vector borrows (mat_str).

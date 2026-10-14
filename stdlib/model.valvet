@@ -67,6 +67,10 @@ fun no_strs(): Vec<String> {
     return vec![""];
 }
 
+fun no_mf(): ModelFrame {
+    return ModelFrame { x: no_mat(), y: no_vec(), names: no_strs() };
+}
+
 fun need_col(f: &DynamicFrame, name: String): Vec<String> {
     return match (frame_col(f, name)) { Some(v) -> v, None -> no_strs(), };
 }
@@ -368,4 +372,36 @@ pub fun glm_binomial(mf: ModelFrame, max_iter: Int64): Result<GlmFit, String> {
         s2 = s2 + (1 as Int64);
     }
     return Ok(GlmFit { coef: beta, se: se, iters: done, converged: converged, names: mf.names.clone() });
+}
+
+pub fun predict_lm(fit: &LmFit, mf: ModelFrame): Result<Vec<Float64>, String> {
+    if (mf.x.cols() != fit.coef.len()) {
+        return Err("design columns do not match fit");
+    }
+    val pred = match (mf.x.clone().mat_vec(fit.coef.clone())) { Ok(v) -> v, Err(_) -> no_vec(), };
+    return Ok(pred);
+}
+
+pub fun predict_lm_frame(fit: &LmFit, f: &DynamicFrame, fo: Formula): Result<Vec<Float64>, String> {
+    val mfo = model_frame(f, fo);
+    val ok = match (mfo) { Ok(_) -> true, Err(_) -> false, };
+    if (!ok) {
+        return Err("model frame failed");
+    }
+    val mf = match (mfo) { Ok(v) -> v, Err(_) -> no_mf(), };
+    return predict_lm(fit, mf);
+}
+
+pub fun predict_glm(fit: &GlmFit, mf: ModelFrame): Result<Vec<Float64>, String> {
+    if (mf.x.cols() != fit.coef.len()) {
+        return Err("design columns do not match fit");
+    }
+    val eta = match (mf.x.clone().mat_vec(fit.coef.clone())) { Ok(v) -> v, Err(_) -> no_vec(), };
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < eta.len()) {
+        out.push(sigmoid(eta[i]));
+        i = i + (1 as Int64);
+    }
+    return Ok(out);
 }

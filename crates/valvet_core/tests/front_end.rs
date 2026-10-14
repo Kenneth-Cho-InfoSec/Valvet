@@ -1275,3 +1275,13 @@ fn prelude_bare_word_not_header() {
 fn prelude_single_source_rejected() {
     assert_eq!(check_codes("prelude;\nprintln(1)\n"), vec!["E0604"]);
 }
+
+#[test]
+fn seq_accepted() {
+    check_ok("println(seq(1, 5, 1))\nprintln(seq(5, 1, -2))\n");
+}
+
+#[test]
+fn seq_arity_rejected() {
+    assert_eq!(check_codes("println(seq(1, 5))\n"), vec!["E0201"]);
+}
