@@ -75,7 +75,12 @@ impl Crate {
             // Script synthesis already ran per unit in `load_unit`
             // (entry `top` became `main`; anything else errored).
             top: vec![],
-            mode: crate::ast::Mode::Auto,
+            // Entry mode governs the joint program (`units[0]` is the entry).
+            mode: self
+                .units
+                .first()
+                .map(|u| u.program.mode)
+                .unwrap_or(crate::ast::Mode::Auto),
             span,
         }
     }

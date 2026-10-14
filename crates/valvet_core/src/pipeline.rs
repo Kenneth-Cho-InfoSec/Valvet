@@ -58,6 +58,15 @@ fn check_unit(prog: &Program, files: Vec<Source>) -> Result<Checked, Vec<Diagnos
         return Err(diags);
     }
     checked.files = files;
+    // `mode exp` denies warnings: the same codes surface as errors
+    // (fixture-safe: the harness matches codes only).
+    if checked.program.mode == crate::ast::Mode::Exp && !checked.warnings.is_empty() {
+        for w in &mut checked.warnings {
+            w.warning = false;
+        }
+        diags.extend(std::mem::take(&mut checked.warnings));
+        return Err(diags);
+    }
     Ok(checked)
 }
 
@@ -136,6 +145,17 @@ pub fn front_end_file(entry: &std::path::Path) -> Result<Checked, FileDiags> {
         });
     }
     checked.files = files;
+    // `mode exp` denies warnings (same as the single-source tail above).
+    if checked.program.mode == crate::ast::Mode::Exp && !checked.warnings.is_empty() {
+        for w in &mut checked.warnings {
+            w.warning = false;
+        }
+        derrs.extend(std::mem::take(&mut checked.warnings));
+        return Err(FileDiags {
+            files: std::mem::take(&mut checked.files),
+            diags: derrs,
+        });
+    }
     Ok(checked)
 }
 

@@ -1776,6 +1776,16 @@ impl Cx {
                         None,
                     );
                 } else {
+                    if self.locals[..self.locals.len() - 1]
+                        .iter()
+                        .any(|m| m.contains_key(name))
+                    {
+                        self.warn(
+                            "W1004",
+                            *name_span,
+                            format!("`{}` shadows an outer binding", name),
+                        );
+                    }
                     self.locals.last_mut().unwrap().insert(
                         name.clone(),
                         Local {
@@ -1876,6 +1886,16 @@ impl Cx {
                         None,
                     );
                 } else {
+                    if self.locals[..self.locals.len() - 1]
+                        .iter()
+                        .any(|m| m.contains_key(name))
+                    {
+                        self.warn(
+                            "W1004",
+                            *name_span,
+                            format!("`{}` shadows an outer binding", name),
+                        );
+                    }
                     self.locals.last_mut().unwrap().insert(
                         name.clone(),
                         Local {
@@ -2899,6 +2919,13 @@ impl Cx {
                         e.span,
                         format!("cannot cast {} to {}", st.name(), target.name()),
                         Some("supported: int<->int, int<->Float64 (float->int saturates)".into()),
+                    );
+                }
+                if st == *target {
+                    self.warn(
+                        "W1003",
+                        e.span,
+                        format!("needless `as` (already {})", st.name()),
                     );
                 }
                 // Casts change representation, never dimension.

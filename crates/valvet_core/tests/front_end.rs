@@ -1158,3 +1158,33 @@ fn sugar_interp_unknown_var_single_error() {
 fn sugar_interp_adjacent_strings_still_error() {
     assert_eq!(check_codes("println(\"a\" \"b\")\n"), vec!["E0005"]);
 }
+
+#[test]
+fn exp_denies_print_alias() {
+    assert_eq!(
+        check_codes("mode exp;\nfun main() {\nprint(\"hi\")\n}\n"),
+        vec!["W1002"]
+    );
+}
+
+#[test]
+fn imp_warns_print_alias_only() {
+    // Same program without the header stays well-formed (warning only).
+    check_ok("fun main() {\nprint(\"hi\")\n}\n");
+}
+
+#[test]
+fn lint_needless_cast() {
+    assert_eq!(
+        check_codes("mode exp;\nfun main() {\nval x = 5 as Int32\nprintln(x)\n}\n"),
+        vec!["W1003"]
+    );
+}
+
+#[test]
+fn lint_shadowing() {
+    assert_eq!(
+        check_codes("mode exp;\nfun main() {\nval x = 1\nif (true) {\nval x = 2\nprintln(x)\n}\nprintln(x)\n}\n"),
+        vec!["W1004"]
+    );
+}

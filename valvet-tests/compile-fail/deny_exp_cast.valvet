@@ -1,0 +1,5 @@
+mode exp;
+fun main() {
+val x = 5 as Int32
+println(x)
+}

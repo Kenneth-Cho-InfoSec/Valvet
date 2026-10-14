@@ -26,6 +26,7 @@ fn run(args: Vec<String>) -> i32 {
         "test" => cmd_test(args.get(1).map(|s| s.as_str())),
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
         "repl" => cmd_repl(),
+        "-e" => cmd_eval(args.get(1).map(|s| s.as_str())),
         _ => {
             eprintln!("error: unknown command `{}`", args[0]);
             eprintln!("run `valvet --help` for usage");
@@ -53,6 +54,7 @@ fn print_help() {
     println!("    valvet test [dir]            run the Valvet fixture test suite");
     println!("    valvet new <name>            scaffold a new single-dir project");
     println!("    valvet repl                  interactive session (definitions persist)");
+    println!("    valvet -e 'expr'              evaluate a scriptlet and print its value");
     println!("    valvet --version             display version");
     println!("    valvet --help                show this help");
     println!();
@@ -191,6 +193,36 @@ fn cmd_run(path: &str) -> i32 {
             1
         }
     }
+}
+
+/// Evaluate a scriptlet: `valvet -e 'expr'` wraps it as `println(expr);`
+/// (anything with `;`/braces runs as statements instead).
+fn cmd_eval(expr: Option<&str>) -> i32 {
+    let expr = match expr {
+        Some(e) => e,
+        None => {
+            eprintln!("error: missing expression (`valvet -e 'expr'`)");
+            return 2;
+        }
+    };
+    let looks_like_stmts =
+        expr.contains(';') || expr.contains('{') || expr.contains('}') || expr.contains('\n');
+    let src = if looks_like_stmts {
+        format!("{}\n", expr)
+    } else {
+        format!("println(({}));\n", expr)
+    };
+    let dir = target_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("error: cannot create `{}`: {}", dir.display(), e);
+        return 1;
+    }
+    let path = dir.join("eval.valvet");
+    if std::fs::write(&path, src).is_err() {
+        eprintln!("error: cannot write `{}`", path.display());
+        return 1;
+    }
+    cmd_run(&path.to_string_lossy())
 }
 
 // ---------- fixture test suite ----------
