@@ -36,6 +36,21 @@ impl Parser {
         // rules). Contextual: only the file's first two tokens count, so
         // `mode` stays a legal identifier everywhere else.
         let mut mode = Mode::Auto;
+        // Optional `prelude;` header (imp data-scripting imports); allowed
+        // on either side of `mode`, contextual like `mode` itself: only a
+        // `prelude` immediately followed by `;` counts as the header.
+        let mut prelude = false;
+        if self.at_ident("prelude")
+            && matches!(
+                self.toks.get(self.pos + 1).map(|t| &t.kind),
+                Some(Tok::Semi)
+            )
+        {
+            self.bump();
+            self.bump();
+            prelude = true;
+            self.skip_nls();
+        }
         if self.at_ident("mode")
             && matches!(
                 self.toks.get(self.pos + 1).map(|t| &t.kind),
@@ -54,6 +69,19 @@ impl Parser {
                 return (None, self.errs);
             }
             let _ = mspan;
+            self.skip_nls();
+        }
+        // Optional `prelude;` after `mode` (either order allowed).
+        if !prelude
+            && self.at_ident("prelude")
+            && matches!(
+                self.toks.get(self.pos + 1).map(|t| &t.kind),
+                Some(Tok::Semi)
+            )
+        {
+            self.bump();
+            self.bump();
+            prelude = true;
             self.skip_nls();
         }
         // Optional `module a.b.c;`
@@ -236,6 +264,7 @@ impl Parser {
                 enums,
                 top,
                 mode,
+                prelude,
                 span: Span::new(prog_start, end),
             }),
             vec![],

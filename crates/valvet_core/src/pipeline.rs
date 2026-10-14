@@ -38,6 +38,14 @@ pub fn is_bare_expr(text: &str) -> bool {
 /// need file-based compilation via `front_end_file`).
 pub fn front_end(source: &Source) -> Result<Checked, Vec<Diagnostic>> {
     let mut prog = parse_unit(source)?;
+    // Single-source mode cannot import, so neither can the prelude.
+    if prog.prelude {
+        return Err(vec![Diagnostic::error(
+            "E0604",
+            prog.span,
+            "prelude needs file-based compilation (`valvet check path/to/main.valvet`)",
+        )]);
+    }
     // Single-source is always the entry: same script-mode synthesis as
     // the file pipeline, then the same id renumbering (synthesis uses
     // placeholder ids).

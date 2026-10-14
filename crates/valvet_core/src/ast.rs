@@ -19,6 +19,9 @@ pub struct Program {
     /// Entry mode header (`mode imp;` / `mode exp;`); `Auto` when absent.
     /// `mode` is contextual (first two tokens only), never a keyword.
     pub mode: Mode,
+    /// `prelude;` header (imp only): implicit data-scripting imports,
+    /// injected by the resolver (see `inject_prelude`).
+    pub prelude: bool,
     pub span: Span,
 }
 

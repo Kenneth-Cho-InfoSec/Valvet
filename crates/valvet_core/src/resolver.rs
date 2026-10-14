@@ -81,6 +81,7 @@ impl Crate {
                 .first()
                 .map(|u| u.program.mode)
                 .unwrap_or(crate::ast::Mode::Auto),
+            prelude: self.units.first().is_some_and(|u| u.program.prelude),
             span,
         }
     }
@@ -253,6 +254,17 @@ impl Loader {
                 );
                 return Err(());
             }
+            if program.prelude {
+                self.errs.push(
+                    Diagnostic::error(
+                        "E0604",
+                        program.span,
+                        "only the entry file may declare `prelude`",
+                    )
+                    .with_file(display),
+                );
+                return Err(());
+            }
             if !program.top.is_empty() {
                 self.errs.push(
                     Diagnostic::error(
@@ -265,6 +277,9 @@ impl Loader {
                 return Err(());
             }
         } else if !apply_entry_script(&mut program, display, &mut self.errs) {
+            return Err(());
+        }
+        if program.prelude && !inject_prelude(&mut program, display, &mut self.errs) {
             return Err(());
         }
         // Stamp ownership before recursing (sema reads these, not the parser).
@@ -368,7 +383,79 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// Validate one entry program's script mode and synthesize `fun main`
+/// Prelude verbs injected for an entry `prelude;` header (imp only):
+/// (module path, item name). Kept tight: string/csv/frame/sys scripting core.
+const PRELUDE_ITEMS: &[(&[&str], &str)] = &[
+    (&["std", "str"], "str_contains"),
+    (&["std", "str"], "str_starts_with"),
+    (&["std", "str"], "str_ends_with"),
+    (&["std", "str"], "str_replace"),
+    (&["std", "str"], "str_substring"),
+    (&["std", "csv"], "read_csv"),
+    (&["std", "csv"], "read_json"),
+    (&["std", "frame"], "frame_from_table"),
+    (&["std", "frame"], "frame_nrows"),
+    (&["std", "frame"], "frame_ncols"),
+    (&["std", "frame"], "frame_names"),
+    (&["std", "frame"], "frame_col"),
+    (&["std", "frame"], "frame_select"),
+    (&["std", "sys"], "run"),
+    (&["std", "sys"], "capture"),
+    (&["std", "sys"], "getenv"),
+    (&["std", "sys"], "cwd"),
+];
+
+/// Inject implicit prelude imports into the entry program. Skips verbs the
+/// user already imports or defines (those clashes are E0401, so skipping
+/// keeps the header friction-free). Imp-only.
+pub fn inject_prelude(program: &mut Program, display: &str, errs: &mut Vec<Diagnostic>) -> bool {
+    if program.mode == crate::ast::Mode::Exp {
+        errs.push(
+            Diagnostic::error(
+                "E0604",
+                program.span,
+                "prelude needs imp mode (`mode exp` is explicit-only)",
+            )
+            .with_help("drop `mode exp;` or import verbs explicitly")
+            .with_file(display),
+        );
+        return false;
+    }
+    // Names the user already takes (imports by local name, plus own
+    // items which shadow imports): prelude skips those silently.
+    let mut taken = std::collections::HashSet::new();
+    for imp in &program.imports {
+        for item in &imp.items {
+            taken.insert(item.local().to_string());
+        }
+    }
+    for f in &program.funs {
+        taken.insert(f.name.clone());
+    }
+    for d in &program.structs {
+        taken.insert(d.name.clone());
+    }
+    for d in &program.enums {
+        taken.insert(d.name.clone());
+    }
+    for (path, name) in PRELUDE_ITEMS {
+        if taken.contains(*name) {
+            continue;
+        }
+        taken.insert(name.to_string());
+        program.imports.push(crate::ast::ImportDecl {
+            path: path.iter().map(|s| s.to_string()).collect(),
+            items: vec![crate::ast::ImportItem {
+                name: name.to_string(),
+                alias: None,
+                span: program.span,
+            }],
+            from: String::new(),
+            span: program.span,
+        });
+    }
+    true
+}
 /// from its top-level statements (dummy ids — the caller runs `renumber`
 /// before sema). Returns false with an `E0604` diagnostic when statements
 /// meet a user `main`.

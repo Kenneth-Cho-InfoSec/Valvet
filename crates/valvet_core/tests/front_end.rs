@@ -1247,3 +1247,31 @@ fn sys_run_arity_checked() {
 fn sys_getenv_option() {
     check_ok("fun main() {\nval v = sys_getenv(\"HOME\")\nif let None = v {\nprintln(0)\n} else {\nprintln(1)\n}\n}\n");
 }
+
+#[test]
+fn prelude_header_parses() {
+    let s = src("prelude;\nprintln(1)\n");
+    let prog = pipeline::parse_unit(&s).expect("parses");
+    assert!(prog.prelude);
+}
+
+#[test]
+fn prelude_header_either_order() {
+    let s = src("prelude;\nmode imp;\nprintln(1)\n");
+    let prog = pipeline::parse_unit(&s).expect("parses");
+    assert!(prog.prelude);
+    let s = src("mode imp;\nprelude;\nprintln(1)\n");
+    let prog = pipeline::parse_unit(&s).expect("parses");
+    assert!(prog.prelude);
+}
+
+#[test]
+fn prelude_bare_word_not_header() {
+    // `prelude` without `;` stays an ordinary identifier.
+    check_ok("val prelude = 1\nprintln(prelude)\n");
+}
+
+#[test]
+fn prelude_single_source_rejected() {
+    assert_eq!(check_codes("prelude;\nprintln(1)\n"), vec!["E0604"]);
+}
