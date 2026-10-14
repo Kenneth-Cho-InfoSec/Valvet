@@ -1,0 +1,9 @@
+fun main() {
+val v = vec![1 as Int64, 2 as Int64, 3 as Int64, 4 as Int64]
+val doubled: Vec<Int64> = [x * (2 as Int64) for x in v]
+println(doubled)
+val evens: Vec<Int64> = [x for x in v if x % (2 as Int64) == (0 as Int64)]
+println(evens)
+val nested: Vec<Int64> = [y + (1 as Int64) for y in doubled]
+println(nested)
+}

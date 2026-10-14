@@ -1704,8 +1704,13 @@ impl Cx {
             } => {
                 let aty = ty.as_ref().map(|t| self.resolve_ty(t, *name_span));
                 // Annotated positions feed constructor inference via `expected`.
+                // Unannotated bindings inherit the ambient expectation (so
+                // desugared temporaries like comprehension accumulators see
+                // the outer annotation); an annotation always wins.
                 let saved_exp = self.expected.clone();
-                self.expected = aty.clone();
+                if aty.is_some() {
+                    self.expected = aty.clone();
+                }
                 // Constructors (`None`, `Some`/`Ok`/`Err`) check against the
                 // annotation when present.
                 let it = match self.ctor_use(init) {
@@ -1817,8 +1822,13 @@ impl Cx {
             } => {
                 let aty = ty.as_ref().map(|t| self.resolve_ty(t, *name_span));
                 // Annotated positions feed constructor inference via `expected`.
+                // Unannotated bindings inherit the ambient expectation (so
+                // desugared temporaries like comprehension accumulators see
+                // the outer annotation); an annotation always wins.
                 let saved_exp = self.expected.clone();
-                self.expected = aty.clone();
+                if aty.is_some() {
+                    self.expected = aty.clone();
+                }
                 // Constructors (`None`, `Some`/`Ok`/`Err`) check against the
                 // annotation when present.
                 let it = match self.ctor_use(init) {
@@ -6076,6 +6086,86 @@ impl Cx {
                 );
             }
             return Ty::Float64;
+        } else if name == "par_map" {
+            // `par_map(v, f, nthreads): Vec<Float64>` (F1): data-parallel
+            // map over a named `(Float64) -> Float64` function; same
+            // fixed-block, index-ordered discipline as `par_sum`, so all
+            // thread counts agree bit-for-bit.
+            if args.len() != 3 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`par_map` takes exactly 3 arguments, found {}", args.len()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let at = self.check_expr(&args[0]);
+            let want = Ty::Generic {
+                base: "Vec".to_string(),
+                args: vec![Ty::Float64],
+            };
+            if at != want && !ty_has_error(&at) {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!("`par_map` expects Vec<Float64>, found {}", at.name()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            self.record_vec_inst(&Ty::Float64);
+            let Some((ps, r)) = self.fun_value_sig(&args[1], "par_map") else {
+                return Ty::Error;
+            };
+            if ps.iter().any(ty_has_error) || ty_has_error(&r) {
+                return Ty::Error;
+            }
+            if ps.len() != 1 || ps[0] != Ty::Float64 {
+                self.err(
+                    "E0201",
+                    args[1].span,
+                    format!(
+                        "`par_map` function must take exactly one Float64 (found {})",
+                        if ps.is_empty() {
+                            "no arguments".to_string()
+                        } else {
+                            ps.iter().map(|p| p.name()).collect::<Vec<_>>().join(", ")
+                        }
+                    ),
+                    None,
+                );
+                return Ty::Error;
+            }
+            if r != Ty::Float64 && !ty_has_error(&r) {
+                self.err(
+                    "E0201",
+                    args[1].span,
+                    format!(
+                        "`par_map` function must return Float64 (found {})",
+                        r.name()
+                    ),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let ct = self.check_expr(&args[2]);
+            if ct != Ty::Int64 && ct != Ty::Int32 && !ty_has_error(&ct) {
+                self.err(
+                    "E0201",
+                    args[2].span,
+                    format!("`par_map` expects an Int thread count, found {}", ct.name()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let vt = Ty::Generic {
+                base: "Vec".to_string(),
+                args: vec![Ty::Float64],
+            };
+            self.record_vec_inst(&Ty::Float64);
+            self.record_ty(&vt);
+            return vt;
         } else if name == "seq" {
             // Stepped integer sequence `seq(lo, hi, by): Vec<Int64>`
             // (R-compatible emptiness; `by == 0` traps; bounds must not

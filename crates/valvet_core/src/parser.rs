@@ -3070,6 +3070,7 @@ impl Parser {
                     kind: ExprKind::Loop { body },
                 })
             }
+            Tok::LBracket => self.parse_comprehension(sp),
             t => {
                 self.err(
                     "E0005",
@@ -3195,6 +3196,125 @@ impl Parser {
             return None;
         }
         Some(e)
+    }
+
+    /// List comprehension (F2): `[e for x in v]` / `[e for x in v if c]`
+    /// desugars to a block that pushes into a hygienic accumulator. The
+    /// accumulator needs an expected `Vec<T>` (same rule as `vec![]`),
+    /// inherited from an annotated position via the ambient expectation.
+    fn parse_comprehension(&mut self, sp: Span) -> Option<Expr> {
+        let start = sp.start;
+        self.bump(); // `[`
+        self.skip_nls();
+        let elem = self.parse_expr()?;
+        self.skip_nls();
+        if !matches!(self.cur(), Tok::For) {
+            self.err(
+                "E0005",
+                "expected `for` in comprehension (`[e for x in v]`)",
+            );
+            return None;
+        }
+        self.bump();
+        self.skip_nls();
+        let (var, var_span) = self.expect_ident("loop variable")?;
+        self.skip_nls();
+        match self.cur() {
+            Tok::In => self.bump(),
+            _ => {
+                self.err("E0005", "expected `in` after loop variable");
+                return None;
+            }
+        }
+        let vec = self.parse_nostruct_expr()?;
+        let cond = if matches!(self.cur(), Tok::If) {
+            self.bump();
+            Some(self.parse_nostruct_expr()?)
+        } else {
+            None
+        };
+        self.skip_nls();
+        self.expect(Tok::RBracket, "expected `]` to close comprehension")?;
+        let end = self.prev_span().end;
+        let span = Span::new(start, end);
+        let acc = self.tmp_name();
+        let acc_span = Span::new(start, end);
+        let acc_var = |parser: &mut Self| Expr {
+            id: parser.fresh(),
+            span: acc_span,
+            kind: ExprKind::Var(acc.clone()),
+        };
+        let push_stmt = Stmt::Expr {
+            id: self.fresh(),
+            expr: Expr {
+                id: self.fresh(),
+                span: acc_span,
+                kind: ExprKind::Method {
+                    receiver: Box::new(acc_var(self)),
+                    method: "push".to_string(),
+                    method_span: acc_span,
+                    args: vec![elem],
+                },
+            },
+            span: acc_span,
+        };
+        // `if c` filters; otherwise the push runs unconditionally via a
+        // trivially-true condition (keeps one construction below).
+        let filter = cond.unwrap_or_else(|| Expr {
+            id: self.fresh(),
+            span: acc_span,
+            kind: ExprKind::Bool(true),
+        });
+        let body = Block {
+            id: self.fresh(),
+            stmts: vec![Stmt::If {
+                id: self.fresh(),
+                cond: filter,
+                then_b: Box::new(Block {
+                    id: self.fresh(),
+                    stmts: vec![push_stmt],
+                    tail: None,
+                    span: acc_span,
+                }),
+                else_b: None,
+                span: acc_span,
+            }],
+            tail: None,
+            span: acc_span,
+        };
+        let acc_init = Expr {
+            id: self.fresh(),
+            span: acc_span,
+            kind: ExprKind::VecMacro { elems: vec![] },
+        };
+        Some(Expr {
+            id: self.fresh(),
+            span,
+            kind: ExprKind::Block(Block {
+                id: self.fresh(),
+                stmts: vec![
+                    Stmt::Val {
+                        id: self.fresh(),
+                        name: acc.clone(),
+                        name_span: acc_span,
+                        ty: None,
+                        unit: None,
+                        init: acc_init,
+                        span: acc_span,
+                    },
+                    Stmt::For {
+                        id: self.fresh(),
+                        var,
+                        var_span,
+                        iter: ForIter::Each { vec },
+                        body: Box::new(body),
+                        span: acc_span,
+                    },
+                ],
+                tail: Some(Box::new(acc_var(self))),
+                span,
+            }),
+        })
     }
 
     /// Next non-newline token without consuming input (newline-sensitive lookahead).

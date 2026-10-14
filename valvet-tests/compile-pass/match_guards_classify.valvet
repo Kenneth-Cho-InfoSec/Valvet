@@ -1,0 +1,11 @@
+fun is_even(n: Int64): Bool {
+n % (2 as Int64) == (0 as Int64)
+}
+fun main() {
+val v = vec![1 as Int64, 2 as Int64, 3 as Int64, 64 as Int64]
+var i = 0 as Int64
+while (i < v.len()) {
+println(match (v[i]) { x if is_even(x) -> "even", x if x > (10 as Int64) -> "big", _ -> "other", })
+i = i + 1 as Int64
+}
+}

@@ -253,6 +253,23 @@ See `docs/implementation/TEST_STRATEGY.md` for the gate policy and
 Current gates: 100 unit tests, 93/93 fixtures (debug+release),
 ASan/UBSan-clean output.
 
+## Match guards (active-pattern style)
+
+Named recognizer functions plus `if` guards on match arms partition data
+the way F# active patterns do (no special syntax needed):
+
+```valvet
+fun is_even(n: Int64): Bool {
+    n % (2 as Int64) == (0 as Int64)
+}
+
+match (v) {
+    x if is_even(x) -> "even",
+    x if x > (10 as Int64) -> "big",
+    _ -> "other",
+}
+```
+
 ## Scope notes
 
 - Single C translation unit per program; target is the local machine.

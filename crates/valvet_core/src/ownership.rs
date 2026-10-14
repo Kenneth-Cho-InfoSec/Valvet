@@ -1773,9 +1773,11 @@ impl<'a> Cx<'a> {
                     || name == "println"
                     // C1 functionals borrow their data (kernels clone what
                     // they keep; fold clones owned inits at the boundary).
+                    // F1 `par_map` borrows the vec (fresh output vector).
                     || name == "map"
                     || name == "filter"
                     || name == "fold"
+                    || name == "par_map"
                     || name == "split_apply";
                 for a in args {
                     let moves = !borrow_only && self.moves_ty(a.id);

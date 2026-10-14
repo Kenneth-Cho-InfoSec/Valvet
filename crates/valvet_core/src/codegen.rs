@@ -2314,6 +2314,55 @@ impl<'a> Gen<'a> {
                 vct = vct,
             ));
         }
+        // F1: data-parallel map over named `(double) -> double` functions
+        // (same fixed-4096-block discipline as `par_sum`; concatenation in
+        // index order is trivially bit-identical across thread counts).
+        if self.has_inst("Vec", &[Ty::Float64]) {
+            let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Float64));
+            self.out.push_str(&format!(
+                concat!(
+                    "typedef struct {{ double *a; double *o; int64_t n; int64_t nb;",
+                    " int64_t tid; int64_t nt; double (*f)(double); }} VParMapTask;",
+                    "static void *vpar_map_work(void *p) {{",
+                    "VParMapTask *t = (VParMapTask *)p;",
+                    "for (int64_t b = t->tid; b < t->nb; b += t->nt) {{",
+                    "int64_t lo = b * 4096; int64_t hi = lo + 4096;",
+                    "if (hi > t->n) hi = t->n;",
+                    "for (int64_t i = lo; i < hi; i++) t->o[i] = t->f(t->a[i]);",
+                    "}} return NULL; }}",
+                    "static {vct} v_par_map_wrap({vct} *v, double (*f)(double), int64_t nt) {{",
+                    "double *a = (v && v->data) ? v->data : NULL;",
+                    "int64_t n = (v && a) ? v->len : 0;",
+                    "{vct} o = vvec_Vec_Float64_new();",
+                    "if (n <= 0) return o;",
+                    "o.data = (double *)malloc((size_t)n * sizeof(double));",
+                    "if (!o.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "o.len = n; o.cap = n;",
+                    "if (nt < 1) nt = 1;",
+                    "int64_t nb = (n + 4095) / 4096;",
+                    "if (nt > nb) nt = nb;",
+                    "if (nt == 1) {{",
+                    "VParMapTask one = {{a, o.data, n, nb, 0, 1, f}};",
+                    "vpar_map_work(&one);",
+                    "}} else {{",
+                    "pthread_t *ths = (pthread_t *)malloc((size_t)nt * sizeof(pthread_t));",
+                    "VParMapTask *tasks = (VParMapTask *)malloc((size_t)nt * sizeof(VParMapTask));",
+                    "if (!ths || !tasks) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "int64_t started = 0; int failed = 0;",
+                    "for (int64_t t = 0; t < nt; t++) {{",
+                    "tasks[t] = (VParMapTask){{a, o.data, n, nb, t, nt, f}};",
+                    "if (pthread_create(&ths[t], NULL, vpar_map_work, &tasks[t]) != 0)",
+                    " {{ failed = 1; break; }}",
+                    "started++; }}",
+                    "for (int64_t t = 0; t < started; t++) pthread_join(ths[t], NULL);",
+                    "if (failed) {{",
+                    "for (int64_t i = 0; i < n; i++) o.data[i] = f(a[i]); }}",
+                    "free(ths); free(tasks); }}",
+                    "return o; }}\n"
+                ),
+                vct = vct,
+            ));
+        }
         // Stepped integer sequence `seq(lo, hi, by)`: empty when the step
         // cannot reach (wrong direction); `by == 0` aborts (trap).
         if self.has_inst("Vec", &[Ty::Int64]) {
@@ -4580,6 +4629,23 @@ impl<'a> Gen<'a> {
                     };
                     self.cur_move = saved;
                     format!("v_par_sum_wrap(&{}, {})", v, n)
+                } else if name == "par_map" {
+                    // F1: vector and function borrow; thread count is Copy.
+                    let a = args.first().ok_or_else(|| Ice("par_map arity".into()))?;
+                    let f = args.get(1).ok_or_else(|| Ice("par_map arity".into()))?;
+                    let b = args.get(2).ok_or_else(|| Ice("par_map arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let v = self.mat_str(a)?;
+                    let sym = self.functional_sym(f)?;
+                    let t = self.ty_of(b.id);
+                    let n = if self.moves(&t) {
+                        self.mat_str(b)?
+                    } else {
+                        self.emit_expr(b)?
+                    };
+                    self.cur_move = saved;
+                    format!("v_par_map_wrap(&{}, {}, {})", v, sym, n)
                 } else if name == "seq" {
                     // Stepped sequence: Int args are Copy (borrow to coerce).
                     if args.len() != 3 {
@@ -6056,8 +6122,14 @@ impl<'a> Gen<'a> {
                 self.cur_move = false;
                 let gc = self.emit_expr(g)?;
                 self.cur_move = gs;
+                // Evaluate the guard into a temp first: argument poisons
+                // queued while emitting the call are statement-level
+                // effects and must land AFTER the call text (flushing
+                // inline would poison the arguments before the call
+                // reads them, silently falsifying the guard).
+                let gtmp = self.new_tmp_ty("int", &format!("({})", gc));
                 self.flush_nulls();
-                self.out.push_str(&format!("if ({}) {{\n", gc));
+                self.out.push_str(&format!("if ({}) {{\n", gtmp));
                 self.emit_match_body(&arm.body, res_ctx, ret_ty)?;
                 self.emit_scope_frees(depth);
                 self.flush_nulls();

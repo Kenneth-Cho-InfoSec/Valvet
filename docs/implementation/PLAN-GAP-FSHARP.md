@@ -67,7 +67,7 @@ is already Unit-typed (existing rule), so the filter form needs no else.
 
 Gap: `par_sum` (`S:6036`, `C:2259-2320` runtime + `C:4518` call site) sums;
 `map` (`S` `check_functional`, function operand is `args[1]` via
-`fun_value_sig`) is serial. `par_map(f, v, nthreads)` needs no closures:
+`fun_value_sig`) is serial. `par_map(v, f, nthreads)` needs no closures (surface order matches `map`):
 `f` is a named item like in `map`.
 
 ### Exact changes

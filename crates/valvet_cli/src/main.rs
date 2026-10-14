@@ -164,6 +164,14 @@ fn build_exe(path: &str, quiet: bool) -> Result<PathBuf, i32> {
         let mut h = DefaultHasher::new();
         VERSION.hash(&mut h);
         std::env::var("VALVET_CC").unwrap_or_default().hash(&mut h);
+        // The compiler itself is an input: rebuilt binaries must not
+        // serve pre-fix executables for unchanged sources.
+        if let Ok(md) = std::env::current_exe()
+            .and_then(|p| std::fs::metadata(&p))
+            .and_then(|m| m.modified())
+        {
+            md.hash(&mut h);
+        }
         for f in &checked.files {
             f.name.hash(&mut h);
             f.text.hash(&mut h);

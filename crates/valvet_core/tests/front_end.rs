@@ -1341,3 +1341,41 @@ fn is_in_mismatch_rejected() {
 fn mat_outer_kron_accepted() {
     check_ok("println(mat_outer(vec![1.0], vec![2.0]))\nprintln(mat_kron(mat_identity(1 as Int64), mat_identity(1 as Int64)))\n");
 }
+
+#[test]
+fn comprehension_accepted() {
+    check_ok("fun main() {\nval v = vec![1 as Int64]\nval w: Vec<Int64> = [x + (1 as Int64) for x in v]\nprintln(w)\n}\n");
+}
+
+#[test]
+fn comprehension_filtered_accepted() {
+    check_ok("fun main() {\nval v = vec![1 as Int64, 2 as Int64]\nval w: Vec<Int64> = [x for x in v if x > (1 as Int64)]\nprintln(w)\n}\n");
+}
+
+#[test]
+fn comprehension_needs_annotation() {
+    assert_eq!(
+        check_codes(
+            "fun main() {\nval v = vec![1 as Int64]\nval w = [x for x in v]\nprintln(w)\n}\n"
+        ),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn par_map_accepted() {
+    check_ok("fun double(x: Float64): Float64 {\nx * 2.0\n}\nfun main() {\nval v = vec![1.0]\nprintln(par_map(v.clone(), double, 1 as Int64))\n}\n");
+}
+
+#[test]
+fn par_map_arity_rejected() {
+    assert_eq!(
+        check_codes("fun double(x: Float64): Float64 {\nx * 2.0\n}\nfun main() {\nval v = vec![1.0]\nprintln(par_map(v.clone(), double))\n}\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn match_guard_call_accepted() {
+    check_ok("fun p(s: String): Bool {\nreturn s.len() > (1 as Int64);\n}\nfun main() {\nprintln(match (\"ab\") { s if p(s) -> 1 as Int64, _ -> 0 as Int64, })\n}\n");
+}
