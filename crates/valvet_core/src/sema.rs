@@ -5875,6 +5875,26 @@ impl Cx {
         }
         // `to_string` (J1): total conversions to `String` for the four
         // printable scalar types. Floats format with full precision.
+        // Hidden `argv` collector (script `args`; see resolver synthesis).
+        // Available in every mode; takes no arguments.
+        if name == "__argv" {
+            if !args.is_empty() {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`__argv` takes no arguments, found {}", args.len()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let vt = Ty::Generic {
+                base: "Vec".to_string(),
+                args: vec![Ty::Str],
+            };
+            self.record_vec_inst(&Ty::Str);
+            self.record_ty(&vt);
+            return vt;
+        }
         if name == "to_string" {
             if args.len() != 1 {
                 self.err(

@@ -22,7 +22,7 @@ fn run(args: Vec<String>) -> i32 {
     match args[0].as_str() {
         "check" => cmd_check(get_path(&args)),
         "build" => cmd_build(get_path(&args), default_exe(get_path(&args))),
-        "run" => cmd_run(get_path(&args)),
+        "run" => cmd_run(get_path(&args), script_argv(&args)),
         "test" => cmd_test(args.get(1).map(|s| s.as_str())),
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
         "repl" => cmd_repl(),
@@ -51,6 +51,7 @@ fn print_help() {
     println!("    valvet check <file.valvet>   parse and analyse without linking");
     println!("    valvet build <file.valvet>   compile and link an executable");
     println!("    valvet run <file.valvet>     compile, link and execute");
+    println!("    valvet run <file> -- args    run with script arguments in `args`");
     println!("    valvet test [dir]            run the Valvet fixture test suite");
     println!("    valvet new <name>            scaffold a new single-dir project");
     println!("    valvet repl                  interactive session (definitions persist)");
@@ -181,18 +182,32 @@ fn cmd_build(path: &str, _exe: PathBuf) -> i32 {
     }
 }
 
-fn cmd_run(path: &str) -> i32 {
+fn cmd_run(path: &str, script_argv: Vec<String>) -> i32 {
     let exe = match build_exe(path) {
         Ok(e) => e,
         Err(c) => return c,
     };
-    match Command::new(&exe).status() {
+    match Command::new(&exe).args(&script_argv).status() {
         Ok(st) => st.code().unwrap_or(1),
         Err(e) => {
             eprintln!("error: cannot execute `{}`: {}", exe.display(), e);
             1
         }
     }
+}
+
+/// Script arguments after `--` (`valvet run f.valvet -- a b` become the
+/// script's `args`). Bare trailing flags are rejected to reserve the space.
+fn script_argv(args: &[String]) -> Vec<String> {
+    let rest = if args.len() > 2 { &args[2..] } else { &[] };
+    if rest.first().is_some_and(|a| a == "--") {
+        return rest[1..].to_vec();
+    }
+    if rest.iter().any(|a| a.starts_with('-')) {
+        eprintln!("error: script arguments need `--` first (`valvet run f.valvet -- args...`)");
+        std::process::exit(2);
+    }
+    rest.to_vec()
 }
 
 /// Evaluate a scriptlet: `valvet -e 'expr'` wraps it as `println(expr);`
@@ -222,7 +237,7 @@ fn cmd_eval(expr: Option<&str>) -> i32 {
         eprintln!("error: cannot write `{}`", path.display());
         return 1;
     }
-    cmd_run(&path.to_string_lossy())
+    cmd_run(&path.to_string_lossy(), vec![])
 }
 
 // ---------- fixture test suite ----------

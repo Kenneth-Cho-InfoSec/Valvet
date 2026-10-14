@@ -107,7 +107,7 @@ fn codegen_frees_strings() {
         c.contains("vstr_free"),
         "generated C must deterministically free Strings"
     );
-    assert!(c.contains("int main(void)"));
+    assert!(c.contains("int main(int argc, char **argv)"));
 }
 
 #[test]
@@ -1186,5 +1186,23 @@ fn lint_shadowing() {
     assert_eq!(
         check_codes("mode exp;\nfun main() {\nval x = 1\nif (true) {\nval x = 2\nprintln(x)\n}\nprintln(x)\n}\n"),
         vec!["W1004"]
+    );
+}
+
+#[test]
+fn script_args_implicit() {
+    check_ok("println(args.len())\nprintln(args)\n");
+}
+
+#[test]
+fn script_args_user_binding_wins() {
+    check_ok("val args = vec![\"mine\"]\nprintln(args)\n");
+}
+
+#[test]
+fn script_args_absent_in_exp() {
+    assert_eq!(
+        check_codes("mode exp;\nfun main() {\nprintln(args)\n}\n"),
+        vec!["E0401"]
     );
 }

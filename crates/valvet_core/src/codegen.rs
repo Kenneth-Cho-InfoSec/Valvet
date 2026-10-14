@@ -3550,13 +3550,15 @@ impl<'a> Gen<'a> {
             self.cty(&f.ret).to_string()
         };
         if main_result.is_some() {
+            // Result/Option mains (incl. script `?`): argv threads through
+            // so top-level `args` works here too.
             self.out.push_str(&format!(
-                "static {} {}_fn(void) {{\n",
+                "static {} {}_fn(int argc, char **argv) {{\n",
                 ret,
                 mangle("valvet_main")
             ));
         } else if is_main {
-            self.out.push_str("int main(void) {\n");
+            self.out.push_str("int main(int argc, char **argv) {\n");
         } else if f.params.is_empty() {
             self.out.push_str(&format!(
                 "static {} {}_fn(void) {{\n",
@@ -3604,9 +3606,12 @@ impl<'a> Gen<'a> {
             self.pop_scope();
             // Exit-code wrapper: Ok(n)/Some(n) -> n; Err(e) -> drop + 1.
             let rct = self.cty(&f.ret);
-            self.out.push_str("int main(void) {\n");
-            self.out
-                .push_str(&format!("{} _vr = {}_fn();\n", rct, mangle("valvet_main")));
+            self.out.push_str("int main(int argc, char **argv) {\n");
+            self.out.push_str(&format!(
+                "{} _vr = {}_fn(argc, argv);\n",
+                rct,
+                mangle("valvet_main")
+            ));
             self.out.push_str("if (_vr.tag == 0) {\n");
             self.out.push_str("return _vr.u.v0.v___0;\n");
             self.out.push_str("} else {\n");
@@ -4598,6 +4603,28 @@ impl<'a> Gen<'a> {
                     // C1 Stage-1 functionals (sema checked shapes and recorded
                     // the kernel; the function operand lowers to its C symbol).
                     self.emit_functional(name, e, args)?
+                } else if name == "__argv" {
+                    // Script argv collector: Vec<String> from argc/argv
+                    // (sema recorded the instantiation; `main` takes args).
+                    if !args.is_empty() {
+                        return Err(Ice("__argv arity".into()));
+                    }
+                    let vt = self.ty_of(e.id);
+                    let (elem_ty, vct) = match &vt {
+                        Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                            (args[0].clone(), ctype_inst(base, args))
+                        }
+                        _ => return Err(Ice("__argv with non-Vec type".into())),
+                    };
+                    let iname = vct.strip_prefix('V').unwrap_or(&vct).to_string();
+                    let tmp = self.new_tmp_ty(&vct, &format!("vvec_{}_new()", iname));
+                    let _ = elem_ty;
+                    self.out.push_str(&format!(
+                        "for (int _ai = 1; _ai < argc; _ai++) {{ VStr _av = vstr_from_c(argv[_ai]); vvec_{}_push(&{}, _av); }}\n",
+                        iname, tmp
+                    ));
+                    self.flush_nulls();
+                    tmp
                 } else {
                     self.emit_user_call(name, args)?
                 }

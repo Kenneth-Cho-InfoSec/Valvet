@@ -394,6 +394,40 @@ pub fn apply_entry_script(
     }
     let ret = script_ret(&program.top);
     let span = program.span;
+    // Implicit script `args` (imp mode only): `val args: Vec<String>`
+    // collected from argv, unless the user binds `args` themselves.
+    if program.mode != crate::ast::Mode::Exp
+        && !program.top.iter().any(|s| match s {
+            crate::ast::Stmt::Val { name, .. } | crate::ast::Stmt::Var { name, .. } => {
+                name == "args"
+            }
+            _ => false,
+        })
+    {
+        let argv = crate::ast::Expr {
+            id: 0,
+            kind: crate::ast::ExprKind::Call {
+                name: "__argv".to_string(),
+                args: vec![],
+            },
+            span,
+        };
+        program.top.insert(
+            0,
+            crate::ast::Stmt::Val {
+                id: 0,
+                name: "args".to_string(),
+                name_span: span,
+                ty: Some(crate::ast::Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![crate::ast::Ty::Str],
+                }),
+                unit: None,
+                init: argv,
+                span,
+            },
+        );
+    }
     // Result carriers need a value on fallthrough: scripts end with an
     // implicit `return Ok(0)` (skipped when the last statement already
     // returns). Int32/Unit mains fall through to `return 0` in codegen.
