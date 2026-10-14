@@ -2902,6 +2902,9 @@ impl<'a> Gen<'a> {
         self.out.push_str(&format!(
             "static {vct} vmat_diag({ct} *v) {{\n{vct} x = {{NULL, 0, 0}};\nint64_t n = v->rows < v->cols ? v->rows : v->cols;\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\nfor (int64_t i = 0; i < n; ++i) {{ x.data[i] = v->data[i * v->cols + i]; }}\n}}\nreturn x;\n}}\n"
         ));
+        self.out.push_str(&format!(
+            "static {vct} vmat_col({ct} *v, int64_t j) {{\nif (j < 0 || j >= v->cols) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n{vct} x = {{NULL, 0, 0}};\nif (v->rows > 0) {{\nx.data = (double *)malloc((size_t)v->rows * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = v->rows; x.cap = v->rows;\nfor (int64_t i = 0; i < v->rows; ++i) {{ x.data[i] = v->data[i * v->cols + j]; }}\n}}\nreturn x;\n}}\n"
+        ));
         // Symmetric Jacobi eigen decomposition + one-sided Jacobi SVD
         // (shared helpers below; wrappers gated on their Result layouts).
         // Fixed 100-sweep cap with exact-zero early exit: total, no tuning
@@ -3063,6 +3066,14 @@ impl<'a> Gen<'a> {
                 Ok(format!("vmat_scale_rows({}, &{})", rptr, o))
             }
             "mat_diag" => Ok(format!("vmat_diag({})", rptr)),
+            "mat_col" => {
+                let a = args.first().ok_or_else(|| Ice("mat_col arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let v = self.emit_expr(a)?;
+                self.cur_move = saved;
+                Ok(format!("vmat_col({}, (int64_t)({}))", rptr, v))
+            }
             _ => Err(Ice("unknown Mat method".into())),
         }
     }

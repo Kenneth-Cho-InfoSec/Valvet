@@ -5033,6 +5033,27 @@ impl Cx {
                     args: vec![Ty::Float64],
                 }
             }
+            "mat_col" => {
+                // Column as a vector (traps out of bounds, like indexing).
+                if args.len() != 1 {
+                    self.err("E0201", span, "`mat_col` takes exactly 1 argument", None);
+                    return Ty::Error;
+                }
+                let at = self.check_expr(&args[0]);
+                if at != Ty::Int64 && at != Ty::Int32 && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`mat_col` expects an Int column, found {}", at.name()),
+                        None,
+                    );
+                }
+                self.record_vec_inst(&Ty::Float64);
+                Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![Ty::Float64],
+                }
+            }
             "det" => {
                 if !args.is_empty() {
                     self.err("E0201", span, "`det` takes no arguments", None);
@@ -5110,7 +5131,7 @@ impl Cx {
                 self.err(
                     "E0401",
                     method_span,
-                    format!("unknown method `{}` (available on Mat: rows, cols, transpose, matmul, mat_vec, mat_scale_rows, mat_diag, eigen_values, eigen_vectors, svd_u, svd_s, svd_vt, lu_solve, det, inverse, cholesky, clone)", method),
+                    format!("unknown method `{}` (available on Mat: rows, cols, transpose, matmul, mat_vec, mat_scale_rows, mat_diag, mat_col, eigen_values, eigen_vectors, svd_u, svd_s, svd_vt, lu_solve, det, inverse, cholesky, clone)", method),
                     None,
                 );
                 Ty::Error

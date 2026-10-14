@@ -1,0 +1,35 @@
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::model::formula_parse;
+import std::model::model_frame;
+import std::model::lm;
+import std::model::anova_lm;
+import std::model::summary_lm;
+fun go(): Int32 {
+val h = vec!["x", "y"]
+val r0 = vec!["1", "2.1"]
+val r1 = vec!["2", "3.9"]
+val r2 = vec!["3", "6.2"]
+val r3 = vec!["4", "7.8"]
+val r4 = vec!["5", "10.1"]
+val t = frame_from_table(CsvTable { header: h, rows: vec![r0, r1, r2, r3, r4] })
+let Some(fo) = formula_parse("y ~ x") else {
+return 1
+}
+let Ok(mf) = model_frame(&t, fo) else {
+return 1
+}
+let Ok(fit) = lm(mf) else {
+return 1
+}
+val a = anova_lm(&fit)
+println(a.ss_reg)
+println(a.ss_res)
+println(a.f)
+println(a.p)
+println(summary_lm(&fit))
+return 0
+}
+fun main() {
+println(go())
+}

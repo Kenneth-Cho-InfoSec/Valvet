@@ -20,6 +20,18 @@ import std::frame::frame_names;
 import std::math::sqrt;
 import std::math::exp;
 import std::dist::normal_cdf;
+import std::infer::f_p;
+import std::infer::chisq_p;
+
+fun vec_add(a: Vec<Float64>, b: Vec<Float64>): Vec<Float64> {
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < a.len() && i < b.len()) {
+        out.push(a[i] + b[i]);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
 
 pub struct Formula { response: String, terms: Vec<String>, interactions: Vec<Interaction> }
 
@@ -726,4 +738,217 @@ pub fun predict_glm(fit: &GlmFit, mf: ModelFrame): Result<Vec<Float64>, String> 
         i = i + (1 as Int64);
     }
     return Ok(out);
+}
+
+pub struct AnovaLm {
+    ss_reg: Float64,
+    ss_res: Float64,
+    df_reg: Float64,
+    df_res: Float64,
+    f: Float64,
+    p: Float64,
+    r2: Float64,
+}
+
+pub fun anova_lm(fit: &LmFit): AnovaLm {
+    val n = fit.resid.len();
+    val p = fit.coef.len();
+    val ss_res = sum_sq(fit.resid.clone(), 0.0);
+    val ybar = vec_mean(vec_add(fit.fitted.clone(), fit.resid.clone()));
+    val tss = sum_sq(vec_add(fit.fitted.clone(), fit.resid.clone()), ybar);
+    val ss_reg = tss - ss_res;
+    val df_reg = ((p - (1 as Int64)) as Float64);
+    val df_res = ((n - p) as Float64);
+    if (df_res <= 0.0 || ss_res == 0.0) {
+        return AnovaLm { ss_reg: ss_reg, ss_res: ss_res, df_reg: df_reg, df_res: df_res, f: 0.0 / 0.0, p: 0.0 / 0.0, r2: fit.r2 };
+    }
+    val f = (ss_reg / df_reg) / (ss_res / df_res);
+    return AnovaLm { ss_reg: ss_reg, ss_res: ss_res, df_reg: df_reg, df_res: df_res, f: f, p: f_p(f, df_reg, df_res), r2: fit.r2 };
+}
+
+pub fun summary_lm(fit: &LmFit): String {
+    var out = "n=" + to_string(fit.resid.len()) + " r2=" + to_string(fit.r2) + " sigma=" + to_string(fit.sigma) + "\n";
+    out = out + "term coef se z p\n";
+    var j = 0 as Int64;
+    while (j < fit.coef.len() && j < fit.se.len() && j < fit.names.len()) {
+        val z = fit.coef[j] / fit.se[j];
+        val az = if (z < 0.0) { 0.0 - z } else { z };
+        val p = 2.0 * (1.0 - normal_cdf(az, 0.0, 1.0));
+        out = out + fit.names[j] + " " + to_string(fit.coef[j]) + " " + to_string(fit.se[j]) + " " + to_string(z) + " " + to_string(p) + "\n";
+        j = j + (1 as Int64);
+    }
+    out = out + "(z approximations, not t; see module header)\n";
+    return out;
+}
+
+fun cor_plain(x: Vec<Float64>, y: Vec<Float64>): Float64 {
+    val n = x.len();
+    if (n != y.len() || n < (2 as Int64)) {
+        return 0.0 / 0.0;
+    }
+    val mx = vec_mean(x.clone());
+    val my = vec_mean(y.clone());
+    var sxy = 0.0;
+    var sxx = 0.0;
+    var syy = 0.0;
+    var i = 0 as Int64;
+    while (i < n) {
+        val dx = x[i] - mx;
+        val dy = y[i] - my;
+        sxy = sxy + dx * dy;
+        sxx = sxx + dx * dx;
+        syy = syy + dy * dy;
+        i = i + (1 as Int64);
+    }
+    if (sxx == 0.0 || syy == 0.0) {
+        return 0.0 / 0.0;
+    }
+    return sxy / sqrt(sxx * syy);
+}
+
+pub fun cooks_distance(mf: &ModelFrame, fit: &LmFit): Result<Vec<Float64>, String> {
+    if (mf.x.cols() != fit.coef.len()) {
+        return Err("design columns do not match fit");
+    }
+    val xt = mf.x.transpose();
+    val xtx = match (xt.clone().matmul(mf.x.clone())) { Ok(v) -> v, Err(_) -> no_mat(), };
+    if (xtx.rows() != xtx.cols() || xtx.det() == 0.0) {
+        return Err("singular design");
+    }
+    val inv = match (xtx.clone().inverse()) { Ok(v) -> v, Err(_) -> no_mat(), };
+    // Hat diagonal without cell reads: H = X inv X', then mat_diag.
+    val xt2 = mf.x.transpose();
+    val hmat = match (mf.x.clone().matmul(inv.clone())) { Ok(v) -> v, Err(_) -> no_mat(), };
+    val hfull = match (hmat.matmul(xt2)) { Ok(v) -> v, Err(_) -> no_mat(), };
+    val h = hfull.mat_diag();
+    val p = fit.coef.len();
+    val n = mf.y.len();
+    val s2 = fit.sigma * fit.sigma;
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val hii = h[i];
+        if (hii == 1.0 || s2 == 0.0) {
+            out.push(0.0 / 0.0);
+        } else {
+            val e = fit.resid[i];
+            out.push(e * e / ((p as Float64) * s2) * hii / ((1.0 - hii) * (1.0 - hii)));
+        }
+        i = i + (1 as Int64);
+    }
+    return Ok(out);
+}
+
+pub fun vif(mf: &ModelFrame): Result<Vec<Float64>, String> {
+    // Constant columns (e.g. the intercept) carry no variance and would
+    // singular-fail below; R drops them from VIF output, and so do we.
+    val p = mf.x.cols();
+    var keep: Vec<Int64> = vec![];
+    var a = 0 as Int64;
+    while (a < p) {
+        val ca = mf.x.mat_col(a);
+        var constant = true;
+        var i = 1 as Int64;
+        while (i < ca.len()) {
+            if (ca[i] != ca[0 as Int64]) {
+                constant = false;
+            }
+            i = i + (1 as Int64);
+        }
+        if (!constant) {
+            keep.push(a);
+        }
+        a = a + (1 as Int64);
+    }
+    if (keep.len() == (0 as Int64)) {
+        return Err("no varying columns");
+    }
+    var rm: Vec<Vec<Float64>> = vec![];
+    var ai = 0 as Int64;
+    while (ai < keep.len()) {
+        val ca = mf.x.mat_col(keep[ai]);
+        var row: Vec<Float64> = vec![];
+        var bi = 0 as Int64;
+        while (bi < keep.len()) {
+            val cb = mf.x.mat_col(keep[bi]);
+            row.push(cor_plain(ca.clone(), cb.clone()));
+            bi = bi + (1 as Int64);
+        }
+        rm.push(row);
+        ai = ai + (1 as Int64);
+    }
+    val rmat = match (mat_from_rows(rm)) { Ok(v) -> v, Err(_) -> no_mat(), };
+    if (rmat.rows() != rmat.cols() || rmat.det() == 0.0) {
+        return Err("singular correlation");
+    }
+    val inv = match (rmat.clone().inverse()) { Ok(v) -> v, Err(_) -> no_mat(), };
+    val dg = inv.mat_diag();
+    return Ok(dg);
+}
+
+
+pub fun durbin_watson(fit: &LmFit): Float64 {
+    val n = fit.resid.len();
+    if (n < (2 as Int64)) {
+        return 0.0 / 0.0;
+    }
+    var num = 0.0;
+    var den = 0.0;
+    var i = 0 as Int64;
+    while (i < n) {
+        den = den + fit.resid[i] * fit.resid[i];
+        if (i > (0 as Int64)) {
+            val d = fit.resid[i] - fit.resid[i - (1 as Int64)];
+            num = num + d * d;
+        }
+        i = i + (1 as Int64);
+    }
+    if (den == 0.0) {
+        return 0.0 / 0.0;
+    }
+    return num / den;
+}
+
+pub struct BpTest { statistic: Float64, df: Float64, p: Float64 }
+
+pub fun breusch_pagan(mf: &ModelFrame, fit: &LmFit): Result<BpTest, String> {
+    if (mf.x.cols() != fit.coef.len()) {
+        return Err("design columns do not match fit");
+    }
+    val n = mf.y.len();
+    val p = fit.coef.len();
+    var e2: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        e2.push(fit.resid[i] * fit.resid[i]);
+        i = i + (1 as Int64);
+    }
+    // Auxiliary regression of squared residuals on the design (mirrors
+    // `lm`'s solve chain; see that function if this diverges).
+    val xt = mf.x.transpose();
+    val xtx = match (xt.clone().matmul(mf.x.clone())) { Ok(v) -> v, Err(_) -> no_mat(), };
+    val xty = match (xt.clone().mat_vec(e2)) { Ok(v) -> v, Err(_) -> no_vec(), };
+    if (xtx.rows() != xtx.cols() || xtx.rows() != xty.len() || xtx.det() == 0.0) {
+        return Err("singular design");
+    }
+    val beta = match (xtx.clone().lu_solve(xty)) { Ok(v) -> v, Err(_) -> no_vec(), };
+    val fitted = match (mf.x.clone().mat_vec(beta)) { Ok(v) -> v, Err(_) -> no_vec(), };
+    val m = vec_mean(e2.clone());
+    var sst = 0.0;
+    var ssr = 0.0;
+    var k = 0 as Int64;
+    while (k < n) {
+        val d = e2[k] - m;
+        sst = sst + d * d;
+        val f = fitted[k] - m;
+        ssr = ssr + f * f;
+        k = k + (1 as Int64);
+    }
+    if (sst == 0.0) {
+        return Err("constant residuals");
+    }
+    val r2 = ssr / sst;
+    val stat = (n as Float64) * r2;
+    val df = ((p - (1 as Int64)) as Float64);
+    return Ok(BpTest { statistic: stat, df: df, p: chisq_p(stat, df) });
 }

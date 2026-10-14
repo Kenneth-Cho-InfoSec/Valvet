@@ -419,3 +419,93 @@ pub fun mann_whitney(a: Vec<Float64>, b: Vec<Float64>): MannWhitney {
     val z = (diff - 0.5) / sqrt(sig2);
     return MannWhitney { u: u, z: z, p: 2.0 * (1.0 - normal_cdf(z, 0.0, 1.0)) };
 }
+
+pub fun f_cdf(x: Float64, d1: Float64, d2: Float64): Float64 {
+    if (d1 <= 0.0 || d2 <= 0.0 || x != x || d1 != d1 || d2 != d2) {
+        return nan_i();
+    }
+    if (x <= 0.0) {
+        return 0.0;
+    }
+    return beta_reg(d1 / 2.0, d2 / 2.0, d1 * x / (d1 * x + d2));
+}
+
+pub fun f_p(x: Float64, d1: Float64, d2: Float64): Float64 {
+    return 1.0 - f_cdf(x, d1, d2);
+}
+
+pub struct AnovaOneWay {
+    ss_between: Float64,
+    ss_within: Float64,
+    df1: Float64,
+    df2: Float64,
+    f: Float64,
+    p: Float64,
+}
+
+fun anova_mean(v: Vec<Float64>): Float64 {
+    if (v.len() == (0 as Int64)) {
+        return 0.0 / 0.0;
+    }
+    var s = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        s = s + v[i];
+        i = i + (1 as Int64);
+    }
+    return s / (v.len() as Float64);
+}
+
+pub fun anova_oneway(groups: Vec<Vec<Float64>>): Option<AnovaOneWay> {
+    var ng = 0 as Int64;
+    var n = 0 as Int64;
+    var g = 0 as Int64;
+    while (g < groups.len()) {
+        if (groups[g].len() > (0 as Int64)) {
+            ng = ng + (1 as Int64);
+            n = n + groups[g].len();
+        }
+        g = g + (1 as Int64);
+    }
+    if (ng < (2 as Int64) || n <= ng) {
+        return None;
+    }
+    var grand = 0.0;
+    var k = 0 as Int64;
+    while (k < groups.len()) {
+        var j = 0 as Int64;
+        while (j < groups[k].len()) {
+            grand = grand + groups[k][j];
+            j = j + (1 as Int64);
+        }
+        k = k + (1 as Int64);
+    }
+    grand = grand / (n as Float64);
+    var ssb = 0.0;
+    var ssw = 0.0;
+    var m = 0 as Int64;
+    while (m < groups.len()) {
+        if (groups[m].len() > (0 as Int64)) {
+            val mu = anova_mean(groups[m].clone());
+            val d = mu - grand;
+            ssb = ssb + (groups[m].len() as Float64) * d * d;
+            var q = 0 as Int64;
+            while (q < groups[m].len()) {
+                val r = groups[m][q] - mu;
+                ssw = ssw + r * r;
+                q = q + (1 as Int64);
+            }
+        }
+        m = m + (1 as Int64);
+    }
+    val df1 = ((ng - (1 as Int64)) as Float64);
+    val df2 = ((n - ng) as Float64);
+    if (ssw == 0.0) {
+        if (ssb == 0.0) {
+            return Some(AnovaOneWay { ss_between: ssb, ss_within: ssw, df1: df1, df2: df2, f: 0.0 / 0.0, p: 0.0 / 0.0 });
+        }
+        return Some(AnovaOneWay { ss_between: ssb, ss_within: ssw, df1: df1, df2: df2, f: 1.0 / 0.0, p: 0.0 });
+    }
+    val f = (ssb / df1) / (ssw / df2);
+    return Some(AnovaOneWay { ss_between: ssb, ss_within: ssw, df1: df1, df2: df2, f: f, p: f_p(f, df1, df2) });
+}
