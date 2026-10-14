@@ -1,0 +1,79 @@
+// std::schema: schema-typed column parsing over string frames.
+// `infer_schema`-style selections (`"int"|"float"|"bool"|"string"`) drive
+// per-column parsers producing `Missing`-aware vectors; unparseable and
+// NA-like cells (`is_na`: "", "NA", "null") become `Missing`, never traps.
+
+module std.schema;
+
+import std::csv::is_na;
+import std::frame::DynamicFrame;
+import std::frame::frame_col;
+
+fun no_strs(): Vec<String> {
+    return vec![""];
+}
+
+pub fun parse_int_col(col: Vec<String>): Vec<Missing<Int64>> {
+    var out: Vec<Missing<Int64>> = vec![];
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val cell = col[i].clone();
+        if (is_na(&cell)) {
+            out.push(Missing);
+        } else {
+            val v = match (cell.parse_int()) { Some(x) -> x, None -> 0 as Int64, };
+            val ok = match (cell.parse_int()) { Some(_) -> true, None -> false, };
+            if (ok) {
+                out.push(Missing::Present(v));
+            } else {
+                out.push(Missing);
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun parse_float_col(col: Vec<String>): Vec<Missing<Float64>> {
+    var out: Vec<Missing<Float64>> = vec![];
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val cell = col[i].clone();
+        if (is_na(&cell)) {
+            out.push(Missing);
+        } else {
+            val v = match (cell.parse_float()) { Some(x) -> x, None -> 0.0, };
+            val ok = match (cell.parse_float()) { Some(_) -> true, None -> false, };
+            if (ok) {
+                out.push(Missing::Present(v));
+            } else {
+                out.push(Missing);
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun parse_bool_col(col: Vec<String>): Vec<Missing<Bool>> {
+    var out: Vec<Missing<Bool>> = vec![];
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val cell = col[i].clone();
+        if (is_na(&cell)) {
+            out.push(Missing);
+        } else {
+            if (cell == "true") {
+                out.push(Missing::Present(true));
+            } else {
+                if (cell == "false") {
+                    out.push(Missing::Present(false));
+                } else {
+                    out.push(Missing);
+                }
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}

@@ -1,0 +1,16 @@
+fun show(m: Result<Vec<Int64>, ShapeError>) {
+let Ok(v) = m else {
+println("err")
+return
+};
+println(v)
+}
+fun main() {
+val a = vec![1 as Int64, 2 as Int64, 3 as Int64]
+val b = vec![10 as Int64]
+show(a.clone().add(b.clone()))
+show(b.clone().add(a.clone()))
+show(a.clone().mul(b.clone()))
+show(a.clone().add(vec![1 as Int64, 2 as Int64]))
+show(vec![1 as Int64].add(vec![1 as Int64, 2 as Int64]))
+}

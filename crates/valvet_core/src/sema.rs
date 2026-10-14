@@ -70,6 +70,9 @@ pub struct Checked {
     /// Composite instantiations printed via `println` (keys into
     /// `generic_insts`); codegen emits format helpers exactly for these.
     pub print_insts: std::collections::HashSet<String>,
+    /// Element type names (`Ty::name`) with an `is_in` call: gates the
+    /// membership kernel per element type (mirrors `print_insts`).
+    pub is_in_insts: std::collections::HashSet<String>,
     /// Stage-1 functionals: (kind, arg types) kernels for `map`/`filter`/
     /// `fold`/`split_apply` over named functions; codegen emits one C
     /// kernel per entry (deduped).
@@ -157,6 +160,7 @@ pub fn check_with_files(
         aliases: HashMap::new(),
         warns: vec![],
         print_insts: std::collections::HashSet::new(),
+        is_in_insts: std::collections::HashSet::new(),
         dims: HashMap::new(),
         param_dims: HashMap::new(),
     };
@@ -265,6 +269,7 @@ pub fn check_with_files(
             // Pipeline stamps owning sources after (sema never sees text).
             files: vec![],
             print_insts: cx.print_insts,
+            is_in_insts: cx.is_in_insts.clone(),
             fun_kernels: cx.fun_kernels,
             dims: cx.dims,
             param_dims: pdims2,
@@ -310,6 +315,7 @@ struct Cx {
     /// Composite instantiations actually printed (`println(v)`); codegen
     /// emits `vfmt_`/`vprint_` helpers exactly for these (gated, like kernels).
     print_insts: std::collections::HashSet<String>,
+    is_in_insts: std::collections::HashSet<String>,
     /// Stage-1 functional kernels (see `Checked::fun_kernels`).
     fun_kernels: Vec<(String, Vec<Ty>)>,
     /// NodeId -> resolved dimension (units of measure; absent =
@@ -6105,6 +6111,126 @@ impl Cx {
             self.record_vec_inst(&Ty::Int64);
             self.record_ty(&vt);
             return vt;
+        } else if name == "is_in" {
+            // Membership (`%in%`): both sides `Vec<T>` for scalar T;
+            // NaN never matches (documented difference from R's match).
+            if args.len() != 2 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`is_in` takes exactly 2 arguments, found {}", args.len()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let at = self.check_expr(&args[0]);
+            let bt = self.check_expr(&args[1]);
+            let scalar =
+                |t: &Ty| matches!(t, Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str);
+            let ok = match (&at, &bt) {
+                (Ty::Generic { base: ab, args: aa }, Ty::Generic { base: bb, args: ba })
+                    if ab == "Vec" && bb == "Vec" && aa.len() == 1 && ba.len() == 1 =>
+                {
+                    aa[0] == ba[0] && scalar(&aa[0])
+                }
+                _ => false,
+            };
+            if !ok && !ty_has_error(&at) && !ty_has_error(&bt) {
+                self.err(
+                    "E0201",
+                    span,
+                    format!(
+                        "`is_in` needs two `Vec<T>` of one scalar type, found {} and {}",
+                        at.name(),
+                        bt.name()
+                    ),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let elem = match &at {
+                Ty::Generic { args, .. } if args.len() == 1 => args[0].clone(),
+                _ => Ty::Error,
+            };
+            let bt = Ty::Generic {
+                base: "Vec".to_string(),
+                args: vec![Ty::Bool],
+            };
+            self.record_vec_inst(&Ty::Bool);
+            self.record_ty(&bt);
+            self.is_in_insts.insert(elem.name());
+            return bt;
+        } else if name == "mat_outer" {
+            // Outer product of two `Vec<Float64>` (R `outer`).
+            if args.len() != 2 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!(
+                        "`mat_outer` takes exactly 2 arguments, found {}",
+                        args.len()
+                    ),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let want = Ty::Generic {
+                base: "Vec".to_string(),
+                args: vec![Ty::Float64],
+            };
+            for (i, a) in args.iter().enumerate() {
+                let at = self.check_expr(a);
+                if at != want && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        a.span,
+                        format!(
+                            "`mat_outer` argument {} must be Vec<Float64>, found {}",
+                            i + 1,
+                            at.name()
+                        ),
+                        None,
+                    );
+                }
+            }
+            let mat_ty = Ty::Generic {
+                base: "Mat".to_string(),
+                args: vec![],
+            };
+            self.record_ty(&mat_ty);
+            return mat_ty;
+        } else if name == "mat_kron" {
+            // Kronecker product of two `Mat` (R `kronecker`).
+            if args.len() != 2 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`mat_kron` takes exactly 2 arguments, found {}", args.len()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let want = Ty::Generic {
+                base: "Mat".to_string(),
+                args: vec![],
+            };
+            for (i, a) in args.iter().enumerate() {
+                let at = self.check_expr(a);
+                if at != want && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        a.span,
+                        format!(
+                            "`mat_kron` argument {} must be Mat, found {}",
+                            i + 1,
+                            at.name()
+                        ),
+                        None,
+                    );
+                }
+            }
+            self.record_ty(&want);
+            return want;
         } else if name == "mat_zeros" || name == "mat_identity" {
             // M1: `mat_zeros(r, c)` / `mat_identity(n)` (Int args).
             let want_n = if name == "mat_zeros" { 2 } else { 1 };
@@ -6460,6 +6586,81 @@ impl Cx {
         rt
     }
 
+    /// Literal pinning (R2a): an unsuffixed literal side adopts a numeric
+    /// other side when the value is exact (int literals to Int32/Int64
+    /// in range, or to Float64 within 2^53; float literals to Float64).
+    /// Suffixed casts and variables never convert. Returns the unified
+    /// type plus the result dimension, adopting the other's dimension.
+    fn pin_literal(
+        &mut self,
+        lt: &Ty,
+        rt: &Ty,
+        lhs: Option<&Expr>,
+        rhs: Option<&Expr>,
+        ld: &Dim,
+        rd: &Dim,
+    ) -> Option<(Ty, Dim)> {
+        // Integer literal magnitude (negation folds into the sign bound).
+        fn int_mag(e: &Expr) -> Option<(u64, bool)> {
+            match &e.kind {
+                ExprKind::Int(v) if *v >= 0 => Some((*v as u64, false)),
+                ExprKind::Unary {
+                    op: UnOp::Neg,
+                    expr,
+                } if matches!(&expr.kind, ExprKind::Int(v) if *v >= 0) => {
+                    if let ExprKind::Int(v) = &expr.kind {
+                        Some((*v as u64, true))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+        fn is_float_lit(e: &Expr) -> bool {
+            matches!(&e.kind, ExprKind::Float(_))
+                || matches!(
+                    &e.kind,
+                    ExprKind::Unary { op: UnOp::Neg, expr } if matches!(&expr.kind, ExprKind::Float(_))
+                )
+        }
+        const TWO53: u64 = 9007199254740992;
+        // (literal side, target side): magnitude bound or exact-kind rule.
+        if let Some((m, neg)) = lhs.and_then(int_mag) {
+            let ok = match rt {
+                Ty::Int32 => m <= if neg { 2147483648 } else { 2147483647 },
+                Ty::Int64 => true,
+                Ty::Float64 => m <= TWO53,
+                _ => false,
+            };
+            if ok && matches!(rt, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+                self.set_dim(lhs.map(|e| e.id).unwrap(), rd.clone());
+                return Some((rt.clone(), rd.clone()));
+            }
+        }
+        if let Some((m, neg)) = rhs.and_then(int_mag) {
+            let ok = match lt {
+                Ty::Int32 => m <= if neg { 2147483648 } else { 2147483647 },
+                Ty::Int64 => true,
+                Ty::Float64 => m <= TWO53,
+                _ => false,
+            };
+            if ok && matches!(lt, Ty::Int32 | Ty::Int64 | Ty::Float64) {
+                self.set_dim(rhs.map(|e| e.id).unwrap(), ld.clone());
+                return Some((lt.clone(), ld.clone()));
+            }
+        }
+        if *rt == Ty::Float64 && lhs.map(is_float_lit).unwrap_or(false) {
+            self.set_dim(lhs.map(|e| e.id).unwrap(), rd.clone());
+            return Some((Ty::Float64, rd.clone()));
+        }
+        if *lt == Ty::Float64 && rhs.map(is_float_lit).unwrap_or(false) {
+            self.set_dim(rhs.map(|e| e.id).unwrap(), ld.clone());
+            return Some((Ty::Float64, ld.clone()));
+        }
+        None
+    }
+
     fn check_binary(&mut self, b: BinCheck<'_>) -> Ty {
         let id = b.id;
         let span = b.span;
@@ -6512,6 +6713,9 @@ impl Cx {
                     };
                     self.set_dim(id, result);
                     lt.clone()
+                } else if let Some((ut, ud)) = self.pin_literal(lt, rt, lhs, rhs, ld, rd) {
+                    self.set_dim(id, ud);
+                    ut
                 } else {
                     self.err(
                         "E0201",
@@ -6522,7 +6726,7 @@ impl Cx {
                             rt.name()
                         ),
                         Some(
-                            "convert explicitly; Valvet has no implicit numeric conversions".into(),
+                            "convert explicitly; Valvet has no implicit numeric conversions (unsuffixed literals adopt Int32/Int64/Float64 sides when exact)".into(),
                         ),
                     );
                     lt.clone()
@@ -6538,6 +6742,9 @@ impl Cx {
                     };
                     self.set_dim(id, d);
                     lt.clone()
+                } else if let Some((ut, ud)) = self.pin_literal(lt, rt, lhs, rhs, ld, rd) {
+                    self.set_dim(id, ud);
+                    ut
                 } else {
                     self.err(
                         "E0201",

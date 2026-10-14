@@ -85,10 +85,10 @@ match exactly. R recycles length-1 (and warns on fractional recycling).
    are statically... lengths are runtime values, so this is a zero/static
    rule plus a runtime rule:
    - Static: keep the exact-type check as-is (no sema change needed for types).
-   - Runtime: extend the elementwise C kernels (find the `vvec_*_add/mul`
-     emitters near `C: emit_vec_fns`) with: equal lengths → loop; one side
-     length 1 → broadcast it; else `fprintf` + `abort` (trap, matching the
-     existing bounds-trap discipline; harness pins `.exit -1` for traps).
+   - Runtime: extend the elementwise C kernels with length-1 broadcast;
+     incompatible lengths keep the existing `ShapeError` `Err` (NOT a trap:
+     changing to abort would break `shape`-error fixtures; R-compatible
+     values, Valvet-grade errors).
    - Scalar stays via `add_scalar` (no change).
 2. No fractional recycling, ever (stricter than R, documented).
 3. Fixtures: pass (equal, scalar-length) + trap fixture (`[1,2] + [1,2,3]`

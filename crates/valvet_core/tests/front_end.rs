@@ -1285,3 +1285,59 @@ fn seq_accepted() {
 fn seq_arity_rejected() {
     assert_eq!(check_codes("println(seq(1, 5))\n"), vec!["E0201"]);
 }
+
+#[test]
+fn arith_literal_pins_int() {
+    check_ok("val x = 2 as Int64\nprintln(1 + x)\nprintln(x * 3)\n");
+}
+
+#[test]
+fn arith_literal_pins_float() {
+    check_ok("println(1 + 2.0)\n");
+}
+
+#[test]
+fn arith_literal_inexact_rejected() {
+    // Beyond 2^53 the int-to-float pin would lie: still E0201.
+    assert_eq!(
+        check_codes("println(99999999999999999 + 1.0)\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn arith_suffixed_literal_rejected() {
+    assert_eq!(check_codes("println(1i32 + (2 as Int64))\n"), vec!["E0201"]);
+}
+
+#[test]
+fn arith_mixed_vars_rejected() {
+    assert_eq!(
+        check_codes("val a = 1 as Int32\nval b = 2 as Int64\nprintln(a + b)\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn vec_recycle_runs() {
+    // Runtime behaviour is fixture-checked; here just well-formedness.
+    check_ok("fun main() {\nval a = vec![1 as Int64, 2 as Int64]\nval b = vec![10 as Int64]\nlet Ok(v) = a.clone().add(b.clone()) else {\nreturn\n};\nprintln(v)\n}\n");
+}
+
+#[test]
+fn is_in_accepted() {
+    check_ok("println(is_in(vec![1 as Int64], vec![2 as Int64]))\n");
+}
+
+#[test]
+fn is_in_mismatch_rejected() {
+    assert_eq!(
+        check_codes("println(is_in(vec![1 as Int64], vec![\"a\"]))\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn mat_outer_kron_accepted() {
+    check_ok("println(mat_outer(vec![1.0], vec![2.0]))\nprintln(mat_kron(mat_identity(1 as Int64), mat_identity(1 as Int64)))\n");
+}

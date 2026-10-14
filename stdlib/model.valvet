@@ -16,14 +16,130 @@ module std.model;
 
 import std::frame::DynamicFrame;
 import std::frame::frame_col;
+import std::frame::frame_names;
 import std::math::sqrt;
 import std::math::exp;
 import std::dist::normal_cdf;
 
-pub struct Formula { response: String, terms: Vec<String> }
+pub struct Formula { response: String, terms: Vec<String>, interactions: Vec<Interaction> }
+
+pub struct Interaction { terms: Vec<String> }
 
 pub fun formula_new(response: String, terms: Vec<String>): Formula {
-    return Formula { response: response, terms: terms };
+    return Formula { response: response, terms: terms, interactions: no_inter() };
+}
+
+fun has_star(t: String): Bool {
+    return t.split("*").len() != (1 as Int64);
+}
+
+fun has_colon(t: String): Bool {
+    return t.split(":").len() != (1 as Int64);
+}
+
+fun strip_i_call(t: String): String {
+    if (t.len() > (3 as Int64)) {
+        val head = t.slice(0 as Int64, 2 as Int64);
+        val tail = t.slice(t.len() - (1 as Int64), t.len());
+        if (head == "I(" && tail == ")") {
+            return t.slice(2 as Int64, t.len() - (1 as Int64)).trim();
+        }
+    }
+    return t;
+}
+
+fun split_trim(s: String, sep: String): Vec<String> {
+    val parts = s.split(sep);
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < parts.len()) {
+        out.push(parts[i].trim());
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun has_empty(v: Vec<String>): Bool {
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (v[i] == "") {
+            return true;
+        }
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun push_unique(v: Vec<String>, t: String): Vec<String> {
+    var out = v.clone();
+    var i = 0 as Int64;
+    var seen = false;
+    while (i < out.len()) {
+        if (out[i] == t) {
+            seen = true;
+        }
+        i = i + (1 as Int64);
+    }
+    if (!seen) {
+        out.push(t);
+    }
+    return out;
+}
+
+fun same_terms(a: Vec<String>, b: Vec<String>): Bool {
+    if (a.len() != b.len()) {
+        return false;
+    }
+    var i = 0 as Int64;
+    while (i < a.len()) {
+        if (a[i] != b[i]) {
+            return false;
+        }
+        i = i + (1 as Int64);
+    }
+    return true;
+}
+
+fun push_unique_inter(v: Vec<Interaction>, t: Vec<String>): Vec<Interaction> {
+    var out = v.clone();
+    var i = 0 as Int64;
+    var seen = false;
+    while (i < out.len()) {
+        if (same_terms(out[i].terms.clone(), t.clone())) {
+            seen = true;
+        }
+        i = i + (1 as Int64);
+    }
+    if (!seen) {
+        out.push(Interaction { terms: t });
+    }
+    return out;
+}
+
+fun pow2(n: Int64): Int64 {
+    var r = 1 as Int64;
+    var i = 0 as Int64;
+    while (i < n) {
+        r = r * (2 as Int64);
+        i = i + (1 as Int64);
+    }
+    return r;
+}
+
+fun bit_set(m: Int64, b: Int64): Bool {
+    return (m / pow2(b)) % (2 as Int64) == (1 as Int64);
+}
+
+fun mask_terms(parts: Vec<String>, m: Int64): Vec<String> {
+    var out: Vec<String> = vec![];
+    var b = 0 as Int64;
+    while (b < parts.len()) {
+        if (bit_set(m, b)) {
+            out.push(parts[b].clone());
+        }
+        b = b + (1 as Int64);
+    }
+    return out;
 }
 
 pub fun formula_parse(s: String): Option<Formula> {
@@ -36,21 +152,143 @@ pub fun formula_parse(s: String): Option<Formula> {
         return None;
     }
     val rhs = sides[1 as Int64].clone();
-    val parts = rhs.split("+");
-    var terms: Vec<String> = vec![];
-    var i = 0 as Int64;
-    while (i < parts.len()) {
-        val t = parts[i].trim();
-        if (t == "") {
-            return None;
-        }
-        terms.push(t);
-        i = i + (1 as Int64);
-    }
-    if (terms.len() == (0 as Int64)) {
+    val raw = split_trim(rhs, "+");
+    if (raw.len() == (0 as Int64) || has_empty(raw.clone())) {
         return None;
     }
-    return Some(Formula { response: lhs, terms: terms });
+    var terms: Vec<String> = vec![];
+    var interactions: Vec<Interaction> = vec![];
+    var i = 0 as Int64;
+    while (i < raw.len()) {
+        val t = raw[i].clone();
+        val dot = t == ".";
+        if (dot) {
+            terms = push_unique(terms, t.clone());
+        }
+        if (!dot) {
+            val m_ok = match (term_mains(t.clone())) { Some(_) -> true, None -> false, };
+            if (!m_ok) {
+                return None;
+            }
+            val ms = match (term_mains(t.clone())) { Some(v) -> v, None -> no_strs(), };
+            var mi = 0 as Int64;
+            while (mi < ms.len()) {
+                terms = push_unique(terms, ms[mi].clone());
+                mi = mi + (1 as Int64);
+            }
+            val q_ok = match (term_inters(t.clone())) { Some(_) -> true, None -> false, };
+            if (!q_ok) {
+                return None;
+            }
+            val qs = match (term_inters(t.clone())) { Some(v) -> v, None -> no_inter(), };
+            var qi = 0 as Int64;
+            while (qi < qs.len()) {
+                interactions = push_unique_inter(interactions, qs[qi].terms.clone());
+                qi = qi + (1 as Int64);
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    if (terms.len() == (0 as Int64) && interactions.len() == (0 as Int64)) {
+        return None;
+    }
+    return Some(Formula { response: lhs, terms: terms, interactions: interactions });
+}
+
+fun no_inter(): Vec<Interaction> {
+    var e: Vec<Interaction> = vec![];
+    return e;
+}
+
+fun term_mains(t: String): Option<Vec<String>> {
+    val inner = strip_i_call(t);
+    if (inner == "") {
+        return None;
+    }
+    val star = has_star(inner.clone());
+    val colon = has_colon(inner.clone());
+    if (star) {
+        val parts = split_trim(inner.clone(), "*");
+        if (has_empty(parts.clone())) {
+            return None;
+        }
+        var bad = false;
+        var k = 0 as Int64;
+        while (k < parts.len()) {
+            if (has_colon(parts[k].clone())) {
+                bad = true;
+            }
+            k = k + (1 as Int64);
+        }
+        if (bad) {
+            return None;
+        }
+        var out: Vec<String> = vec![];
+        var j = 0 as Int64;
+        while (j < parts.len()) {
+            out = push_unique(out, parts[j].clone());
+            j = j + (1 as Int64);
+        }
+        return Some(out);
+    }
+    if (!star && colon) {
+        var e: Vec<String> = vec![];
+        return Some(e);
+    }
+    if (!star && !colon) {
+        var out: Vec<String> = vec![];
+        out.push(inner.clone());
+        return Some(out);
+    }
+    var e2: Vec<String> = vec![];
+    return Some(e2);
+}
+
+fun term_inters(t: String): Option<Vec<Interaction>> {
+    val inner = strip_i_call(t);
+    if (inner == "") {
+        return None;
+    }
+    val star = has_star(inner.clone());
+    val colon = has_colon(inner.clone());
+    if (star) {
+        val parts = split_trim(inner.clone(), "*");
+        if (has_empty(parts.clone())) {
+            return None;
+        }
+        var bad = false;
+        var k = 0 as Int64;
+        while (k < parts.len()) {
+            if (has_colon(parts[k].clone())) {
+                bad = true;
+            }
+            k = k + (1 as Int64);
+        }
+        if (bad) {
+            return None;
+        }
+        var out: Vec<Interaction> = vec![];
+        var m = 0 as Int64;
+        val total = pow2(parts.len());
+        while (m < total) {
+            val sub = mask_terms(parts.clone(), m);
+            if (sub.len() >= (2 as Int64)) {
+                out = push_unique_inter(out, sub);
+            }
+            m = m + (1 as Int64);
+        }
+        return Some(out);
+    }
+    if (!star && colon) {
+        val parts = split_trim(inner.clone(), ":");
+        if (parts.len() < (2 as Int64) || has_empty(parts.clone())) {
+            return None;
+        }
+        var out: Vec<Interaction> = vec![];
+        return Some(push_unique_inter(out, parts));
+    }
+    var e: Vec<Interaction> = vec![];
+    return Some(e);
 }
 
 pub struct ModelFrame { x: Mat, y: Vec<Float64>, names: Vec<String> }
@@ -84,16 +322,66 @@ pub fun model_frame(f: &DynamicFrame, fo: Formula): Result<ModelFrame, String> {
         return Err("missing column: " + fo.response.clone());
     }
     val yc = need_col(f, fo.response.clone());
-    var tcs: Vec<Vec<String>> = vec![];
+    // Expand `.` to every column but the response; dedupe defensively
+    // (`formula_new` callers bypass the parser).
+    var mains: Vec<String> = vec![];
     var ti = 0 as Int64;
     while (ti < fo.terms.len()) {
-        if (!has_col(f, fo.terms[ti].clone())) {
-            return Err("missing column: " + fo.terms[ti].clone());
+        val t = fo.terms[ti].clone();
+        if (t == ".") {
+            val all = frame_names(f);
+            var ai = 0 as Int64;
+            while (ai < all.len()) {
+                if (all[ai] != fo.response) {
+                    mains = push_unique(mains, all[ai].clone());
+                }
+                ai = ai + (1 as Int64);
+            }
+        } else {
+            mains = push_unique(mains, t);
         }
-        tcs.push(need_col(f, fo.terms[ti].clone()));
         ti = ti + (1 as Int64);
     }
-    // na.omit: keep rows where response and every term parse.
+    var tcs: Vec<Vec<String>> = vec![];
+    var mi = 0 as Int64;
+    while (mi < mains.len()) {
+        if (!has_col(f, mains[mi].clone())) {
+            return Err("missing column: " + mains[mi].clone());
+        }
+        tcs.push(need_col(f, mains[mi].clone()));
+        mi = mi + (1 as Int64);
+    }
+    // Interaction inputs: one string column per crossed term.
+    // Empty term lists (hand-built `Formula`s only; the parser never
+    // emits them) are filtered first: `if`/`else` is a value position,
+    // so the skip cannot live inside the work loops below.
+    var inters: Vec<Interaction> = vec![];
+    var fi = 0 as Int64;
+    while (fi < fo.interactions.len()) {
+        val ts = fo.interactions[fi].terms.clone();
+        if (ts.len() != (0 as Int64)) {
+            inters.push(Interaction { terms: ts });
+        }
+        fi = fi + (1 as Int64);
+    }
+    var ics: Vec<Vec<Vec<String>>> = vec![];
+    var ii = 0 as Int64;
+    while (ii < inters.len()) {
+        val inter = inters[ii].terms.clone();
+        var cols: Vec<Vec<String>> = vec![];
+        var ki = 0 as Int64;
+        while (ki < inter.len()) {
+            if (!has_col(f, inter[ki].clone())) {
+                return Err("missing column: " + inter[ki].clone());
+            }
+            cols.push(need_col(f, inter[ki].clone()));
+            ki = ki + (1 as Int64);
+        }
+        ics.push(cols);
+        ii = ii + (1 as Int64);
+    }
+    // na.omit: keep rows where the response, every main, and every
+    // interaction input parse.
     var rows: Vec<Vec<Float64>> = vec![];
     var ys: Vec<Float64> = vec![];
     var r = 0 as Int64;
@@ -103,16 +391,38 @@ pub fun model_frame(f: &DynamicFrame, fo: Formula): Result<ModelFrame, String> {
             var row: Vec<Float64> = vec![];
             row.push(1.0);
             var ok = true;
+            var vals: Vec<Float64> = vec![];
             var k = 0 as Int64;
             while (k < tcs.len()) {
                 val xv = match (tcs[k][r].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
                 if (xv != xv) {
                     ok = false;
                 }
-                row.push(xv);
+                vals.push(xv);
                 k = k + (1 as Int64);
             }
+            var q = 0 as Int64;
+            while (q < ics.len()) {
+                val cols = ics[q].clone();
+                var prod = 1.0;
+                var j = 0 as Int64;
+                while (j < cols.len()) {
+                    val xv = match (cols[j][r].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+                    if (xv != xv) {
+                        ok = false;
+                    }
+                    prod = prod * xv;
+                    j = j + (1 as Int64);
+                }
+                vals.push(prod);
+                q = q + (1 as Int64);
+            }
             if (ok) {
+                var c = 0 as Int64;
+                while (c < vals.len()) {
+                    row.push(vals[c]);
+                    c = c + (1 as Int64);
+                }
                 rows.push(row);
                 ys.push(yv);
             }
@@ -125,9 +435,21 @@ pub fun model_frame(f: &DynamicFrame, fo: Formula): Result<ModelFrame, String> {
     var names: Vec<String> = vec![];
     names.push("(Intercept)");
     var ni = 0 as Int64;
-    while (ni < fo.terms.len()) {
-        names.push(fo.terms[ni]);
+    while (ni < mains.len()) {
+        names.push(mains[ni]);
         ni = ni + (1 as Int64);
+    }
+    var qi = 0 as Int64;
+    while (qi < inters.len()) {
+        val iterms = inters[qi].terms.clone();
+        var label = iterms[0 as Int64].clone();
+        var li = 1 as Int64;
+        while (li < iterms.len()) {
+            label = label + ":" + iterms[li].clone();
+            li = li + (1 as Int64);
+        }
+        names.push(label);
+        qi = qi + (1 as Int64);
     }
     var ragged = false;
     var w = rows[0 as Int64].len();

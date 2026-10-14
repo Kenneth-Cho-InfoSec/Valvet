@@ -725,6 +725,7 @@ pub fn lower(checked: &Checked) -> Result<String, Ice> {
             )
             .collect(),
         print_insts: checked.print_insts.clone(),
+        is_in_insts: checked.is_in_insts.clone(),
         fun_kernels: checked.fun_kernels.clone(),
         structs: checked.structs.clone(),
         enums: checked.enums.clone(),
@@ -806,6 +807,7 @@ struct Gen<'a> {
     /// Composite instantiations printed via `println` (keys into
     /// `generic_insts`); format helpers emit exactly for these.
     print_insts: std::collections::HashSet<String>,
+    is_in_insts: std::collections::HashSet<String>,
     /// Stage-1 functional kernels (see sema's `Checked::fun_kernels`).
     fun_kernels: Vec<(String, Vec<Ty>)>,
     /// NodeId -> resolved dimension (units of measure; absent =
@@ -2408,7 +2410,7 @@ impl<'a> Gen<'a> {
             let want_vec_res = self.has_inst("Result", &[vt_here.clone(), shape.clone()]);
             if want_vec_res {
                 self.out.push_str(&format!(
-                    "static {rct} vvec_{iname}_add({vct} *a, {vct} *b) {{\nif (a->len != b->len) {{ return {shape}; }}\n{vct} r = vvec_{iname}_new();\nfor (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] + b->data[i]; vvec_{iname}_push(&r, x); }}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = r }} }} }};\nreturn o;\n}}\n",
+                    "static {rct} vvec_{iname}_add({vct} *a, {vct} *b) {{\n{vct} r = vvec_{iname}_new();\nif (a->len == b->len) {{ for (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] + b->data[i]; vvec_{iname}_push(&r, x); }} }} else if (a->len == 1 && b->len > 0) {{ for (int64_t i = 0; i < b->len; ++i) {{ {et} x = a->data[0] + b->data[i]; vvec_{iname}_push(&r, x); }} }} else if (b->len == 1 && a->len > 0) {{ for (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] + b->data[0]; vvec_{iname}_push(&r, x); }} }} else {{ return {shape}; }}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = r }} }} }};\nreturn o;\n}}\n",
                     rct = rct,
                     iname = iname,
                     vct = vct,
@@ -2416,7 +2418,7 @@ impl<'a> Gen<'a> {
                     shape = shape_lit("a->len", "b->len")
                 ));
                 self.out.push_str(&format!(
-                    "static {rct} vvec_{iname}_mul({vct} *a, {vct} *b) {{\nif (a->len != b->len) {{ return {shape}; }}\n{vct} r = vvec_{iname}_new();\nfor (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] * b->data[i]; vvec_{iname}_push(&r, x); }}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = r }} }} }};\nreturn o;\n}}\n",
+                    "static {rct} vvec_{iname}_mul({vct} *a, {vct} *b) {{\n{vct} r = vvec_{iname}_new();\nif (a->len == b->len) {{ for (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] * b->data[i]; vvec_{iname}_push(&r, x); }} }} else if (a->len == 1 && b->len > 0) {{ for (int64_t i = 0; i < b->len; ++i) {{ {et} x = a->data[0] * b->data[i]; vvec_{iname}_push(&r, x); }} }} else if (b->len == 1 && a->len > 0) {{ for (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] * b->data[0]; vvec_{iname}_push(&r, x); }} }} else {{ return {shape}; }}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = r }} }} }};\nreturn o;\n}}\n",
                     rct = rct,
                     iname = iname,
                     vct = vct,
@@ -2472,6 +2474,27 @@ impl<'a> Gen<'a> {
                 ));
                 let _ = rf;
             }
+        }
+        // Membership kernel (`%in%`): emitted only for element types
+        // with an `is_in` call (usage-gated like print helpers).
+        // Strings compare via `vstr_eq`; NaN never matches, documented.
+        if matches!(t, Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str)
+            && self.is_in_insts.contains(&t.name())
+        {
+            let bct = ctype_inst("Vec", std::slice::from_ref(&Ty::Bool));
+            let vct = ctype_inst("Vec", std::slice::from_ref(&t));
+            let eq = if matches!(t, Ty::Str) {
+                "vstr_eq(a->data[i], b->data[j])".to_string()
+            } else {
+                "a->data[i] == b->data[j]".to_string()
+            };
+            self.out.push_str(&format!(
+                    "static {bct} vvec_{iname}_is_in({vct} *a, {vct} *b) {{\n{bct} r = vvec_Vec_Bool_new();\nfor (int64_t i = 0; i < a->len; ++i) {{ int f = 0;\nfor (int64_t j = 0; j < b->len && !f; ++j) {{ if ({eq}) {{ f = 1; }} }}\nvvec_Vec_Bool_push(&r, f); }}\nreturn r; }}\n",
+                    bct = bct,
+                    iname = iname,
+                    vct = vct,
+                    eq = eq,
+                ));
         }
 
         // J5 shuffle/sample: element-agnostic Fisher-Yates over any `T`
@@ -2743,6 +2766,13 @@ impl<'a> Gen<'a> {
         ));
         self.out.push_str(&format!(
             "static {ct} vmat_transpose({ct} *v) {{\n{ct} m = vmat_zeros(v->cols, v->rows);\nfor (int64_t i = 0; i < v->rows; ++i) {{\nfor (int64_t j = 0; j < v->cols; ++j) {{ m.data[j * v->rows + i] = v->data[i * v->cols + j]; }}\n}}\nreturn m;\n}}\n"
+        ));
+        // Outer and Kronecker products (total: dimensions always valid).
+        self.out.push_str(&format!(
+            "static {ct} vmat_outer({vct} *a, {vct} *b) {{\n{ct} m = vmat_zeros(a->len, b->len);\nfor (int64_t i = 0; i < a->len; ++i) {{\nfor (int64_t j = 0; j < b->len; ++j) {{ m.data[i * b->len + j] = a->data[i] * b->data[j]; }}\n}}\nreturn m;\n}}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {ct} vmat_kron({ct} *a, {ct} *b) {{\nint64_t r = a->rows * b->rows;\nint64_t c = a->cols * b->cols;\n{ct} m = vmat_zeros(r, c);\nfor (int64_t i = 0; i < a->rows; ++i) {{\nfor (int64_t j = 0; j < a->cols; ++j) {{\ndouble x = a->data[i * a->cols + j];\nfor (int64_t k = 0; k < b->rows; ++k) {{\nfor (int64_t l = 0; l < b->cols; ++l) {{ m.data[(i * b->rows + k) * c + (j * b->cols + l)] = x * b->data[k * b->cols + l]; }}\n}}\n}}\n}}\nreturn m;\n}}\n"
         ));
         let shape_lit = |r: &str, a: &str, b: &str| {
             format!(
@@ -4564,6 +4594,41 @@ impl<'a> Gen<'a> {
                         parts.push(format!("(int64_t)({})", v));
                     }
                     format!("v_seq_wrap({}, {}, {})", parts[0], parts[1], parts[2])
+                } else if name == "is_in" {
+                    // Membership: both sides borrow; result is a fresh vec.
+                    if args.len() != 2 {
+                        return Err(Ice("is_in arity".into()));
+                    }
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let a = self.mat_str(&args[0])?;
+                    let b = self.mat_str(&args[1])?;
+                    self.cur_move = saved;
+                    let vct = match self.ty_of(args[0].id) {
+                        Ty::Generic { base, args: ta } if base == "Vec" && ta.len() == 1 => {
+                            ctype_inst("Vec", std::slice::from_ref(&ta[0]))
+                        }
+                        _ => return Err(Ice("is_in of non-Vec".into())),
+                    };
+                    let iname = vct.strip_prefix('V').unwrap_or(&vct).to_string();
+                    format!("vvec_{}_is_in(&{}, &{})", iname, a, b)
+                } else if name == "mat_outer" || name == "mat_kron" {
+                    if args.len() != 2 {
+                        return Err(Ice("mat_outer/mat_kron arity".into()));
+                    }
+                    let mut parts = vec![];
+                    for a in args {
+                        let saved = self.cur_move;
+                        self.cur_move = false;
+                        let v = self.mat_str(a)?;
+                        self.cur_move = saved;
+                        parts.push(v);
+                    }
+                    if name == "mat_outer" {
+                        format!("vmat_outer(&{}, &{})", parts[0], parts[1])
+                    } else {
+                        format!("vmat_kron(&{}, &{})", parts[0], parts[1])
+                    }
                 } else if name == "mat_zeros" || name == "mat_identity" || name == "mat_from_rows" {
                     // M1 matrix constructors (sema checked arity/types).
                     // Int dims are Copy; the row vector borrows (mat_str).

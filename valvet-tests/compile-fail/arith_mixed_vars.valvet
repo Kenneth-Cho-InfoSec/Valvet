@@ -1,0 +1,5 @@
+fun main() {
+val a = 1 as Int32
+val b = 2 as Int64
+println(a + b)
+}
