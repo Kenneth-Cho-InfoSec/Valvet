@@ -3153,6 +3153,21 @@ impl Parser {
         r
     }
 
+    /// Parse one complete expression plus end-of-input (REPL echo check).
+    /// Returns the expression when nothing but newlines follows it.
+    pub fn parse_bare_expr(&mut self) -> Option<Expr> {
+        self.skip_nls();
+        let e = self.parse_expr()?;
+        self.skip_nls();
+        if !matches!(self.cur(), Tok::Eof) {
+            return None;
+        }
+        if !self.errs.is_empty() {
+            return None;
+        }
+        Some(e)
+    }
+
     /// Next non-newline token without consuming input (newline-sensitive lookahead).
     /// At bracket depth 0 newlines terminate expressions: a binary operator
     /// starting the next line begins a new statement (`*p` is dereference,

@@ -1206,3 +1206,18 @@ fn script_args_absent_in_exp() {
         vec!["E0401"]
     );
 }
+
+#[test]
+fn repl_echo_bare_expr() {
+    assert!(pipeline::is_bare_expr("1 + 2"));
+    assert!(pipeline::is_bare_expr("println(\"hi\")"));
+    assert!(pipeline::is_bare_expr("  x  "));
+}
+
+#[test]
+fn repl_echo_rejects_statements() {
+    assert!(!pipeline::is_bare_expr("val x = 1"));
+    assert!(!pipeline::is_bare_expr("1; 2"));
+    assert!(!pipeline::is_bare_expr("nope("));
+    assert!(!pipeline::is_bare_expr(""));
+}

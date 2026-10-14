@@ -140,40 +140,82 @@ fn default_exe(path: &str) -> PathBuf {
 
 /// Front-end + C lowering + cc link. Returns exe path or prints diags.
 /// File-based: `path` is the entry file; its imports resolve from its directory.
-fn build_exe(path: &str) -> Result<PathBuf, i32> {
+/// Successful builds cache by content hash (version + toolchain + sources);
+/// a cache hit skips C emission and linking entirely.
+fn build_exe(path: &str, quiet: bool) -> Result<PathBuf, i32> {
     let checked = pipeline::front_end_file(Path::new(path)).map_err(|fd| {
-        eprintln!("{}", fd.render());
+        if !quiet {
+            eprintln!("{}", fd.render());
+        }
         1
     })?;
-    emit_warnings(&checked);
-    let c_src = codegen::lower(&checked).map_err(|ice| {
-        eprintln!("error[ICE]: internal compiler error: {}", ice.0);
-        1
-    })?;
-    let dir = target_dir();
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("error: cannot create `{}`: {}", dir.display(), e);
-        return Err(1);
+    if !quiet {
+        emit_warnings(&checked);
     }
     let stem = Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("a");
-    let c_file = dir.join(format!("{}.c", stem));
+    let dir = target_dir();
     let exe = dir.join(stem);
+    let digest = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        VERSION.hash(&mut h);
+        std::env::var("VALVET_CC").unwrap_or_default().hash(&mut h);
+        for f in &checked.files {
+            f.name.hash(&mut h);
+            f.text.hash(&mut h);
+        }
+        format!("{:x}", h.finish())
+    };
+    let sidecar = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut ph = DefaultHasher::new();
+        path.hash(&mut ph);
+        dir.join(format!("{}-{:x}.hash", stem, ph.finish()))
+    };
+    if exe.exists()
+        && std::fs::read_to_string(&sidecar)
+            .ok()
+            .is_some_and(|s| s.trim() == digest)
+    {
+        return Ok(exe);
+    }
+    let c_src = codegen::lower(&checked).map_err(|ice| {
+        if !quiet {
+            eprintln!("error[ICE]: internal compiler error: {}", ice.0);
+        }
+        1
+    })?;
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        if !quiet {
+            eprintln!("error: cannot create `{}`: {}", dir.display(), e);
+        }
+        return Err(1);
+    }
+    let c_file = dir.join(format!("{}.c", stem));
     if let Err(e) = std::fs::write(&c_file, &c_src) {
-        eprintln!("error: cannot write `{}`: {}", c_file.display(), e);
+        if !quiet {
+            eprintln!("error: cannot write `{}`: {}", c_file.display(), e);
+        }
         return Err(1);
     }
     if let Err(e) = codegen::cc_build(&c_file, &exe) {
-        eprintln!("error: backend linking failed:\n{}", e);
+        if !quiet {
+            eprintln!("error: backend linking failed:\n{}", e);
+        }
         return Err(1);
     }
+    // Memoize only successful builds (a failed link must rebuild next time).
+    let _ = std::fs::write(&sidecar, digest);
     Ok(exe)
 }
 
 fn cmd_build(path: &str, _exe: PathBuf) -> i32 {
-    match build_exe(path) {
+    match build_exe(path, false) {
         Ok(exe) => {
             println!("built {}", exe.display());
             0
@@ -183,7 +225,7 @@ fn cmd_build(path: &str, _exe: PathBuf) -> i32 {
 }
 
 fn cmd_run(path: &str, script_argv: Vec<String>) -> i32 {
-    let exe = match build_exe(path) {
+    let exe = match build_exe(path, false) {
         Ok(e) => e,
         Err(c) => return c,
     };
@@ -470,7 +512,7 @@ struct ReplSession {
 impl ReplSession {
     /// Session source: imports, definitions, latest snippet driver.
     /// `snippet` is `Some(entry)` to run, `None` for definitions-only.
-    fn render(&self, snippet: Option<&str>) -> String {
+    fn render(&self, snippet: Option<&str>, echo: bool) -> String {
         let mut s = String::new();
         for imp in &self.imports {
             s.push_str(imp);
@@ -482,9 +524,16 @@ impl ReplSession {
         }
         match snippet {
             Some(entry) => {
+                // Echo form prints bare-expression values (`1 + 2` shows
+                // `3`); anything else runs as written.
+                let body = if echo {
+                    format!("println(({}));\n0\n", entry)
+                } else {
+                    format!("{}\n0\n", entry)
+                };
                 s.push_str(&format!(
-                    "fun __r{}(): Int32 {{\n{}\n0\n}}\n",
-                    self.counter, entry
+                    "fun __r{}(): Int32 {{\n{}}}\n",
+                    self.counter, body
                 ));
                 s.push_str(&format!("fun main() {{\n__r{}();\n}}\n", self.counter));
             }
@@ -730,7 +779,7 @@ fn cmd_repl() -> i32 {
                     text: slice_of(&entry, d.span.start, d.span.end),
                 });
             }
-            let text = session.render(None);
+            let text = session.render(None, false);
             if std::fs::write(&session_path, &text).is_err() {
                 eprintln!("error: cannot write session file");
                 session.items.truncate(saved_len);
@@ -764,7 +813,7 @@ fn cmd_repl() -> i32 {
                 if !session.imports.contains(&trimmed) {
                     session.imports.push(trimmed.clone());
                 }
-                let text = session.render(None);
+                let text = session.render(None, false);
                 if std::fs::write(&session_path, &text).is_err() {
                     eprintln!("error: cannot write session file");
                     session.imports.retain(|i| i != &trimmed);
@@ -814,14 +863,31 @@ fn cmd_repl() -> i32 {
             continue;
         }
         // Check + run (failed snippets never persist: nothing was added).
+        // Bare expressions echo their value; when the echo form does not
+        // compile (e.g. Unit-valued calls), retry as a plain snippet.
         session.counter += 1;
-        let text = session.render(Some(&entry));
+        let echo = pipeline::is_bare_expr(&entry);
+        let text = session.render(Some(&entry), echo);
         if std::fs::write(&session_path, &text).is_err() {
             eprintln!("error: cannot write session file");
             continue;
         }
-        let exe = match build_exe(&session_file) {
+        let exe = match build_exe(&session_file, true) {
             Ok(e) => e,
+            Err(_) if echo => {
+                let text = session.render(Some(&entry), false);
+                if std::fs::write(&session_path, &text).is_err() {
+                    eprintln!("error: cannot write session file");
+                    continue;
+                }
+                match build_exe(&session_file, false) {
+                    Ok(e) => e,
+                    Err(_) => {
+                        let _ = std::fs::remove_file(&session_path);
+                        continue;
+                    }
+                }
+            }
             Err(_) => {
                 let _ = std::fs::remove_file(&session_path);
                 continue;

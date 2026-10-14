@@ -17,6 +17,21 @@ pub fn parse_unit(source: &Source) -> Result<Program, Vec<Diagnostic>> {
     Ok(prog.expect("parser returned no program and no errors"))
 }
 
+/// True when `text` parses as exactly one complete expression (REPL
+/// echo rule: such snippets run as `println(<entry>);`, with a silent
+/// retry as a plain snippet when the echo form does not compile, e.g.
+/// Unit-valued calls).
+pub fn is_bare_expr(text: &str) -> bool {
+    let probe = Source::new("<repl>".to_string(), text.to_string());
+    let (toks, errs) = crate::lexer::lex(&probe);
+    if !errs.is_empty() {
+        return false;
+    }
+    let mut p = crate::parser::Parser::new(toks);
+    // Same-shape check as `parse_expr` + trailing-only separators.
+    p.parse_bare_expr().is_some()
+}
+
 /// Full front-end pipeline: lex -> parse -> typecheck -> ownership.
 /// Returns checked HIR or the diagnostic list. Never panics on user input.
 /// Single-source mode: `import` declarations are rejected (E0701 — imports
