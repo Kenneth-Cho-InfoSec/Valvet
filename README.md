@@ -235,7 +235,8 @@ examples/             small runnable programs
 docs/implementation/  plans, architecture (ADR-001), gaps, test strategy
 ```
 
-Pipeline: `.valvet` → tokens → AST → typed HIR → borrow-checked HIR →
+Pipeline: sources (`.valvet`, `.vv`, `.vvt` — equivalent, resolved in that
+preference order) → tokens → AST → typed HIR → borrow-checked HIR →
 C11 → system `cc` → native binary. Semantics live in the front end;
 codegen is a thin lowering (an LLVM/Cranelift backend could replace it
 without touching typing or ownership).

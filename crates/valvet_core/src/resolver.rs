@@ -17,6 +17,21 @@ pub fn qname(module: &str, name: &str) -> String {
     }
 }
 
+/// Valvet source extensions in preference order.
+pub const SOURCE_EXTS: &[&str] = &["valvet", "vv", "vvt"];
+
+/// First existing `stem` + extension candidate, `.valvet` first.
+fn first_hit(stem: &Path) -> Option<PathBuf> {
+    SOURCE_EXTS
+        .iter()
+        .map(|e| {
+            let mut p = stem.to_path_buf();
+            p.set_extension(e);
+            p
+        })
+        .find(|p| p.is_file())
+}
+
 /// File-based module loader (Phase H): `import a::b::Item` in the entry file
 /// loads `<root>/a/b.valvet` (root = entry file's directory), which must
 /// declare `module a.b;`. Units are parsed separately (per-file errors) and
@@ -324,33 +339,38 @@ impl Loader {
             for seg in &ipath {
                 rel.push(seg);
             }
-            rel.set_extension("valvet");
-            // `std::` imports also consult the stdlib roots in order;
-            // anything else resolves from the entry directory only.
-            // Under a stdlib root the leading `std` segment is dropped
-            // (`import std.math::sqrt` lives at `<root>/math.valvet`
-            // declaring `module std.math;`). A miss everywhere falls back
-            // to the entry-relative path so the diagnostic still names
-            // the file the user would create.
+            // Valvet source extensions in preference order (`.valvet`
+            // first: existing files keep resolving exactly as before).
+            let fallback = {
+                let mut fb = self.root.join(&rel);
+                fb.set_extension("valvet");
+                fb
+            };
             let target = if ipath.first().map(|s| s == "std").unwrap_or(false) {
-                let mut hit = self.root.join(&rel);
-                if !hit.is_file() && ipath.len() > 1 {
-                    let mut srel = PathBuf::new();
-                    for seg in &ipath[1..] {
-                        srel.push(seg);
-                    }
-                    srel.set_extension("valvet");
-                    for r in &self.stdlib_roots {
-                        let cand = r.join(&srel);
-                        if cand.is_file() {
-                            hit = cand;
-                            break;
+                // `std::` imports also consult the stdlib roots in order;
+                // anything else resolves from the entry directory only.
+                // Under a stdlib root the leading `std` segment is dropped
+                // (`import std.math::sqrt` lives at `<root>/math.valvet`
+                // declaring `module std.math;`). A miss everywhere falls back
+                // to the entry-relative path so the diagnostic still names
+                // the file the user would create.
+                match first_hit(&self.root.join(&rel)) {
+                    Some(h) => h,
+                    None if ipath.len() > 1 => {
+                        let mut srel = PathBuf::new();
+                        for seg in &ipath[1..] {
+                            srel.push(seg);
                         }
+                        self.stdlib_roots
+                            .iter()
+                            .filter_map(|r| first_hit(&r.join(&srel)))
+                            .next()
+                            .unwrap_or(fallback)
                     }
+                    None => fallback,
                 }
-                hit
             } else {
-                self.root.join(&rel)
+                first_hit(&self.root.join(&rel)).unwrap_or(fallback)
             };
             let target_display = target.display().to_string();
             self.load_unit(&target, &target_display, dotted, Some((display, ispan)))?;

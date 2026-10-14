@@ -95,7 +95,10 @@ fn fuzz_fixture_mutations_no_panic() {
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("valvet") {
+            if p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|e| ["valvet", "vv", "vvt"].contains(&e))
+            {
                 if let Ok(t) = std::fs::read_to_string(&p) {
                     corpus.push(t);
                 }

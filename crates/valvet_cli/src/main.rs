@@ -37,7 +37,7 @@ fn run(args: Vec<String>) -> i32 {
 
 fn get_path(args: &[String]) -> &str {
     if args.len() < 2 {
-        eprintln!("error: missing <file.valvet>");
+        eprintln!("error: missing <file>");
         eprintln!("run `valvet --help` for usage");
         std::process::exit(2);
     }
@@ -48,9 +48,10 @@ fn print_help() {
     println!("valvet {} — Valvet language compiler (Core MVP)", VERSION);
     println!();
     println!("USAGE:");
-    println!("    valvet check <file.valvet>   parse and analyse without linking");
-    println!("    valvet build <file.valvet>   compile and link an executable");
-    println!("    valvet run <file.valvet>     compile, link and execute");
+    println!("    valvet check <file>        parse and analyse without linking");
+    println!("    valvet build <file>        compile and link an executable");
+    println!("    valvet run <file>          compile, link and execute");
+    println!("    (.valvet, .vv and .vvt sources are equivalent)");
     println!("    valvet run <file> -- args    run with script arguments in `args`");
     println!("    valvet test [dir]            run the Valvet fixture test suite");
     println!("    valvet new <name>            scaffold a new single-dir project");
@@ -293,7 +294,7 @@ fn cmd_eval(expr: Option<&str>) -> i32 {
 // ---------- fixture test suite ----------
 
 struct Fixture {
-    /// Entry `.valvet` file (flat fixture, or `main.valvet` of a multi-file dir).
+    /// Entry file (flat fixture, or `main.{valvet,vv,vvt}` of a multi-file dir).
     path: PathBuf,
     /// Stem for generated C/exe names (flat: file stem; multi-file: dir name).
     stem: String,
@@ -316,7 +317,10 @@ fn collect_fixtures(root: &Path) -> Vec<Fixture> {
         };
         for e in entries.flatten() {
             let p = e.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("valvet") {
+            if p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|e| ["valvet", "vv", "vvt"].contains(&e))
+            {
                 let stem = p
                     .file_stem()
                     .and_then(|x| x.to_str())
@@ -334,8 +338,8 @@ fn collect_fixtures(root: &Path) -> Vec<Fixture> {
             }
         }
     }
-    // Multi-file projects: `multi-file/<name>/main.valvet` (+ siblings).
-    // Fail kind when `main.valvet.error` exists, else pass.
+    // Multi-file projects: `multi-file/<name>/main.{valvet,vv,vvt}`.
+    // Fail kind when `main.*.error` exists, else pass.
     let multi = root.join("multi-file");
     if let Ok(entries) = std::fs::read_dir(&multi) {
         for e in entries.flatten() {
@@ -343,10 +347,14 @@ fn collect_fixtures(root: &Path) -> Vec<Fixture> {
             if !dir.is_dir() {
                 continue;
             }
-            let entry = dir.join("main.valvet");
-            if !entry.is_file() {
-                continue;
-            }
+            let entry = ["main.valvet", "main.vv", "main.vvt"]
+                .iter()
+                .map(|f| dir.join(f))
+                .find(|p| p.is_file());
+            let entry = match entry {
+                Some(p) => p,
+                None => continue,
+            };
             let stem = dir
                 .file_name()
                 .and_then(|x| x.to_str())
