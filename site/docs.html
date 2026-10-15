@@ -493,7 +493,8 @@ println(par_sum(v.clone(), 4 as Int64));</pre></div>
 <ul class="tight">
 <li>Single C translation unit per program; local machine target.</li>
 <li>0.2.0 analytical foundation: units of measure, audited joins, provenance, dual-number autodiff, deterministic <code class="inline">par_sum</code>, script mode, file I/O, CSV/JSON, statistics, plotting, and an interactive REPL.</li>
-<li>Full test gates: 103 unit tests, 152/152 fixtures in debug and release, ASan/UBSan-clean output.</li>
+<li>0.3.0 modeling release: R-style formulas with contrasts, weighted fits, ANOVA plus diagnostics, a SQL subset over frames, validation contracts, window verbs, selection and causal helpers, meta-analysis, and LaTeX/HTML model tables.</li>
+<li>Full test gates: 185 unit tests, 258/258 fixtures in debug and release, ASan/UBSan-clean output.</li>
 <li>Nothing in earlier versions needs relearning: frames are owned values with borrowed views, missing data is explicit, and every fallible operation returns <code class="inline">Result</code>.</li>
 <li>Deliberately absent: closures, traits, user generics, and methods beyond the builtins. Each is a tracked future phase, not an oversight, and E0800 marks the boundary at compile time.</li>
 </ul>
