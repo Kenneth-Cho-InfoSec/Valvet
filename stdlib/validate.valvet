@@ -1,0 +1,127 @@
+// std::validate: Pandera shaped contracts over DynamicFrame.
+// Column specs declare type, range, set, uniqueness, no-missing.
+// Reports are printable Strings. Pure Valvet, never traps.
+module std.validate;
+
+import std::frame::DynamicFrame;
+import std::frame::frame_col;
+import std::csv::is_na;
+
+pub struct Check { col: String, kind: String, lo: Float64, hi: Float64, nomissing: Bool, unique: Bool }
+
+pub fun check_new(col: String, kind: String): Check {
+    return Check { col: col, kind: kind, lo: 0.0 / 0.0, hi: 0.0 / 0.0, nomissing: false, unique: false };
+}
+
+pub fun check_range(col: String, lo: Float64, hi: Float64): Check {
+    return Check { col: col, kind: "float", lo: lo, hi: hi, nomissing: true, unique: false };
+}
+
+pub struct ValidReport { ok: Bool, errors: Vec<String> }
+
+fun is_int_str(s: String): Bool {
+    return match (s.parse_int()) { Some(_) -> true, None -> false, };
+}
+
+fun is_float_str(s: String): Bool {
+    return match (s.parse_float()) { Some(_) -> true, None -> false, };
+}
+
+fun is_bool_str(s: String): Bool {
+    return s == "true" || s == "false";
+}
+
+pub fun validate(f: &DynamicFrame, specs: Vec<Check>, allowed: Vec<Vec<String>>): ValidReport {
+    var errs: Vec<String> = vec![];
+    var si = 0 as Int64;
+    while (si < specs.len()) {
+        val sp_col = specs[si].col.clone();
+        val sp_kind = specs[si].kind.clone();
+        val sp_lo = specs[si].lo;
+        val sp_hi = specs[si].hi;
+        val sp_nomissing = specs[si].nomissing;
+        val sp_unique = specs[si].unique;
+        val empty_col: Vec<String> = vec![];
+        val col = match (frame_col(f, sp_col.clone())) { Some(v) -> v, None -> empty_col, };
+        if (col.len() == (0 as Int64)) {
+            errs.push("missing column: " + sp_col.clone());
+        } else {
+            var seen: Vec<String> = vec![];
+            var i = 0 as Int64;
+            while (i < col.len()) {
+                val cell = col[i].clone();
+                val missing = is_na(&cell);
+                if (missing && sp_nomissing) {
+                    errs.push(sp_col.clone() + " row " + to_string(i) + " missing");
+                }
+                if (!missing) {
+                    if (sp_kind == "int" && !is_int_str(cell.clone())) {
+                        errs.push(sp_col.clone() + " row " + to_string(i) + " not int");
+                    }
+                    if (sp_kind == "float" && !is_float_str(cell.clone())) {
+                        errs.push(sp_col.clone() + " row " + to_string(i) + " not float");
+                    }
+                    if (sp_kind == "bool" && !is_bool_str(cell.clone())) {
+                        errs.push(sp_col.clone() + " row " + to_string(i) + " not bool");
+                    }
+                    if (sp_kind == "float" || sp_kind == "int") {
+                        val v = match (cell.parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+                        if (v == v) {
+                            if (sp_lo == sp_lo && v < sp_lo) {
+                                errs.push(sp_col.clone() + " row " + to_string(i) + " below lo");
+                            }
+                            if (sp_hi == sp_hi && v > sp_hi) {
+                                errs.push(sp_col.clone() + " row " + to_string(i) + " above hi");
+                            }
+                        }
+                    }
+                    if (si < allowed.len()) {
+                        val al = allowed[si].clone();
+                        if (al.len() > (0 as Int64)) {
+                            var found = false;
+                            var a = 0 as Int64;
+                            while (a < al.len()) {
+                                if (al[a] == cell) {
+                                    found = true;
+                                }
+                                a = a + (1 as Int64);
+                            }
+                            if (!found) {
+                                errs.push(sp_col.clone() + " row " + to_string(i) + " not allowed");
+                            }
+                        }
+                    }
+                    if (sp_unique) {
+                        var d = 0 as Int64;
+                        while (d < seen.len()) {
+                            if (seen[d] == cell) {
+                                errs.push(sp_col.clone() + " row " + to_string(i) + " duplicate");
+                            }
+                            d = d + (1 as Int64);
+                        }
+                        seen.push(cell);
+                    }
+                }
+                i = i + (1 as Int64);
+            }
+        }
+        si = si + (1 as Int64);
+    }
+    return ValidReport { ok: errs.len() == (0 as Int64), errors: errs };
+}
+
+pub fun report_string(r: &ValidReport): String {
+    if (r.ok) {
+        return "valid";
+    }
+    var out = "invalid(" + to_string(r.errors.len()) + "): ";
+    var i = 0 as Int64;
+    while (i < r.errors.len() && i < (5 as Int64)) {
+        if (i > (0 as Int64)) {
+            out = out + "; ";
+        }
+        out = out + r.errors[i].clone();
+        i = i + (1 as Int64);
+    }
+    return out;
+}

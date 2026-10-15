@@ -18,6 +18,7 @@ module std.dist;
 import std::math::sqrt;
 import std::math::exp;
 import std::math::log;
+import std::math::pow;
 
 fun is_nan_d(x: Float64): Bool {
     return x != x;
@@ -407,6 +408,178 @@ pub fun poisson_sample(rng: Rng, lambda: Float64, m: Int64): Vec<Int64> {
         }
         out.push(k);
         i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun ln_fact(n: Int64): Float64 {
+    if (n <= (1 as Int64)) {
+        return 0.0;
+    }
+    var s = 0.0;
+    var i = 2 as Int64;
+    while (i <= n) {
+        s = s + ((i as Float64)).log();
+        i = i + (1 as Int64);
+    }
+    return s;
+}
+
+fun ln_comb(n: Int64, k: Int64): Float64 {
+    if (k < (0 as Int64) || k > n) {
+        return 0.0 / 0.0;
+    }
+    return ln_fact(n) - ln_fact(k) - ln_fact(n - k);
+}
+
+pub fun hypergeom_pmf(k: Int64, N: Int64, K: Int64, n: Int64): Float64 {
+    if (k < (0 as Int64) || K < (0 as Int64) || n < (0 as Int64) || N <= (0 as Int64)) {
+        return 0.0 / 0.0;
+    }
+    val lc = ln_comb(K, k) + ln_comb(N - K, n - k) - ln_comb(N, n);
+    if (lc != lc) {
+        return 0.0;
+    }
+    return lc.exp();
+}
+
+pub fun hypergeom_cdf(k: Int64, N: Int64, K: Int64, n: Int64): Float64 {
+    var s = 0.0;
+    var i = 0 as Int64;
+    while (i <= k) {
+        s = s + hypergeom_pmf(i, N, K, n);
+        i = i + (1 as Int64);
+    }
+    return s;
+}
+
+pub fun nbinom_pmf(k: Int64, r: Int64, p: Float64): Float64 {
+    if (k < (0 as Int64) || r <= (0 as Int64) || p <= 0.0 || p > 1.0) {
+        return 0.0 / 0.0;
+    }
+    val lc = ln_comb(k + r - (1 as Int64), k);
+    return (lc + (k as Float64) * (1.0 - p).log() + (r as Float64) * p.log()).exp();
+}
+
+pub fun lognormal_pdf(x: Float64, mu: Float64, sig: Float64): Float64 {
+    if (x <= 0.0 || sig <= 0.0) {
+        return 0.0 / 0.0;
+    }
+    val z = ((x.log() - mu) / sig);
+    return (0.0 - z * z / 2.0).exp() / (x * sig * 2.5066282746310002);
+}
+
+pub fun weibull_pdf(x: Float64, k: Float64, lam: Float64): Float64 {
+    if (x < 0.0 || k <= 0.0 || lam <= 0.0) {
+        return 0.0 / 0.0;
+    }
+    if (x == 0.0) {
+        return if (k == 1.0) { 1.0 / lam } else { if (k < 1.0) { 1.0 / 0.0 } else { 0.0 } };
+    }
+    return k / lam * pow(x / lam, k - 1.0) * (0.0 - pow(x / lam, k)).exp();
+}
+
+pub fun logistic_cdf(x: Float64, mu: Float64, s: Float64): Float64 {
+    if (s <= 0.0) {
+        return 0.0 / 0.0;
+    }
+    return 1.0 / (1.0 + ((mu - x) / s).exp());
+}
+
+pub fun cauchy_pdf(x: Float64, mu: Float64, gam: Float64): Float64 {
+    if (gam <= 0.0) {
+        return 0.0 / 0.0;
+    }
+    return 1.0 / (3.141592653589793 * gam * (1.0 + ((x - mu) / gam) * ((x - mu) / gam)));
+}
+
+pub fun gumbel_pdf(x: Float64, mu: Float64, b: Float64): Float64 {
+    if (b <= 0.0) {
+        return 0.0 / 0.0;
+    }
+    val z = (x - mu) / b;
+    return (0.0 - z - (0.0 - z).exp()).exp() / b;
+}
+
+pub fun mvn_sample(rng: Rng, mu: Vec<Float64>, chol: Mat, n: Int64): Vec<Vec<Float64>> {
+    var out: Vec<Vec<Float64>> = vec![];
+    var r = 0 as Int64;
+    while (r < n) {
+        var z: Vec<Float64> = vec![];
+        var i = 0 as Int64;
+        while (i < mu.len()) {
+            val adv = rng.next_f64();
+            val zs = normal_sample(rng, 0.0, 1.0, 1 as Int64);
+            z.push(zs[0 as Int64] + adv * 0.0);
+            i = i + (1 as Int64);
+        }
+        val xz = match (chol.clone().mat_vec(z)) { Ok(v) -> v, Err(_) -> z.clone(), };
+        var row: Vec<Float64> = vec![];
+        var k = 0 as Int64;
+        while (k < mu.len() && k < xz.len()) {
+            row.push(mu[k] + xz[k]);
+            k = k + (1 as Int64);
+        }
+        out.push(row);
+        r = r + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun gamma_sample(rng: Rng, a: Float64): Float64 {
+    // Marsaglia-Tsang (2000) first principles over normal_sample and
+    // uniform draws; shape boost for a < 1. Total: NaN for a <= 0.
+    if (a != a || a <= 0.0) {
+        return 0.0 / 0.0;
+    }
+    if (a < 1.0) {
+        val g = gamma_sample(rng, a + 1.0);
+        val u = rng.next_f64();
+        val uu = if (u <= 0.0) { 1e-12 } else { if (u >= 1.0) { 1.0 - 1e-12 } else { u } };
+        return g * pow(uu, 1.0 / a);
+    }
+    val d = a - 1.0 / 3.0;
+    val c = 1.0 / sqrt(9.0 * d);
+    var it = 0 as Int64;
+    while (it < (1000 as Int64)) {
+        val step = rng.next_f64();
+        val zs = normal_sample(rng, 0.0, 1.0, 1 as Int64);
+        val x = zs[0 as Int64] + step * 0.0;
+        val v = (1.0 + c * x) * (1.0 + c * x) * (1.0 + c * x);
+        if (v > 0.0) {
+            val u = rng.next_f64();
+            val uu = if (u <= 0.0) { 1e-12 } else { if (u >= 1.0) { 1.0 - 1e-12 } else { u } };
+            if (uu.log() < 0.5 * x * x + d - d * v + d * v.log()) {
+                return d * v;
+            }
+        }
+        it = it + (1 as Int64);
+    }
+    return d;
+}
+
+pub fun dirichlet_sample(rng: Rng, alpha: Vec<Float64>, n: Int64): Vec<Vec<Float64>> {
+    var out: Vec<Vec<Float64>> = vec![];
+    var r = 0 as Int64;
+    while (r < n) {
+        var gs: Vec<Float64> = vec![];
+        var tot = 0.0;
+        var i = 0 as Int64;
+        while (i < alpha.len()) {
+            val adv = rng.next_f64();
+            val g = gamma_sample(rng, alpha[i]) + adv * 0.0;
+            gs.push(g);
+            tot = tot + g;
+            i = i + (1 as Int64);
+        }
+        var row: Vec<Float64> = vec![];
+        var k = 0 as Int64;
+        while (k < gs.len()) {
+            row.push(gs[k] / tot);
+            k = k + (1 as Int64);
+        }
+        out.push(row);
+        r = r + (1 as Int64);
     }
     return out;
 }

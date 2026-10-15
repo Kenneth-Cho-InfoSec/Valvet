@@ -1,0 +1,18 @@
+import std::features::standardize;
+import std::features::poly_expand;
+import std::features::target_encode;
+import std::features::fill_mean;
+import std::features::missing_indicator;
+import std::features::date_parts;
+fun go(): Int32 {
+println(standardize(vec![1.0, 2.0, 3.0]));
+println(poly_expand(2.0, 3 as Int64));
+println(target_encode(vec!["a", "b", "a"], vec![1.0, 2.0, 3.0], 1.0));
+println(fill_mean(vec![1.0, 0.0 / 0.0, 3.0]));
+println(missing_indicator(vec!["x", "", "y"]));
+println(date_parts(2026 as Int64, 5 as Int64, 3 as Int64));
+return 0;
+}
+fun main() {
+println(go())
+}

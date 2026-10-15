@@ -703,3 +703,81 @@ pub fun plot_render(p: Plot): Result<String, String> {
     st = st + "</svg>";
     return Ok(st);
 }
+
+pub fun plot_pairs(df: &DynamicFrame, cols: Vec<String>): PlotBuilder {
+    var xs: Vec<Float64> = vec![];
+    var ys: Vec<Float64> = vec![];
+    val e_pp: Vec<String> = vec![];
+    var ci = 0 as Int64;
+    while (ci < cols.len()) {
+        val col = match (frame_col(df, cols[ci].clone())) { Some(v) -> v, None -> e_pp.clone(), };
+        var i = 0 as Int64;
+        while (i < col.len()) {
+            val v = match (col[i].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+            if (v == v) {
+                if (ci % (2 as Int64) == (0 as Int64)) {
+                    xs.push(v);
+                } else {
+                    ys.push(v);
+                }
+            }
+            i = i + (1 as Int64);
+        }
+        ci = ci + (1 as Int64);
+    }
+    while (ys.len() < xs.len()) {
+        ys.push(0.0);
+    }
+    return plot_points(xs, ys);
+}
+
+pub fun plot_ecdf(vals: Vec<Float64>): PlotBuilder {
+    var s = vals.clone();
+    s.sort();
+    var xs: Vec<Float64> = vec![];
+    var ys: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < s.len()) {
+        xs.push(s[i]);
+        ys.push(((i + (1 as Int64)) as Float64) / (s.len() as Float64));
+        i = i + (1 as Int64);
+    }
+    return plot_line(xs, ys);
+}
+
+pub fun plot_correlogram(v: Vec<Float64>, max_lag: Int64): PlotBuilder {
+    var xs: Vec<Float64> = vec![];
+    var ys: Vec<Float64> = vec![];
+    var m = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        m = m + v[i];
+        i = i + (1 as Int64);
+    }
+    m = m / (v.len() as Float64);
+    var den = 0.0;
+    var j = 0 as Int64;
+    while (j < v.len()) {
+        den = den + (v[j] - m) * (v[j] - m);
+        j = j + (1 as Int64);
+    }
+    var lag = 0 as Int64;
+    while (lag <= max_lag && lag < v.len()) {
+        var num = 0.0;
+        var k = 0 as Int64;
+        while (k + lag < v.len()) {
+            num = num + (v[k] - m) * (v[k + lag] - m);
+            k = k + (1 as Int64);
+        }
+        xs.push(lag as Float64);
+        ys.push(if (den == 0.0) { 0.0 / 0.0 } else { num / den });
+        lag = lag + (1 as Int64);
+    }
+    var labels: Vec<String> = vec![];
+    var li = 0 as Int64;
+    while (li < ys.len()) {
+        labels.push(to_string(li));
+        li = li + (1 as Int64);
+    }
+    return plot_bar(labels, ys);
+}

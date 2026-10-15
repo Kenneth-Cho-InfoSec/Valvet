@@ -22,7 +22,23 @@ fn run(args: Vec<String>) -> i32 {
     match args[0].as_str() {
         "check" => cmd_check(get_path(&args)),
         "build" => cmd_build(get_path(&args), default_exe(get_path(&args))),
-        "run" => cmd_run(get_path(&args), script_argv(&args)),
+        "run" => {
+            if args.iter().any(|a| a == "--watch") {
+                let f = args[1..]
+                    .iter()
+                    .find(|a| *a != "--watch")
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                if f.is_empty() {
+                    eprintln!("error: missing <file>");
+                    return 2;
+                }
+                cmd_watch(f)
+            } else {
+                cmd_run(get_path(&args), script_argv(&args))
+            }
+        }
+        "fmt" => cmd_fmt(get_path(&args)),
         "test" => cmd_test(args.get(1).map(|s| s.as_str())),
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
         "repl" => cmd_repl(),
@@ -55,6 +71,8 @@ fn print_help() {
     println!("    valvet run <file> -- args    run with script arguments in `args`");
     println!("    valvet test [dir]            run the Valvet fixture test suite");
     println!("    valvet new <name>            scaffold a new single-dir project");
+    println!("    valvet run --watch <file>    re-run on file change");
+    println!("    valvet fmt <file>            normalize whitespace and trailing newline");
     println!("    valvet repl                  interactive session (definitions persist)");
     println!("    valvet -e 'expr'              evaluate a scriptlet and print its value");
     println!("    valvet --version             display version");
@@ -233,6 +251,45 @@ fn cmd_build(path: &str, _exe: PathBuf) -> i32 {
     }
 }
 
+fn cmd_watch(path: &str) -> i32 {
+    use std::time::{Duration, SystemTime};
+    let p = PathBuf::from(path);
+    let mut last: Option<SystemTime> = None;
+    loop {
+        let cur = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
+        if cur != last {
+            last = cur;
+            let code = cmd_run(path, vec![]);
+            if code != 0 {
+                eprintln!("watch: exit {}", code);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn cmd_fmt(path: &str) -> i32 {
+    let src = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read `{}`: {}", path, e);
+            return 1;
+        }
+    };
+    let mut out = String::new();
+    for line in src.lines() {
+        out.push_str(line.trim_end().replace('\t', "    ").as_str());
+        out.push('\n');
+    }
+    match std::fs::write(path, out) {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("error: cannot write `{}`: {}", path, e);
+            1
+        }
+    }
+}
+
 fn cmd_run(path: &str, script_argv: Vec<String>) -> i32 {
     let exe = match build_exe(path, false) {
         Ok(e) => e,
@@ -254,7 +311,7 @@ fn script_argv(args: &[String]) -> Vec<String> {
     if rest.first().is_some_and(|a| a == "--") {
         return rest[1..].to_vec();
     }
-    if rest.iter().any(|a| a.starts_with('-')) {
+    if rest.iter().any(|a| a.starts_with('-') && *a != "--watch") {
         eprintln!("error: script arguments need `--` first (`valvet run f.valvet -- args...`)");
         std::process::exit(2);
     }

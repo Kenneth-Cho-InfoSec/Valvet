@@ -1,0 +1,14 @@
+4
+[a, b]
+\begin{tabular}{lrrr}
+term and coef and se and z \\
+\hline
+(Intercept) and -0.033333333333334991 and 0.31180478223116204 and -0.10690449676497499 \\
+x and 2.0500000000000007 and 0.14433756729740654 and 14.202816622064789 \\
+\end{tabular}
+
+<table><tr><th>term</th><th>coef</th><th>se</th><th>z</th></tr><tr><td>(Intercept)</td><td>-0.033333333333334991</td><td>0.31180478223116204</td><td>-0.10690449676497499</td></tr><tr><td>x</td><td>2.0500000000000007</td><td>0.14433756729740654</td><td>14.202816622064789</td></tr></table>
+true
+true
+true
+0

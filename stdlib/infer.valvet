@@ -11,6 +11,7 @@ import std::math::sqrt;
 import std::math::exp;
 import std::math::log;
 import std::dist::normal_cdf;
+import std::dist::hypergeom_pmf;
 
 fun is_nan_i(x: Float64): Bool {
     return x != x;
@@ -508,4 +509,22 @@ pub fun anova_oneway(groups: Vec<Vec<Float64>>): Option<AnovaOneWay> {
     }
     val f = (ssb / df1) / (ssw / df2);
     return Some(AnovaOneWay { ss_between: ssb, ss_within: ssw, df1: df1, df2: df2, f: f, p: f_p(f, df1, df2) });
+}
+
+pub fun fisher_exact(a: Int64, b: Int64, c: Int64, d: Int64): Float64 {
+    val n1 = a + b;
+    val n2 = c + d;
+    val k1 = a + c;
+    val n = n1 + n2;
+    val obs = hypergeom_pmf(a, n, k1, n1);
+    var p = 0.0;
+    var k = 0 as Int64;
+    while (k <= n1 && k <= k1) {
+        val q = hypergeom_pmf(k, n, k1, n1);
+        if (q <= obs + 1e-12) {
+            p = p + q;
+        }
+        k = k + (1 as Int64);
+    }
+    return p;
 }

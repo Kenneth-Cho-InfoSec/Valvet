@@ -1,0 +1,35 @@
+import std::frame::DynamicFrame;
+import std::frame::frame_drop_na;
+import std::frame::frame_fill_na;
+import std::frame::frame_describe;
+import std::frame::frame_cut;
+import std::frame::frame_qcut;
+import std::frame::frame_crosstab;
+import std::frame::frame_pivot_longer;
+import std::frame::frame_pivot_wider;
+fun base(): DynamicFrame {
+    return DynamicFrame { names: vec!["g", "x"], cols: vec![vec!["a", "", "b", "b"], vec!["1", "2", "3", "4"]], nrows: 4 as Int64 };
+}
+fun go(): Int32 {
+val d = frame_drop_na(base(), "g");
+println(d.nrows);
+val fl = frame_fill_na(base(), "g", "z");
+println(fl.cols[0 as Int64]);
+println(frame_describe(&fl, "x"));
+val c = frame_cut(base(), "x", "xb", vec![0.0, 2.5, 5.0]);
+println(c.cols[2 as Int64]);
+val q = frame_qcut(base(), "x", "xq", 2 as Int64);
+println(q.cols[2 as Int64]);
+val ct = frame_crosstab(&fl, "g", "x");
+println(ct.nrows);
+println(ct.names);
+val lp = frame_pivot_longer(base(), vec!["x"], "var", "val");
+println(lp.nrows);
+println(lp.names);
+val w = frame_pivot_wider(&fl, "g", "x", "x");
+println(w.names);
+return 0;
+}
+fun main() {
+println(go())
+}

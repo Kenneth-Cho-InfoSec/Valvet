@@ -1,0 +1,418 @@
+// std::sql: tiny SQL subset over one DynamicFrame.
+// SELECT cols and SUM/MEAN/COUNT aggregates, WHERE col op value,
+// GROUP BY key, ORDER BY col ASC/DESC, LIMIT n. Token parser over
+// space separated words, planner maps to frame verbs.
+module std.sql;
+
+import std::frame::DynamicFrame;
+import std::frame::frame_col;
+import std::frame::frame_filter_mask;
+import std::frame::frame_arrange;
+
+fun is_agg(t: String): Bool {
+    return t.len() > (4 as Int64) && (t.slice(0 as Int64, 4 as Int64) == "SUM(" || t.slice(0 as Int64, 4 as Int64) == "MEAN");
+}
+
+fun agg_inner(t: String): String {
+    return t.slice(4 as Int64, t.len() - (1 as Int64)).trim();
+}
+
+fun count_star(t: String): Bool {
+    return t == "COUNT(*)" || t == "COUNT";
+}
+
+fun has_bang(s: String): Bool {
+    return s.split("!").len() > (1 as Int64);
+}
+
+pub fun sql(f: &DynamicFrame, q: String): Result<DynamicFrame, String> {
+    val toks = q.split(" ");
+    var words: Vec<String> = vec![];
+    var ti = 0 as Int64;
+    while (ti < toks.len()) {
+        val t = toks[ti].trim();
+        if (t != "") {
+            words.push(t);
+        }
+        ti = ti + (1 as Int64);
+    }
+    if (words.len() < (4 as Int64) || words[0 as Int64] != "SELECT") {
+        return Err("only SELECT ... FROM ... supported");
+    }
+    var from_at = -1 as Int64;
+    var fi = 0 as Int64;
+    while (fi < words.len()) {
+        if (words[fi] == "FROM") {
+            from_at = fi;
+        }
+        fi = fi + (1 as Int64);
+    }
+    if (from_at < (0 as Int64)) {
+        return Err("missing FROM");
+    }
+    var selraw = "";
+    var si = 1 as Int64;
+    while (si < from_at) {
+        if (selraw != "") {
+            selraw = selraw + " ";
+        }
+        selraw = selraw + words[si].clone();
+        si = si + (1 as Int64);
+    }
+    val parts = selraw.split(",");
+    var sel: Vec<String> = vec![];
+    var pi = 0 as Int64;
+    while (pi < parts.len()) {
+        val t = parts[pi].trim();
+        if (t != "") {
+            sel.push(t);
+        }
+        pi = pi + (1 as Int64);
+    }
+    var pos = from_at + (2 as Int64);
+    var where_c = "";
+    var where_op = "";
+    var where_v = "";
+    var group_k = "";
+    var order_c = "";
+    var order_desc = false;
+    var lim = -1 as Int64;
+    if (from_at + (1 as Int64) >= words.len()) {
+        return Err("missing table");
+    }
+    var werr = "";
+    while (pos < words.len()) {
+        val w = words[pos].clone();
+        var did = false;
+        if (w == "WHERE") {
+            did = true;
+            val a = if (pos + (1 as Int64) < words.len()) { words[pos + (1 as Int64)].clone() } else { "" };
+            val b = if (pos + (2 as Int64) < words.len()) { words[pos + (2 as Int64)].clone() } else { "" };
+            val c = if (pos + (3 as Int64) < words.len()) { words[pos + (3 as Int64)].clone() } else { "" };
+            if (b == "=" || b == ">" || b == "<" || b == "!=") {
+                where_c = a;
+                where_op = b;
+                where_v = c;
+                pos = pos + (4 as Int64);
+            } else {
+                val eq = a.split("=");
+                val gt = a.split(">");
+                val lt = a.split("<");
+                var shaped = false;
+                if (has_bang(a)) {
+                    if (eq.len() > (1 as Int64)) {
+                        where_c = eq[0 as Int64].split("!")[0 as Int64].trim();
+                        where_op = "!=";
+                        where_v = eq[1 as Int64].trim();
+                        shaped = true;
+                    }
+                }
+                if (!shaped) {
+                    if (eq.len() > (1 as Int64)) {
+                        where_c = eq[0 as Int64].trim();
+                        where_op = "=";
+                        where_v = eq[1 as Int64].trim();
+                        shaped = true;
+                    } else {
+                        if (gt.len() > (1 as Int64)) {
+                            where_c = gt[0 as Int64].trim();
+                            where_op = ">";
+                            where_v = gt[1 as Int64].trim();
+                            shaped = true;
+                        } else {
+                            if (lt.len() > (1 as Int64)) {
+                                where_c = lt[0 as Int64].trim();
+                                where_op = "<";
+                                where_v = lt[1 as Int64].trim();
+                                shaped = true;
+                            }
+                        }
+                    }
+                }
+                if (!shaped) {
+                    werr = "bad WHERE";
+                }
+                pos = pos + (2 as Int64);
+            }
+        }
+        if (!did && w == "GROUP") {
+            did = true;
+            if (pos + (2 as Int64) >= words.len()) {
+                werr = "bad GROUP BY";
+                pos = pos + (1 as Int64);
+            } else {
+                if (words[pos + (1 as Int64)] != "BY") {
+                    werr = "bad GROUP BY";
+                    pos = pos + (1 as Int64);
+                } else {
+                    group_k = words[pos + (2 as Int64)].clone();
+                    pos = pos + (3 as Int64);
+                }
+            }
+        }
+        if (!did && w == "ORDER") {
+            did = true;
+            if (pos + (2 as Int64) >= words.len()) {
+                werr = "bad ORDER BY";
+                pos = pos + (1 as Int64);
+            } else {
+                if (words[pos + (1 as Int64)] != "BY") {
+                    werr = "bad ORDER BY";
+                    pos = pos + (1 as Int64);
+                } else {
+                    order_c = words[pos + (2 as Int64)].clone().split(",")[0 as Int64].trim();
+                    pos = pos + (3 as Int64);
+                    if (pos < words.len()) {
+                        if (words[pos] == "DESC") {
+                            order_desc = true;
+                            pos = pos + (1 as Int64);
+                        } else {
+                            if (words[pos] == "ASC") {
+                                pos = pos + (1 as Int64);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (!did && w == "LIMIT") {
+            did = true;
+            if (pos + (1 as Int64) >= words.len()) {
+                werr = "bad LIMIT";
+                pos = pos + (1 as Int64);
+            } else {
+                lim = match (words[pos + (1 as Int64)].parse_int()) { Some(x) -> x, None -> -1 as Int64, };
+                pos = pos + (2 as Int64);
+            }
+        }
+        if (!did) {
+            werr = "unexpected word: " + w;
+            pos = pos + (1 as Int64);
+        }
+        if (werr != "") {
+            pos = words.len();
+        }
+    }
+    if (werr != "") {
+        return Err(werr);
+    }
+    var idx: Vec<Int64> = vec![];
+    var r = 0 as Int64;
+    while (r < f.nrows) {
+        var keep = true;
+        if (where_c != "") {
+            val e_w: Vec<String> = vec![];
+            val cc = match (frame_col(f, where_c.clone())) { Some(v) -> v, None -> e_w, };
+            val cell = if (r < cc.len()) { cc[r].clone() } else { "" };
+            if (where_op == "=") {
+                keep = cell == where_v;
+            } else {
+                if (where_op == "!=") {
+                    keep = cell != where_v;
+                } else {
+                    val a2 = match (cell.parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+                    val b2 = match (where_v.parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+                    if (a2 != a2 || b2 != b2) {
+                        keep = false;
+                    } else {
+                        if (where_op == ">") {
+                            keep = a2 > b2;
+                        } else {
+                            keep = a2 < b2;
+                        }
+                    }
+                }
+            }
+        }
+        if (keep) {
+            idx.push(r);
+        }
+        r = r + (1 as Int64);
+    }
+    var mask: Vec<Bool> = vec![];
+    var m = 0 as Int64;
+    while (m < f.nrows) {
+        var hit = false;
+        var k = 0 as Int64;
+        while (k < idx.len()) {
+            if (idx[k] == m) {
+                hit = true;
+            }
+            k = k + (1 as Int64);
+        }
+        mask.push(hit);
+        m = m + (1 as Int64);
+    }
+    val ff = frame_filter_mask(f, mask);
+    if (group_k != "") {
+        val e_g: Vec<String> = vec![];
+        val gcol = match (frame_col(&ff, group_k.clone())) { Some(v) -> v, None -> e_g, };
+        if (gcol.len() == (0 as Int64)) {
+            return Err("missing GROUP key");
+        }
+        var keys: Vec<String> = vec![];
+        var i = 0 as Int64;
+        while (i < gcol.len()) {
+            var found = false;
+            var k2 = 0 as Int64;
+            while (k2 < keys.len()) {
+                if (keys[k2] == gcol[i]) {
+                    found = true;
+                }
+                k2 = k2 + (1 as Int64);
+            }
+            if (!found) {
+                keys.push(gcol[i].clone());
+            }
+            i = i + (1 as Int64);
+        }
+        var onames: Vec<String> = vec![group_k.clone()];
+        var q2 = 0 as Int64;
+        while (q2 < sel.len()) {
+            if (sel[q2] != group_k) {
+                onames.push(sel[q2].clone());
+            }
+            q2 = q2 + (1 as Int64);
+        }
+        var ocols: Vec<Vec<String>> = vec![];
+        var qc = 0 as Int64;
+        while (qc < onames.len()) {
+            val e: Vec<String> = vec![];
+            ocols.push(e);
+            qc = qc + (1 as Int64);
+        }
+        var gi = 0 as Int64;
+        while (gi < keys.len()) {
+            var c0 = ocols[0 as Int64].clone();
+            c0.push(keys[gi].clone());
+            ocols[0 as Int64] = c0;
+            var c2 = 1 as Int64;
+            while (c2 < onames.len()) {
+                val spec = onames[c2].clone();
+                if (count_star(spec.clone())) {
+                    var cnt = 0 as Int64;
+                    var k3 = 0 as Int64;
+                    while (k3 < gcol.len()) {
+                        if (gcol[k3] == keys[gi]) {
+                            cnt = cnt + (1 as Int64);
+                        }
+                        k3 = k3 + (1 as Int64);
+                    }
+                    var ccnt = ocols[c2].clone();
+                    ccnt.push(to_string(cnt));
+                    ocols[c2] = ccnt;
+                } else {
+                    val inner = if (is_agg(spec.clone())) { agg_inner(spec.clone()) } else { spec.clone() };
+                    val e_v: Vec<String> = vec![];
+                    val vc = match (frame_col(&ff, inner.clone())) { Some(v) -> v, None -> e_v, };
+                    var sum = 0.0;
+                    var n = 0 as Int64;
+                    var k4 = 0 as Int64;
+                    while (k4 < gcol.len() && k4 < vc.len()) {
+                        if (gcol[k4] == keys[gi]) {
+                            val v = match (vc[k4].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+                            if (v == v) {
+                                sum = sum + v;
+                                n = n + (1 as Int64);
+                            }
+                        }
+                        k4 = k4 + (1 as Int64);
+                    }
+                    val cell_s = if (spec.len() >= (4 as Int64) && spec.slice(0 as Int64, 4 as Int64) == "MEAN") {
+                        val m2 = if (n > (0 as Int64)) { sum / (n as Float64) } else { 0.0 / 0.0 };
+                        to_string(m2)
+                    } else {
+                        to_string(sum)
+                    };
+                    var cagg = ocols[c2].clone();
+                    cagg.push(cell_s);
+                    ocols[c2] = cagg;
+                }
+                c2 = c2 + (1 as Int64);
+            }
+            gi = gi + (1 as Int64);
+        }
+        var out = DynamicFrame { names: onames, cols: ocols, nrows: keys.len() };
+        if (order_c != "") {
+            out = frame_arrange(out, order_c.clone(), !order_desc);
+        }
+        if (lim >= (0 as Int64) && out.nrows > lim) {
+            var tcols: Vec<Vec<String>> = vec![];
+            var tc = 0 as Int64;
+            while (tc < out.names.len()) {
+                var nc: Vec<String> = vec![];
+                var rr2 = 0 as Int64;
+                while (rr2 < lim) {
+                    nc.push(out.cols[tc][rr2].clone());
+                    rr2 = rr2 + (1 as Int64);
+                }
+                tcols.push(nc);
+                tc = tc + (1 as Int64);
+            }
+            out = DynamicFrame { names: out.names.clone(), cols: tcols, nrows: lim };
+        }
+        return Ok(out);
+    }
+    var perr = "";
+    var pi2 = 0 as Int64;
+    while (pi2 < sel.len()) {
+        val t = sel[pi2].clone();
+        if (t != "*") {
+            val is_c = count_star(t.clone());
+            val is_a = is_agg(t.clone());
+            if (is_c || is_a) {
+                perr = "aggregates need GROUP BY";
+            } else {
+                val e_p: Vec<String> = vec![];
+                val probe = match (frame_col(&ff, t.clone())) { Some(v) -> v, None -> e_p, };
+                if (probe.len() == (0 as Int64)) {
+                    perr = "missing column: " + t;
+                }
+            }
+        }
+        pi2 = pi2 + (1 as Int64);
+    }
+    if (perr != "") {
+        return Err(perr);
+    }
+    var onames2: Vec<String> = vec![];
+    var ocols2: Vec<Vec<String>> = vec![];
+    var p = 0 as Int64;
+    while (p < sel.len()) {
+        val s = sel[p].clone();
+        if (s == "*") {
+            var ci = 0 as Int64;
+            while (ci < ff.names.len()) {
+                onames2.push(ff.names[ci].clone());
+                ocols2.push(ff.cols[ci].clone());
+                ci = ci + (1 as Int64);
+            }
+        } else {
+            val e_c: Vec<String> = vec![];
+            val cc2 = match (frame_col(&ff, s.clone())) { Some(v) -> v, None -> e_c, };
+            onames2.push(s);
+            ocols2.push(cc2);
+        }
+        p = p + (1 as Int64);
+    }
+    var out2 = DynamicFrame { names: onames2, cols: ocols2, nrows: ff.nrows };
+    if (order_c != "") {
+        out2 = frame_arrange(out2, order_c.clone(), !order_desc);
+    }
+    if (lim >= (0 as Int64) && out2.nrows > lim) {
+        var tcols2: Vec<Vec<String>> = vec![];
+        var tc2 = 0 as Int64;
+        while (tc2 < out2.names.len()) {
+            var nc2: Vec<String> = vec![];
+            var rr3 = 0 as Int64;
+            while (rr3 < lim) {
+                nc2.push(out2.cols[tc2][rr3].clone());
+                rr3 = rr3 + (1 as Int64);
+            }
+            tcols2.push(nc2);
+            tc2 = tc2 + (1 as Int64);
+        }
+        out2 = DynamicFrame { names: out2.names.clone(), cols: tcols2, nrows: lim };
+    }
+    return Ok(out2);
+}

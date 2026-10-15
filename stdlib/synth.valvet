@@ -1,0 +1,36 @@
+// std::synth: typed random frames from schemas for testing.
+module std.synth;
+
+import std::frame::DynamicFrame;
+import std::schema::parse_float_col;
+
+pub fun synth_frame(names: Vec<String>, kinds: Vec<String>, n: Int64, seed: Int64): DynamicFrame {
+    var rng = rng_seeded(seed);
+    var cols: Vec<Vec<String>> = vec![];
+    var c = 0 as Int64;
+    while (c < names.len()) {
+        val kind = if (c < kinds.len()) { kinds[c].clone() } else { "float" };
+        var col: Vec<String> = vec![];
+        var i = 0 as Int64;
+        while (i < n) {
+            val u = rng.next_f64();
+            if (kind == "int") {
+                col.push(to_string((u * 100.0) as Int64));
+            } else {
+                if (kind == "bool") {
+                    col.push(if (u > 0.5) { "true" } else { "false" });
+                } else {
+                    if (kind == "string") {
+                        col.push(if (u > 0.5) { "a" } else { "b" });
+                    } else {
+                        col.push(to_string(u * 10.0 - 5.0));
+                    }
+                }
+            }
+            i = i + (1 as Int64);
+        }
+        cols.push(col);
+        c = c + (1 as Int64);
+    }
+    return DynamicFrame { names: names.clone(), cols: cols, nrows: n };
+}

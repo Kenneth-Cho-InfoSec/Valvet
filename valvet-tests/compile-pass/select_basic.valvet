@@ -1,0 +1,41 @@
+import std::select::train_split;
+import std::select::kfold_ids;
+import std::select::aic;
+import std::select::bic;
+import std::select::aicc;
+import std::select::jackknife_mean;
+import std::select::perm_p;
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::model::formula_parse;
+import std::model::model_frame;
+import std::model::lm;
+fun go(): Int32 {
+println(train_split(6 as Int64, 0.5, 1 as Int64));
+println(kfold_ids(6 as Int64, 3 as Int64, 1 as Int64));
+println(jackknife_mean(vec![1.0, 2.0, 3.0, 4.0]));
+println(perm_p(vec![1.0, 2.0, 3.0], vec![1.1, 1.9, 3.2], 50 as Int64, 3 as Int64));
+val h = vec!["x", "y"];
+val r0 = vec!["1", "2.1"];
+val r1 = vec!["2", "3.9"];
+val r2 = vec!["3", "6.2"];
+val r3 = vec!["4", "7.8"];
+val r4 = vec!["5", "10.1"];
+val t = frame_from_table(CsvTable { header: h, rows: vec![r0, r1, r2, r3, r4] });
+let Some(fo) = formula_parse("y ~ x") else {
+return 1;
+};
+let Ok(mf) = model_frame(&t, fo) else {
+return 1;
+};
+let Ok(fit) = lm(mf) else {
+return 1;
+};
+println(aic(&fit));
+println(bic(&fit));
+println(aicc(&fit));
+return 0;
+}
+fun main() {
+println(go())
+}
