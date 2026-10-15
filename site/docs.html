@@ -430,7 +430,37 @@ println(par_sum(v.clone(), 4 as Int64));</pre></div>
 10</pre></div>
 
 <h3 id="stdlib">Standard library and REPL</h3>
-<p>The library ships as Valvet sources under <code class="inline">stdlib/</code> with explicit imports and no prelude: <code class="inline">std::math</code> (sqrt, exp, log, pow), <code class="inline">std::csv</code> (RFC-style CSV plus flat JSON), <code class="inline">std::frame</code> (selection, filtering, grouping, audited joins), <code class="inline">std::stats</code> (Missing-aware means and sums), <code class="inline">std::plot</code> (static SVG), <code class="inline">std::units</code>, <code class="inline">std::provenance</code>, and <code class="inline">std::autodiff</code>. Set <code class="inline">VALVET_STDLIB</code> to override the search path. For exploration, <code class="inline">valvet repl</code> keeps definitions across lines: type <code class="inline">println(6 * 7);</code> and it answers <code class="inline">42</code>.</p>
+<p>The library ships as Valvet sources under <code class="inline">stdlib/</code> with explicit imports and no prelude. Set <code class="inline">VALVET_STDLIB</code> to override the search path. For exploration, <code class="inline">valvet repl</code> keeps definitions across lines: type <code class="inline">println(6 * 7);</code> and it answers <code class="inline">42</code>.</p>
+<table class="cli">
+<tr><th>Module</th><th>Contents</th></tr>
+<tr><td><code class="inline">std::math</code></td><td>sqrt, exp, log, pow, trigonometry</td></tr>
+<tr><td><code class="inline">std::str</code></td><td>Split, trim, join, case, interpolation helpers</td></tr>
+<tr><td><code class="inline">std::re</code></td><td>Thompson-NFA regular expressions</td></tr>
+<tr><td><code class="inline">std::csv</code></td><td>RFC-style CSV plus flat JSON</td></tr>
+<tr><td><code class="inline">std::frame</code></td><td>Selection, filtering, grouping, audited joins, window verbs (Lag/Lead/RowNum/Cumsum/Rank), cut/qcut, crosstab, pivots</td></tr>
+<tr><td><code class="inline">std::schema</code></td><td>Missing-aware typed column parsing</td></tr>
+<tr><td><code class="inline">std::validate</code></td><td>Type, range, set, uniqueness, and no-missing contracts with reports</td></tr>
+<tr><td><code class="inline">std::sql</code></td><td>SELECT/WHERE/GROUP BY/ORDER BY/LIMIT over frames</td></tr>
+<tr><td><code class="inline">std::stats</code></td><td>Missing-aware means and sums</td></tr>
+<tr><td><code class="inline">std::dist</code></td><td>Normal, exponential, uniform, binomial, Poisson, hypergeometric, negative binomial, lognormal, Weibull, logistic, Cauchy, Gumbel, exact gamma/Dirichlet, multivariate normal</td></tr>
+<tr><td><code class="inline">std::infer</code></td><td>t, chi-square, F, correlation, Mann-Whitney, Fisher exact, one-way ANOVA</td></tr>
+<tr><td><code class="inline">std::model</code></td><td>Formulas with treatment contrasts, <code class="inline">lm</code>, binomial <code class="inline">glm</code>, weighted fits, ANOVA, summaries, Cook's distance, VIF, Durbin-Watson, Breusch-Pagan</td></tr>
+<tr><td><code class="inline">std::select</code></td><td>Train splits, k-fold ids, AIC/BIC/AICc, jackknife, permutation tests</td></tr>
+<tr><td><code class="inline">std::causal</code></td><td>Diff-in-diff, Wald 2SLS, propensity matching, HC0 robust standard errors</td></tr>
+<tr><td><code class="inline">std::meta</code></td><td>Cohen's d, eta-squared, odds ratios, fixed/random-effects meta-analysis, power approximations, Holm/BH adjustments</td></tr>
+<tr><td><code class="inline">std::features</code></td><td>Standardization, polynomial expansion, target encoding, mean fill, missing indicators, date parts</td></tr>
+<tr><td><code class="inline">std::synth</code></td><td>Typed random frames for testing</td></tr>
+<tr><td><code class="inline">std::report</code></td><td>LaTeX and HTML model tables</td></tr>
+<tr><td><code class="inline">std::date</code></td><td>Civil-date arithmetic</td></tr>
+<tr><td><code class="inline">std::time</code></td><td>Timestamps and durations</td></tr>
+<tr><td><code class="inline">std::complex</code></td><td>Complex numbers over borrows</td></tr>
+<tr><td><code class="inline">std::factor</code></td><td>Level and code helpers</td></tr>
+<tr><td><code class="inline">std::plot</code></td><td>Static SVG: points, lines, bars, histograms, pairs, ECDF, correlograms</td></tr>
+<tr><td><code class="inline">std::units</code></td><td>Known units for <code class="inline">@unit</code> checking</td></tr>
+<tr><td><code class="inline">std::provenance</code></td><td>Source hashes plus transform logs</td></tr>
+<tr><td><code class="inline">std::autodiff</code></td><td>Dual-number forward differentiation with <code class="inline">seed</code></td></tr>
+<tr><td><code class="inline">std::sys</code></td><td>Run, capture, environment, working directory (imp scripts only)</td></tr>
+</table>
 </section>
 
 <section class="block">
@@ -448,11 +478,15 @@ println(par_sum(v.clone(), 4 as Int64));</pre></div>
 <tr><td><code class="inline">valvet check &lt;file&gt;</code></td><td>Parse and analyse, no linking</td></tr>
 <tr><td><code class="inline">valvet build &lt;file&gt;</code></td><td>Compile to <code class="inline">target/valvet/&lt;name&gt;</code></td></tr>
 <tr><td><code class="inline">valvet run &lt;file&gt;</code></td><td>Build, execute, exit with program status</td></tr>
+<tr><td><code class="inline">valvet run &lt;file&gt; -- args</code></td><td>Run with script arguments in <code class="inline">args</code></td></tr>
+<tr><td><code class="inline">valvet run --watch &lt;file&gt;</code></td><td>Re-run on file change</td></tr>
+<tr><td><code class="inline">valvet fmt &lt;file&gt;</code></td><td>Normalize whitespace and trailing newline</td></tr>
+<tr><td><code class="inline">valvet -e 'expr'</code></td><td>Evaluate a scriptlet and print its value</td></tr>
 <tr><td><code class="inline">valvet test [dir]</code></td><td>Run the fixture suite</td></tr>
 <tr><td><code class="inline">valvet new &lt;name&gt;</code></td><td>Scaffold a single-dir project</td></tr>
 <tr><td><code class="inline">valvet repl</code></td><td>Interactive session, definitions persist</td></tr>
 </table>
-<p><code class="inline">check</code> parses and analyses without linking, which makes it the fastest feedback loop and the one to run on every save. <code class="inline">build</code> compiles and links to <code class="inline">target/valvet/&lt;name&gt;</code> and prints the artifact path. <code class="inline">run</code> builds, executes, and exits with the program status, so a <code class="inline">main</code> returning <code class="inline">Ok(7)</code> yields exit 7. <code class="inline">test</code> runs the fixture suite in an optional directory (defaulting to the repo suite). <code class="inline">new</code> scaffolds an explicit-mode single-directory project with an entry file and a hint toward multi-file layout. <code class="inline">repl</code> opens an interactive session where definitions persist across lines with <code class="inline">:help</code>, <code class="inline">:reset</code>, and <code class="inline">:quit</code>. Warnings never fail a build: they render to stderr with the same file and position format as errors while compilation succeeds. Exit codes: 0 success, 1 compilation failure, 2 usage error.</p>
+<p><code class="inline">check</code> parses and analyses without linking, which makes it the fastest feedback loop and the one to run on every save. <code class="inline">build</code> compiles and links to <code class="inline">target/valvet/&lt;name&gt;</code> and prints the artifact path. <code class="inline">run</code> builds, executes, and exits with the program status, so a <code class="inline">main</code> returning <code class="inline">Ok(7)</code> yields exit 7. <code class="inline">test</code> runs the fixture suite in an optional directory (defaulting to the repo suite). <code class="inline">new</code> scaffolds an explicit-mode single-directory project with an entry file and a hint toward multi-file layout. <code class="inline">repl</code> opens an interactive session where definitions persist across lines with <code class="inline">:help</code>, <code class="inline">:reset</code>, and <code class="inline">:quit</code>. <code class="inline">run --watch</code> re-runs the file whenever it changes, <code class="inline">fmt</code> normalizes trailing whitespace, and <code class="inline">-e</code> evaluates a one-liner as either an expression (printed) or statements. Warnings never fail a build: they render to stderr with the same file and position format as errors while compilation succeeds. Exit codes: 0 success, 1 compilation failure, 2 usage error.</p>
 <h3 id="errors">Errors</h3>
 <p>Errors never panic the compiler. They carry file, position, code, and help:</p>
 <div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>error[E0205]: cannot assign through this place (immutable binding or shared reference) --&gt; prog.valvet:3:5
