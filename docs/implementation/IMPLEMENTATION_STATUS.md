@@ -1,7 +1,18 @@
-# Implementation Status — Valvet Core MVP 0.1.0 (2026-10-10)
+# Implementation Status — Valvet 0.3.0 (2026-10-15)
 
 Toolchain: rustc 1.99.0 + user-local GCC 16 (`~/.local/vgcc`, system binutils/ld/glibc).
 Backend: C11 emission + GCC link (ADR-001, ARCHITECTURE.md). No LLVM/Cranelift in env.
+
+## Test totals (0.3.0)
+- `cargo test --workspace`: 185 front-end passed, plus 2 fuzz-soup, 0 failed.
+- `valvet test valvet-tests`: 258/258 debug, 258/258 release (clean tree).
+- ASan/UBSan on generated C: clean on threaded/popen/decoder paths and new
+  stdlib paths (SQL, dist extras, wrangling, selection, causal), outputs
+  byte-exact. Every numeric claim oracled against Python/R at 1e-12
+  relative (p-values 1e-10 absolute).
+- Known issues (tracked): calls directly under `||`/`&&` LHS need
+  bind-first (ASan double-free); `V[i].push(x)` on nested vecs silently
+  drops (use clone-push-assign).
 
 ## Phase results (all commands actually executed)
 - Phase 0 audit/plan: done. Specs fully read (D1–D15, EBNF, revision register with 26 resolved VR items). Gaps recorded (E0205 val-reassign, E0401 unknown name, E0603 missing main, `print` builtin temp, String `==`).
@@ -14,7 +25,7 @@ Backend: C11 emission + GCC link (ADR-001, ARCHITECTURE.md). No LLVM/Cranelift i
 - Phase 7 hardening: done. fmt clean, clippy `-D warnings` clean, debug+release green, robustness (5000-deep expr, 2000-statement file, unclosed/garbage inputs → controlled E0005, no hangs).
 - Phase 8 expansion: done as 0.1.0 phases A–I (see completion progress below).
 
-## Test totals
+## Test totals (0.1.0 baseline, superseded by the 0.3.0 totals above)
 - `cargo test --workspace`: 100 passed (98 front-end + 2 fuzz), 0 failed.
 - `valvet test valvet-tests`: 93/93 debug, 93/93 release.
 - ASan/UBSan on generated C: clean on the full pass sweep, the multi-file
