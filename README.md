@@ -14,8 +14,9 @@ If your analyses currently live in an interpreted statistics environment,
 Valvet is the compiled counterpart: the same small scripts for means,
 models, and simulations, but checked before they run, freed
 deterministically while they run, and shipped as dependency-free binaries.
-The 0.2.0 data layer (frames, CSV/JSON import, core stats) closes the
-remaining gap between prototyping and production.
+The 0.3.0 modeling layer (formulas, `lm`/GLM, ANOVA, diagnostics,
+contrasts, SQL over frames, validation contracts, causal and meta-analysis
+helpers) closes the remaining gap between prototyping and production.
 
 ```valvet
 fun mean(v: Vec<Float64>): Float64 {
@@ -154,7 +155,8 @@ frame verbs (`frame_arrange`, `frame_mutate`/`frame_summarise` over a flat
 `fold`/`split_apply` over named functions, and pure-Valvet stdlib for strings
 (`std::str`, incl. Thompson-NFA `std::re`), dates (`std::date`), distributions
 (`std::dist`), modeling (`std::model`: formulas, `lm`, binomial `glm`), and
-hypothesis tests (`std::infer`: t, chi-square, correlation, Mann-Whitney):
+hypothesis tests (`std::infer`: t, chi-square, correlation, Mann-Whitney,
+Fisher exact, hypergeometric):
 
 ```valvet
 import std::frame::DynamicFrame;
@@ -178,6 +180,47 @@ fun main() {
     println(fit.r2)     // 0.96428571428571419
 }
 ```
+
+Statistics track (0.3.0): one-way and model ANOVA (`f_cdf`, `anova_oneway`,
+`anova_lm`), printable model summaries, and regression diagnostics (Cook's
+distance, VIF, Durbin-Watson, Breusch-Pagan), all oracled against Python.
+Categorical predictors auto-expand to treatment contrasts, and `wlm` fits
+weighted least squares through the same pipeline:
+
+```valvet
+import std::infer::anova_oneway;
+val g1: Vec<Float64> = vec![1.0, 2.0, 3.0];
+val g2: Vec<Float64> = vec![4.0, 5.0, 6.0];
+let Some(a) = anova_oneway(vec![g1, g2]) else {
+    println("need two groups");
+    return 1;
+};
+println(a.f)  // 27
+```
+
+Query and validation (0.3.0): a SQL subset over frames (`std::sql`:
+SELECT/WHERE/GROUP BY/ORDER BY/LIMIT planning down to frame verbs),
+Pandera-shaped validation contracts (`std::validate`), window verbs
+(`Lag`/`Lead`/`RowNum`/`Cumsum`/`Rank` on `ColExpr`), wrangling
+(`frame_cut`/`frame_qcut`/`frame_crosstab`/pivots), model selection
+(`std::select`: splits, k-fold ids, AIC/BIC/AICc, jackknife, permutation),
+causal helpers (`std::causal`: DiD, Wald 2SLS, propensity matching, HC0
+robust SE), meta-analysis and adjustments (`std::meta`), feature
+engineering (`std::features`), random test frames (`std::synth`), and
+LaTeX/HTML model tables (`std::report`):
+
+```valvet
+import std::sql::sql;
+let Ok(q) = sql(&f, "SELECT g, SUM(x) FROM f GROUP BY g ORDER BY g") else {
+    println("bad query");
+    return 1;
+};
+println(q.cols[1 as Int64])  // per-group sums
+```
+
+Sources come in three equivalent extensions (`.valvet`, `.vv`, `.vvt`,
+resolved in that preference order), and the CLI grows `run --watch`
+(re-run on change) plus a whitespace-normalizing `fmt`:
 
 Ownership stays exact throughout (no GC): owned values move by value
 (`push` mutates in place; `get`/indexing/`for` clone out); pass `.clone()`
@@ -219,8 +262,13 @@ error[E0205]: cannot assign through this place (immutable binding or shared refe
 | `valvet check <file>` | Parse and analyse, no linking |
 | `valvet build <file>` | Compile to `target/valvet/<name>` |
 | `valvet run <file>` | Build, execute, exit with program status |
+| `valvet run <file> -- args` | Run with script arguments in `args` |
+| `valvet run --watch <file>` | Re-run on file change |
+| `valvet fmt <file>` | Normalize whitespace and trailing newline |
 | `valvet test [dir]` | Run the fixture suite (`valvet-tests` default) |
 | `valvet new <name>` | Scaffold a single-dir project |
+| `valvet repl` | Interactive session (definitions persist) |
+| `valvet -e 'expr'` | Evaluate a scriptlet and print its value |
 | `valvet --version` / `--help` | Version / usage |
 
 Exit codes: 0 success, 1 compilation failure, 2 usage error.
@@ -251,7 +299,7 @@ valvet test              # end-to-end fixtures, debug and release
 
 See `docs/implementation/TEST_STRATEGY.md` for the gate policy and
 `docs/implementation/IMPLEMENTATION_STATUS.md` for current totals.
-Current gates: 100 unit tests, 93/93 fixtures (debug+release),
+Current gates: 185 unit tests, 258/258 fixtures (debug+release),
 ASan/UBSan-clean output.
 
 ## Match guards (active-pattern style)
@@ -274,6 +322,8 @@ match (v) {
 ## Scope notes
 
 - Single C translation unit per program; target is the local machine.
-- No file I/O, closures, traits, generics beyond the builtins, or
-  `Display` for user structs yet. Those are 0.2.0+ scope.
+- File I/O (`read_file`/`write_file`), shell-out (`std::sys`, imp scripts
+  only), plots (SVG), and `.vv`/`.vvt` sources all exist as of 0.3.0.
+  Still deferred: closures, traits, generics beyond the builtins, user
+  FFI, macros, lazy frames, and `Display` for user structs.
 - `docs/implementation/SPECIFICATION_GAPS.md` records resolved ambiguities.
