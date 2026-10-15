@@ -1,0 +1,4 @@
+fun main() {
+    val d: Float64 @furlongs = 5.0;
+    println(d);
+}

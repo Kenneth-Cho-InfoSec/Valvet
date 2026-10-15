@@ -1,0 +1,26 @@
+import std::frame::DynamicFrame;
+import std::sql::sql;
+fun go(): Int32 {
+val f = DynamicFrame { names: vec!["g", "x"], cols: vec![vec!["a", "a", "b", "b"], vec!["1", "2", "3", "4"]], nrows: 4 as Int64 };
+let Ok(q1) = sql(&f, "SELECT g, SUM(x) FROM f GROUP BY g ORDER BY g LIMIT 10") else {
+println("sql fail");
+return 1;
+};
+println(q1.cols[0 as Int64]);
+println(q1.cols[1 as Int64]);
+let Ok(q2) = sql(&f, "SELECT g FROM f WHERE x > 2") else {
+println("sql fail");
+return 1;
+};
+println(q2.nrows);
+println(q2.cols[0 as Int64]);
+let Ok(q3) = sql(&f, "SELECT * FROM f LIMIT 2") else {
+println("sql fail");
+return 1;
+};
+println(q3.nrows);
+return 0;
+}
+fun main() {
+println(go())
+}

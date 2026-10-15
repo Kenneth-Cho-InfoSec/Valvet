@@ -1,0 +1,5 @@
+fun main() {
+    val m = mat_identity(2)
+    val v = vec![1.0, 2.0]
+    println(m.matmul(v))
+}

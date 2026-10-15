@@ -1,0 +1,530 @@
+// S2 hypothesis tests: t, chi-square, correlation, and Mann-Whitney,
+// in pure Valvet. `lgamma` is Lanczos g=7 (positive args only; anything
+// else is NaN, documented); gamma P/Q use series below `a+1` and a Lentz
+// fraction above (the Cephes strategy); Student-t goes through the
+// regularized incomplete beta (Lentz `betacf`). Oracles are exact
+// identities (Cauchy/Exp/even-df closed forms), never fitted values.
+
+module std.infer;
+
+import std::math::sqrt;
+import std::math::exp;
+import std::math::log;
+import std::dist::normal_cdf;
+import std::dist::hypergeom_pmf;
+
+fun is_nan_i(x: Float64): Bool {
+    return x != x;
+}
+
+fun nan_i(): Float64 {
+    return 0.0 / 0.0;
+}
+
+// log Gamma for x > 0: Stirling series (four Bernoulli corrections)
+// above 10, exact log recurrence below (no fitted constants).
+pub fun lgamma(x: Float64): Float64 {
+    if (x != x || x <= 0.0) {
+        return nan_i();
+    }
+    var s = 0.0;
+    var z = x;
+    while (z < 10.0) {
+        s = s - log(z);
+        z = z + 1.0;
+    }
+    val l = (z - 0.5) * log(z) - z + 0.9189385332046727;
+    return l + 1.0 / (12.0 * z) - 1.0 / (360.0 * z * z * z) + 1.0 / (1260.0 * z * z * z * z * z) - 1.0 / (1680.0 * z * z * z * z * z * z * z) + s;
+}
+
+// Lower regularized gamma P(a, x) by series (x < a+1) else 1 - CF.
+fun gamma_cf(a: Float64, x: Float64): Float64 {
+    val tiny = 0.000000000000000000000000000001;
+    var b = x + 1.0 - a;
+    var c = 1.0 / tiny;
+    var d = 1.0 / b;
+    if (d == 0.0) {
+        d = tiny;
+    }
+    var h = d;
+    var i = 1 as Int64;
+    while (i < (200 as Int64)) {
+        val fi = i as Float64;
+        val an = 0.0 - fi * (fi - a);
+        b = b + 2.0;
+        d = an * d + b;
+        if (d == 0.0) {
+            d = tiny;
+        }
+        c = b + an / c;
+        if (c == 0.0) {
+            c = tiny;
+        }
+        d = 1.0 / d;
+        val cd = c * d;
+        h = h * cd;
+        i = i + (1 as Int64);
+    }
+    return h;
+}
+
+pub fun gamma_p(a: Float64, x: Float64): Float64 {
+    if (a <= 0.0 || x != x || a != a) {
+        return nan_i();
+    }
+    if (x <= 0.0) {
+        return 0.0;
+    }
+    val front = exp(0.0 - x + a * log(x) - lgamma(a));
+    if (x < a + 1.0) {
+        var term = 1.0 / a;
+        var sum = term;
+        var n = 1 as Int64;
+        while (n < (300 as Int64)) {
+            val fn = n as Float64;
+            term = term * x / (a + fn);
+            sum = sum + term;
+            n = n + (1 as Int64);
+        }
+        return front * sum;
+    }
+    return 1.0 - front * gamma_cf(a, x);
+}
+
+pub fun gamma_q(a: Float64, x: Float64): Float64 {
+    return 1.0 - gamma_p(a, x);
+}
+
+// Regularized incomplete beta via Lentz (betacf), with the symmetry
+// flip for x past (a+1)/(a+b+2).
+fun beta_cf(a: Float64, b: Float64, x: Float64): Float64 {
+    val tiny = 0.000000000000000000000000000001;
+    var c = 1.0;
+    var d = 1.0 - (a + b) * x / (a + 1.0);
+    if (d == 0.0) {
+        d = tiny;
+    }
+    d = 1.0 / d;
+    var h = d;
+    var m = 1 as Int64;
+    while (m < (200 as Int64)) {
+        val fm = m as Float64;
+        var aa = fm * (b - fm) * x / ((a + 2.0 * fm - 1.0) * (a + 2.0 * fm));
+        d = 1.0 + aa * d;
+        if (d == 0.0) {
+            d = tiny;
+        }
+        c = 1.0 + aa / c;
+        if (c == 0.0) {
+            c = tiny;
+        }
+        d = 1.0 / d;
+        h = h * d * c;
+        aa = 0.0 - (a + fm) * (a + b + fm) * x / ((a + 2.0 * fm) * (a + 2.0 * fm + 1.0));
+        d = 1.0 + aa * d;
+        if (d == 0.0) {
+            d = tiny;
+        }
+        c = 1.0 + aa / c;
+        if (c == 0.0) {
+            c = tiny;
+        }
+        d = 1.0 / d;
+        h = h * d * c;
+        m = m + (1 as Int64);
+    }
+    return h;
+}
+
+fun beta_front(a: Float64, b: Float64, x: Float64): Float64 {
+    return exp(a * log(x) + b * log(1.0 - x) - lgamma(a) - lgamma(b) + lgamma(a + b));
+}
+
+pub fun beta_reg(a: Float64, b: Float64, x: Float64): Float64 {
+    if (a <= 0.0 || b <= 0.0 || x != x) {
+        return nan_i();
+    }
+    if (x <= 0.0) {
+        return 0.0;
+    }
+    if (x >= 1.0) {
+        return 1.0;
+    }
+    if (x > (a + 1.0) / (a + b + 2.0)) {
+        return 1.0 - beta_front(b, a, 1.0 - x) * beta_cf(b, a, 1.0 - x) / b;
+    }
+    return beta_front(a, b, x) * beta_cf(a, b, x) / a;
+}
+
+pub fun t_cdf(t: Float64, df: Float64): Float64 {
+    if (df <= 0.0 || t != t || df != df) {
+        return nan_i();
+    }
+    if (t == 0.0) {
+        return 0.5;
+    }
+    val x = df / (df + t * t);
+    val ib = beta_reg(df / 2.0, 0.5, x);
+    if (t > 0.0) {
+        return 1.0 - 0.5 * ib;
+    }
+    return 0.5 * ib;
+}
+
+pub fun chisq_cdf(x: Float64, k: Float64): Float64 {
+    if (k <= 0.0 || x != x || k != k) {
+        return nan_i();
+    }
+    return gamma_p(k / 2.0, x / 2.0);
+}
+
+pub fun chisq_p(x: Float64, k: Float64): Float64 {
+    return 1.0 - chisq_cdf(x, k);
+}
+
+pub struct TTest { statistic: Float64, df: Float64, p: Float64 }
+
+fun t_p_of(stat: Float64, df: Float64): Float64 {
+    val a = if (stat < 0.0) { 0.0 - stat } else { stat };
+    return 2.0 * (1.0 - t_cdf(a, df));
+}
+
+fun mean_i(v: Vec<Float64>): Float64 {
+    var s = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        s = s + v[i];
+        i = i + (1 as Int64);
+    }
+    return s / (v.len() as Float64);
+}
+
+fun var_i(v: Vec<Float64>, m: Float64): Float64 {
+    var s = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        val d = v[i] - m;
+        s = s + d * d;
+        i = i + (1 as Int64);
+    }
+    return s / ((v.len() - (1 as Int64)) as Float64);
+}
+
+fun bad_t(): TTest {
+    return TTest { statistic: 0.0 / 0.0, df: 0.0 / 0.0, p: 0.0 / 0.0 };
+}
+
+pub fun t_onesample(x: Vec<Float64>, mu: Float64): TTest {
+    val n = x.len();
+    if (n < (2 as Int64)) {
+        return bad_t();
+    }
+    val m = mean_i(x.clone());
+    val v = var_i(x, m);
+    if (v <= 0.0) {
+        return bad_t();
+    }
+    val stat = (m - mu) / sqrt(v / (n as Float64));
+    val df = (n - (1 as Int64)) as Float64;
+    return TTest { statistic: stat, df: df, p: t_p_of(stat, df) };
+}
+
+pub fun t_paired(a: Vec<Float64>, b: Vec<Float64>): TTest {
+    if (a.len() != b.len()) {
+        return bad_t();
+    }
+    var d: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < a.len()) {
+        d.push(a[i] - b[i]);
+        i = i + (1 as Int64);
+    }
+    return t_onesample(d, 0.0);
+}
+
+pub fun t_student(a: Vec<Float64>, b: Vec<Float64>): TTest {
+    val n1 = a.len();
+    val n2 = b.len();
+    if (n1 < (2 as Int64) || n2 < (2 as Int64)) {
+        return bad_t();
+    }
+    val m1 = mean_i(a.clone());
+    val m2 = mean_i(b.clone());
+    val v1 = var_i(a, m1);
+    val v2 = var_i(b, m2);
+    val sp = ((n1 - (1 as Int64)) as Float64 * v1 + (n2 - (1 as Int64)) as Float64 * v2) / ((n1 + n2 - (2 as Int64)) as Float64);
+    if (sp <= 0.0) {
+        return bad_t();
+    }
+    val stat = (m1 - m2) / sqrt(sp * (1.0 / (n1 as Float64) + 1.0 / (n2 as Float64)));
+    val df = (n1 + n2 - (2 as Int64)) as Float64;
+    return TTest { statistic: stat, df: df, p: t_p_of(stat, df) };
+}
+
+pub fun t_welch(a: Vec<Float64>, b: Vec<Float64>): TTest {
+    val n1 = a.len();
+    val n2 = b.len();
+    if (n1 < (2 as Int64) || n2 < (2 as Int64)) {
+        return bad_t();
+    }
+    val m1 = mean_i(a.clone());
+    val m2 = mean_i(b.clone());
+    val v1 = var_i(a, m1);
+    val v2 = var_i(b, m2);
+    val s1 = v1 / (n1 as Float64);
+    val s2 = v2 / (n2 as Float64);
+    if (s1 + s2 <= 0.0) {
+        return bad_t();
+    }
+    val stat = (m1 - m2) / sqrt(s1 + s2);
+    val df = (s1 + s2) * (s1 + s2) / (s1 * s1 / ((n1 - (1 as Int64)) as Float64) + s2 * s2 / ((n2 - (1 as Int64)) as Float64));
+    return TTest { statistic: stat, df: df, p: t_p_of(stat, df) };
+}
+
+pub struct ChisqTest { statistic: Float64, df: Float64, p: Float64 }
+
+pub fun chisq_gof(obs: Vec<Int64>, exp: Vec<Float64>): ChisqTest {
+    if (obs.len() != exp.len() || obs.len() < (2 as Int64)) {
+        return ChisqTest { statistic: 0.0 / 0.0, df: 0.0 / 0.0, p: 0.0 / 0.0 };
+    }
+    var s = 0.0;
+    var i = 0 as Int64;
+    while (i < obs.len()) {
+        if (exp[i] <= 0.0) {
+            return ChisqTest { statistic: 0.0 / 0.0, df: 0.0 / 0.0, p: 0.0 / 0.0 };
+        }
+        val d = (obs[i] as Float64) - exp[i];
+        s = s + d * d / exp[i];
+        i = i + (1 as Int64);
+    }
+    val df = (obs.len() - (1 as Int64)) as Float64;
+    return ChisqTest { statistic: s, df: df, p: chisq_p(s, df) };
+}
+
+pub struct CorTest { r: Float64, statistic: Float64, df: Float64, p: Float64 }
+
+pub fun cor_test(x: Vec<Float64>, y: Vec<Float64>): CorTest {
+    if (x.len() != y.len() || x.len() < (3 as Int64)) {
+        return CorTest { r: 0.0 / 0.0, statistic: 0.0 / 0.0, df: 0.0 / 0.0, p: 0.0 / 0.0 };
+    }
+    val n = x.len();
+    val mx = mean_i(x.clone());
+    val my = mean_i(y.clone());
+    var sxy = 0.0;
+    var sxx = 0.0;
+    var syy = 0.0;
+    var i = 0 as Int64;
+    while (i < n) {
+        val dx = x[i] - mx;
+        val dy = y[i] - my;
+        sxy = sxy + dx * dy;
+        sxx = sxx + dx * dx;
+        syy = syy + dy * dy;
+        i = i + (1 as Int64);
+    }
+    if (sxx <= 0.0 || syy <= 0.0) {
+        return CorTest { r: 0.0 / 0.0, statistic: 0.0 / 0.0, df: 0.0 / 0.0, p: 0.0 / 0.0 };
+    }
+    val r = sxy / sqrt(sxx * syy);
+    val df = (n - (2 as Int64)) as Float64;
+    var stat = 0.0 / 0.0;
+    if (r * r < 1.0) {
+        stat = r * sqrt(df / (1.0 - r * r));
+    } else {
+        if (r > 0.0) {
+            stat = 1.0 / 0.0;
+        } else {
+            stat = 0.0 - 1.0 / 0.0;
+        }
+    }
+    return CorTest { r: r, statistic: stat, df: df, p: t_p_of(stat, df) };
+}
+
+pub struct MannWhitney { u: Float64, z: Float64, p: Float64 }
+
+fun bad_mw(): MannWhitney {
+    return MannWhitney { u: 0.0 / 0.0, z: 0.0 / 0.0, p: 0.0 / 0.0 };
+}
+
+// Rank-sum with average ranks for ties (M2 order), normal approximation
+// with tie correction and continuity correction (R wilcox.test defaults).
+pub fun mann_whitney(a: Vec<Float64>, b: Vec<Float64>): MannWhitney {
+    val n1 = a.len();
+    val n2 = b.len();
+    if (n1 == (0 as Int64) || n2 == (0 as Int64)) {
+        return bad_mw();
+    }
+    var all: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < n1) {
+        all.push(a[i]);
+        i = i + (1 as Int64);
+    }
+    var j = 0 as Int64;
+    while (j < n2) {
+        all.push(b[j]);
+        j = j + (1 as Int64);
+    }
+    val n = n1 + n2;
+    val ord = all.clone().order();
+    var ranks: Vec<Float64> = vec![];
+    var r0 = 0 as Int64;
+    while (r0 < n) {
+        ranks.push(0.0);
+        r0 = r0 + (1 as Int64);
+    }
+    // Average ranks over tied runs (ord is a stable permutation).
+    var k = 0 as Int64;
+    while (k < n) {
+        var e = k;
+        while (e + (1 as Int64) < n && all[ord[e + (1 as Int64)]] == all[ord[k]]) {
+            e = e + (1 as Int64);
+        }
+        val avg = ((k + e) as Float64) / 2.0 + 1.0;
+        var t = k;
+        while (t <= e) {
+            val pos = ord[t];
+            ranks[pos] = avg;
+            t = t + (1 as Int64);
+        }
+        k = e + (1 as Int64);
+    }
+    var r1 = 0.0;
+    var q = 0 as Int64;
+    while (q < n1) {
+        r1 = r1 + ranks[q];
+        q = q + (1 as Int64);
+    }
+    val f1 = (n1 as Float64);
+    val f2 = (n2 as Float64);
+    val u = r1 - f1 * (f1 + 1.0) / 2.0;
+    val mu = f1 * f2 / 2.0;
+    // Tie correction: sum of (t^3 - t) over tied runs.
+    var tie = 0.0;
+    var k2 = 0 as Int64;
+    while (k2 < n) {
+        var e = k2;
+        while (e + (1 as Int64) < n && all[ord[e + (1 as Int64)]] == all[ord[k2]]) {
+            e = e + (1 as Int64);
+        }
+        val tlen = ((e - k2 + (1 as Int64)) as Float64);
+        tie = tie + tlen * tlen * tlen - tlen;
+        k2 = e + (1 as Int64);
+    }
+    val fn = (n as Float64);
+    val sig2 = f1 * f2 / 12.0 * ((fn + 1.0) - tie / (fn * (fn - 1.0)));
+    if (sig2 <= 0.0) {
+        return bad_mw();
+    }
+    val diff = if (u > mu) { u - mu } else { mu - u };
+    val z = (diff - 0.5) / sqrt(sig2);
+    return MannWhitney { u: u, z: z, p: 2.0 * (1.0 - normal_cdf(z, 0.0, 1.0)) };
+}
+
+pub fun f_cdf(x: Float64, d1: Float64, d2: Float64): Float64 {
+    if (d1 <= 0.0 || d2 <= 0.0 || x != x || d1 != d1 || d2 != d2) {
+        return nan_i();
+    }
+    if (x <= 0.0) {
+        return 0.0;
+    }
+    return beta_reg(d1 / 2.0, d2 / 2.0, d1 * x / (d1 * x + d2));
+}
+
+pub fun f_p(x: Float64, d1: Float64, d2: Float64): Float64 {
+    return 1.0 - f_cdf(x, d1, d2);
+}
+
+pub struct AnovaOneWay {
+    ss_between: Float64,
+    ss_within: Float64,
+    df1: Float64,
+    df2: Float64,
+    f: Float64,
+    p: Float64,
+}
+
+fun anova_mean(v: Vec<Float64>): Float64 {
+    if (v.len() == (0 as Int64)) {
+        return 0.0 / 0.0;
+    }
+    var s = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        s = s + v[i];
+        i = i + (1 as Int64);
+    }
+    return s / (v.len() as Float64);
+}
+
+pub fun anova_oneway(groups: Vec<Vec<Float64>>): Option<AnovaOneWay> {
+    var ng = 0 as Int64;
+    var n = 0 as Int64;
+    var g = 0 as Int64;
+    while (g < groups.len()) {
+        if (groups[g].len() > (0 as Int64)) {
+            ng = ng + (1 as Int64);
+            n = n + groups[g].len();
+        }
+        g = g + (1 as Int64);
+    }
+    if (ng < (2 as Int64) || n <= ng) {
+        return None;
+    }
+    var grand = 0.0;
+    var k = 0 as Int64;
+    while (k < groups.len()) {
+        var j = 0 as Int64;
+        while (j < groups[k].len()) {
+            grand = grand + groups[k][j];
+            j = j + (1 as Int64);
+        }
+        k = k + (1 as Int64);
+    }
+    grand = grand / (n as Float64);
+    var ssb = 0.0;
+    var ssw = 0.0;
+    var m = 0 as Int64;
+    while (m < groups.len()) {
+        if (groups[m].len() > (0 as Int64)) {
+            val mu = anova_mean(groups[m].clone());
+            val d = mu - grand;
+            ssb = ssb + (groups[m].len() as Float64) * d * d;
+            var q = 0 as Int64;
+            while (q < groups[m].len()) {
+                val r = groups[m][q] - mu;
+                ssw = ssw + r * r;
+                q = q + (1 as Int64);
+            }
+        }
+        m = m + (1 as Int64);
+    }
+    val df1 = ((ng - (1 as Int64)) as Float64);
+    val df2 = ((n - ng) as Float64);
+    if (ssw == 0.0) {
+        if (ssb == 0.0) {
+            return Some(AnovaOneWay { ss_between: ssb, ss_within: ssw, df1: df1, df2: df2, f: 0.0 / 0.0, p: 0.0 / 0.0 });
+        }
+        return Some(AnovaOneWay { ss_between: ssb, ss_within: ssw, df1: df1, df2: df2, f: 1.0 / 0.0, p: 0.0 });
+    }
+    val f = (ssb / df1) / (ssw / df2);
+    return Some(AnovaOneWay { ss_between: ssb, ss_within: ssw, df1: df1, df2: df2, f: f, p: f_p(f, df1, df2) });
+}
+
+pub fun fisher_exact(a: Int64, b: Int64, c: Int64, d: Int64): Float64 {
+    val n1 = a + b;
+    val n2 = c + d;
+    val k1 = a + c;
+    val n = n1 + n2;
+    val obs = hypergeom_pmf(a, n, k1, n1);
+    var p = 0.0;
+    var k = 0 as Int64;
+    while (k <= n1 && k <= k1) {
+        val q = hypergeom_pmf(k, n, k1, n1);
+        if (q <= obs + 1e-12) {
+            p = p + q;
+        }
+        k = k + (1 as Int64);
+    }
+    return p;
+}

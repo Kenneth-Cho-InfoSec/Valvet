@@ -1,0 +1,16 @@
+fun eff(): Bool {
+    println("EFF")
+    true
+}
+
+fun main() {
+    if (false && eff()) {
+        println(1)
+    }
+    println(2)
+    if (true || eff()) {
+        println(3)
+    }
+    val x = true && eff()
+    println(x)
+}

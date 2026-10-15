@@ -1,0 +1,120 @@
+// std::features: engineering and missing data helpers.
+module std.features;
+
+import std::frame::DynamicFrame;
+import std::frame::frame_col;
+import std::csv::is_na;
+import std::math::sqrt;
+
+pub fun standardize(v: Vec<Float64>): Vec<Float64> {
+    var m = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        m = m + v[i];
+        i = i + (1 as Int64);
+    }
+    m = m / (v.len() as Float64);
+    var s = 0.0;
+    var j = 0 as Int64;
+    while (j < v.len()) {
+        val d = v[j] - m;
+        s = s + d * d;
+        j = j + (1 as Int64);
+    }
+    s = sqrt(s / (v.len() as Float64));
+    var out: Vec<Float64> = vec![];
+    var k = 0 as Int64;
+    while (k < v.len()) {
+        if (s == 0.0) {
+            out.push(0.0);
+        } else {
+            out.push((v[k] - m) / s);
+        }
+        k = k + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun poly_expand(x: Float64, degree: Int64): Vec<Float64> {
+    var out: Vec<Float64> = vec![];
+    var p = 1.0;
+    var d = 1 as Int64;
+    while (d <= degree) {
+        p = p * x;
+        out.push(p);
+        d = d + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun target_encode(col: Vec<String>, y: Vec<Float64>, smooth: Float64): Vec<Float64> {
+    var gm = 0.0;
+    var i = 0 as Int64;
+    while (i < y.len()) {
+        gm = gm + y[i];
+        i = i + (1 as Int64);
+    }
+    gm = gm / (y.len() as Float64);
+    var out: Vec<Float64> = vec![];
+    var k = 0 as Int64;
+    while (k < col.len()) {
+        var s = 0.0;
+        var n = 0 as Int64;
+        var j = 0 as Int64;
+        while (j < col.len() && j < y.len()) {
+            if (col[j] == col[k]) {
+                s = s + y[j];
+                n = n + (1 as Int64);
+            }
+            j = j + (1 as Int64);
+        }
+        out.push((s + smooth * gm) / ((n as Float64) + smooth));
+        k = k + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun fill_mean(v: Vec<Float64>): Vec<Float64> {
+    var s = 0.0;
+    var n = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (v[i] == v[i]) {
+            s = s + v[i];
+            n = n + (1 as Int64);
+        }
+        i = i + (1 as Int64);
+    }
+    val m = if (n > (0 as Int64)) { s / (n as Float64) } else { 0.0 / 0.0 };
+    var out: Vec<Float64> = vec![];
+    var j = 0 as Int64;
+    while (j < v.len()) {
+        if (v[j] == v[j]) {
+            out.push(v[j]);
+        } else {
+            out.push(m);
+        }
+        j = j + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun missing_indicator(col: Vec<String>): Vec<Float64> {
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val mc = col[i].clone();
+        if (is_na(&mc)) {
+            out.push(1.0);
+        } else {
+            out.push(0.0);
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun date_parts(y: Int64, m: Int64, d: Int64): Vec<Int64> {
+    // year, month, day, quarter, weekend flag unknown so 0.
+    return vec![y, m, d, (m - (1 as Int64)) / (3 as Int64) + (1 as Int64)];
+}

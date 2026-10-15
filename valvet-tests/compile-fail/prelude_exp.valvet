@@ -1,0 +1,5 @@
+mode exp;
+prelude;
+fun main() {
+println(1)
+}

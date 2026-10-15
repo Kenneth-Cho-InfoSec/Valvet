@@ -1,0 +1,7 @@
+fun main() {
+    val v = vec![Missing::Present(1.0), Missing];
+    println(v.len());
+    println(v[0]);
+    println(v[1]);
+    println(v);
+}

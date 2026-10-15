@@ -1,0 +1,33 @@
+fun seq_sum(v: Vec<Float64>): Float64 {
+    var s = 0.0
+    var i = 0 as Int64
+    while (i < v.len()) {
+        s = s + v[i];
+        i += 1 as Int64
+    }
+    s
+}
+
+fun main() {
+    var v: Vec<Float64> = vec![]
+    var i = 0 as Int64
+    while (i < 20000 as Int64) {
+        v.push((i as Float64) * 0.001);
+        i += 1 as Int64
+    }
+    val s = seq_sum(v.clone());
+    val p1 = par_sum(v.clone(), 1 as Int64);
+    val p2 = par_sum(v.clone(), 2 as Int64);
+    val p3 = par_sum(v.clone(), 3 as Int64);
+    val p4 = par_sum(v.clone(), 4 as Int64);
+    val p8 = par_sum(v.clone(), 8 as Int64);
+    // Fixed blocks plus ordered combine: every thread count agrees.
+    println(p1 == p2 && p2 == p3 && p3 == p4 && p4 == p8);
+    println(s == p8);
+    println(p8);
+    // Clamps: 0 threads means 1, over-count means one block per thread.
+    println(par_sum(v.clone(), 0 as Int64) == p8);
+    println(par_sum(v.clone(), 100 as Int64) == p8);
+    val empty: Vec<Float64> = vec![];
+    println(par_sum(empty, 4 as Int64));
+}

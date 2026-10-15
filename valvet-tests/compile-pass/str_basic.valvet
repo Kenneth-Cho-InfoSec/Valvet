@@ -1,0 +1,27 @@
+import std::str::str_contains;
+import std::str::str_starts_with;
+import std::str::str_ends_with;
+import std::str::str_replace;
+import std::str::str_substring;
+
+fun main() {
+    // Byte primitives: len, byte_at (byte value), slice (half-open).
+    val h = "hello world";
+    println(h.len());
+    println(h.byte_at(1 as Int64));
+    println(h.slice(0 as Int64, 5 as Int64));
+    println(h.slice(6 as Int64, h.len()));
+    // Search verbs (bytewise; empty needle is everywhere).
+    println(str_contains(h.clone(), "world"));
+    println(str_contains(h.clone(), "zzz"));
+    println(str_contains(h.clone(), ""));
+    println(str_starts_with(h.clone(), "hello"));
+    println(str_starts_with(h.clone(), "world"));
+    println(str_ends_with(h.clone(), "world"));
+    println(str_ends_with(h.clone(), "hello"));
+    // Literal replace (all occurrences; empty needle interleaves).
+    println(str_replace(h.clone(), "o", "0"));
+    println(str_replace(h.clone(), "world", "there"));
+    println(str_replace("aaa", "aa", "b"));
+    println(str_substring(h.clone(), 6 as Int64, 11 as Int64));
+}

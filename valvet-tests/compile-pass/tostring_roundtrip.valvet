@@ -1,0 +1,8 @@
+fun main() {
+    println(to_string(42))
+    println(to_string(0 - 7))
+    println(to_string(70000 as Int64))
+    println(to_string(2.5))
+    println(to_string(true))
+    println(to_string(0 as Int64 - 1 as Int64))
+}

@@ -1,0 +1,54 @@
+import std::frame::DynamicFrame;
+import std::model::ModelFrame;
+import std::model::LmFit;
+import std::model::formula_new;
+import std::model::formula_parse;
+import std::model::model_frame;
+import std::model::lm;
+import std::model::lm_p;
+
+fun no_mf(): ModelFrame {
+    return ModelFrame { x: mat_identity(1 as Int64), y: vec![0.0], names: vec![""] };
+}
+
+fun no_fit(): LmFit {
+    return LmFit { coef: vec![0.0], se: vec![0.0], fitted: vec![0.0], resid: vec![0.0], r2: 0.0, sigma: 0.0, names: vec![""] };
+}
+
+fun show_lm(mf: ModelFrame) {
+    val fit = match (lm(mf)) { Ok(v) -> v, Err(_) -> no_fit(), };
+    println(fit.coef);
+    println(fit.se);
+    println(fit.r2);
+    println(fit.names);
+    println(lm_p(&fit, 0 as Int64));
+    println(lm_p(&fit, 1 as Int64));
+}
+
+fun main() {
+    // Formula parsing (constructor + "~" strings; junk rejected).
+    val fok = match (formula_parse("dist ~ speed")) { Some(_) -> true, None -> false, };
+    println(fok);
+    val bad1 = match (formula_parse("nope")) { Some(_) -> "parsed", None -> "none", };
+    println(bad1);
+    val bad2 = match (formula_parse("y ~ ")) { Some(_) -> "parsed", None -> "none", };
+    println(bad2);
+    val fo = match (formula_parse("dist ~ speed")) { Some(v) -> v, None -> formula_new("?", vec!["?"]), };
+    println(fo.response);
+    println(fo.terms);
+    // OLS on five points (vs independent Python normal equations).
+    val f = DynamicFrame { names: vec!["speed", "dist"], cols: vec![vec!["4", "7", "8", "9", "10"], vec!["2", "22", "16", "10", "18"]], nrows: 5 as Int64 };
+    val mf = match (model_frame(&f, fo)) { Ok(v) -> v, Err(_) -> no_mf(), };
+    show_lm(mf);
+    // na.omit drops the missing row before fitting (a non-missing,
+    // non-numeric cell would make `speed` a factor instead).
+    val g = DynamicFrame { names: vec!["speed", "dist"], cols: vec![vec!["4", "", "8"], vec!["2", "22", "16"]], nrows: 3 as Int64 };
+    val fo2 = match (formula_parse("dist ~ speed")) { Some(v) -> v, None -> formula_new("?", vec!["?"]), };
+    val mf2 = match (model_frame(&g, fo2)) { Ok(v) -> v, Err(_) -> no_mf(), };
+    println(mf2.y.len());
+    show_lm(mf2);
+    // Missing columns are Err, not silent.
+    val fo3 = match (formula_parse("dist ~ nosuch")) { Some(v) -> v, None -> formula_new("?", vec!["?"]), };
+    val merr = match (model_frame(&f, fo3)) { Ok(_) -> "ok", Err(e) -> e, };
+    println(merr);
+}

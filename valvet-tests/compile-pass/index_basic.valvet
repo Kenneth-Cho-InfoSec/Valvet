@@ -1,0 +1,13 @@
+fun main() {
+    var v = vec![10, 20, 30]
+    println(v[0])
+    println(v[2])
+    v[1] = 99
+    println(v[1])
+    v[0] += 5
+    println(v[0])
+    var vs = vec!["a", "b"]
+    vs[0] = "z"
+    println(vs[0])
+    println(vs.len())
+}

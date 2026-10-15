@@ -1,0 +1,67 @@
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::model::formula_parse;
+import std::model::model_frame;
+import std::model::lm;
+import std::model::cooks_distance;
+import std::model::vif;
+import std::model::durbin_watson;
+import std::model::breusch_pagan;
+fun go(): Int32 {
+val h = vec!["x", "y"]
+val r0 = vec!["1", "2.1"]
+val r1 = vec!["2", "3.9"]
+val r2 = vec!["3", "6.2"]
+val r3 = vec!["4", "7.8"]
+val r4 = vec!["5", "10.1"]
+val t = frame_from_table(CsvTable { header: h, rows: vec![r0, r1, r2, r3, r4] })
+let Some(fo) = formula_parse("y ~ x") else {
+return 1
+}
+let Ok(mf) = model_frame(&t, fo) else {
+return 1
+}
+let Ok(fit) = lm(mf) else {
+return 1
+}
+let Some(fo2) = formula_parse("y ~ x") else {
+return 1
+}
+let Ok(mf2) = model_frame(&t, fo2) else {
+return 1
+}
+let Ok(cd) = cooks_distance(&mf2, &fit) else {
+println("cook fail")
+return 1
+};
+println(cd)
+let Some(fo3) = formula_parse("y ~ x") else {
+return 1
+}
+let Ok(mf3) = model_frame(&t, fo3) else {
+return 1
+}
+let Ok(v) = vif(&mf3) else {
+println("vif fail")
+return 1
+};
+println(v)
+println(durbin_watson(&fit))
+let Some(fo4) = formula_parse("y ~ x") else {
+return 1
+}
+let Ok(mf4) = model_frame(&t, fo4) else {
+return 1
+}
+let Ok(bp) = breusch_pagan(&mf4, &fit) else {
+println("bp fail")
+return 1
+};
+println(bp.statistic)
+println(bp.df)
+println(bp.p)
+return 0
+}
+fun main() {
+println(go())
+}

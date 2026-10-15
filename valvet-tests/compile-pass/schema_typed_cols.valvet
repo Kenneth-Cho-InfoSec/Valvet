@@ -1,0 +1,9 @@
+import std::schema::parse_float_col;
+import std::schema::parse_int_col;
+import std::schema::parse_bool_col;
+fun main() {
+val col = vec!["1.5", "NA", "2.5", "oops", ""]
+println(parse_float_col(col))
+println(parse_int_col(vec!["3", "x", "null"]))
+println(parse_bool_col(vec!["true", "false", "yes"]))
+}

@@ -1,0 +1,148 @@
+// std::meta: effects, meta-analysis, power approx, p-adjust.
+module std.meta;
+
+import std::math::sqrt;
+import std::dist::normal_cdf;
+import std::dist::normal_quantile;
+
+pub fun cohens_d(m1: Float64, m2: Float64, s1: Float64, n1: Float64, s2: Float64, n2: Float64): Float64 {
+    val sp = sqrt(((n1 - 1.0) * s1 * s1 + (n2 - 1.0) * s2 * s2) / (n1 + n2 - 2.0));
+    if (sp == 0.0) {
+        return 0.0 / 0.0;
+    }
+    return (m1 - m2) / sp;
+}
+
+pub fun eta_sq(ss_eff: Float64, ss_tot: Float64): Float64 {
+    if (ss_tot == 0.0) {
+        return 0.0 / 0.0;
+    }
+    return ss_eff / ss_tot;
+}
+
+pub fun odds_ratio(a: Float64, b: Float64, c: Float64, d: Float64): Float64 {
+    if (b == 0.0 || c == 0.0) {
+        return 0.0 / 0.0;
+    }
+    return a * d / (b * c);
+}
+
+pub struct MetaRes { est: Float64, se: Float64, lo: Float64, hi: Float64 }
+
+pub fun meta_fixed(ys: Vec<Float64>, ses: Vec<Float64>): MetaRes {
+    var wsum = 0.0;
+    var wysum = 0.0;
+    var i = 0 as Int64;
+    while (i < ys.len() && i < ses.len()) {
+        val w = 1.0 / (ses[i] * ses[i]);
+        wsum = wsum + w;
+        wysum = wysum + w * ys[i];
+        i = i + (1 as Int64);
+    }
+    val est = wysum / wsum;
+    val se = sqrt(1.0 / wsum);
+    return MetaRes { est: est, se: se, lo: est - 1.96 * se, hi: est + 1.96 * se };
+}
+
+pub fun meta_random(ys: Vec<Float64>, ses: Vec<Float64>): MetaRes {
+    val k = ys.len() as Float64;
+    var wsum = 0.0;
+    var wysum = 0.0;
+    var i = 0 as Int64;
+    while (i < ys.len() && i < ses.len()) {
+        val w = 1.0 / (ses[i] * ses[i]);
+        wsum = wsum + w;
+        wysum = wysum + w * ys[i];
+        i = i + (1 as Int64);
+    }
+    val m0 = wysum / wsum;
+    var q = 0.0;
+    var j = 0 as Int64;
+    while (j < ys.len() && j < ses.len()) {
+        val w = 1.0 / (ses[j] * ses[j]);
+        val d = ys[j] - m0;
+        q = q + w * d * d;
+        j = j + (1 as Int64);
+    }
+    var c = wsum;
+    var w2 = 0.0;
+    var h = 0 as Int64;
+    while (h < ses.len()) {
+        val w = 1.0 / (ses[h] * ses[h]);
+        w2 = w2 + w * w;
+        h = h + (1 as Int64);
+    }
+    c = c - w2 / wsum;
+    var t2 = 0.0;
+    if (c != 0.0 && q > k - 1.0) {
+        t2 = (q - (k - 1.0)) / c;
+    }
+    var wsum2 = 0.0;
+    var wysum2 = 0.0;
+    var m = 0 as Int64;
+    while (m < ys.len() && m < ses.len()) {
+        val w = 1.0 / (ses[m] * ses[m] + t2);
+        wsum2 = wsum2 + w;
+        wysum2 = wysum2 + w * ys[m];
+        m = m + (1 as Int64);
+    }
+    val est = wysum2 / wsum2;
+    val se = sqrt(1.0 / wsum2);
+    return MetaRes { est: est, se: se, lo: est - 1.96 * se, hi: est + 1.96 * se };
+}
+
+pub fun power_t(d: Float64, n: Float64, alpha: Float64): Float64 {
+    val zcrit = normal_quantile(1.0 - alpha / 2.0, 0.0, 1.0);
+    val ncp = d * sqrt(n);
+    return 1.0 - normal_cdf(zcrit - ncp, 0.0, 1.0) + normal_cdf(0.0 - zcrit - ncp, 0.0, 1.0);
+}
+
+pub fun p_adjust_holm(ps: Vec<Float64>): Vec<Float64> {
+    val ord = ps.clone().order();
+    var adj: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < ps.len()) {
+        adj.push(0.0);
+        i = i + (1 as Int64);
+    }
+    val m = ps.len() as Float64;
+    var r = 0 as Int64;
+    while (r < ord.len()) {
+        val v = ps[ord[r]] * (m - (r as Float64));
+        adj[ord[r]] = if (v > 1.0) { 1.0 } else { v };
+        r = r + (1 as Int64);
+    }
+    var k = 1 as Int64;
+    while (k < ord.len()) {
+        if (adj[ord[k]] < adj[ord[k - (1 as Int64)]]) {
+            adj[ord[k]] = adj[ord[k - (1 as Int64)]];
+        }
+        k = k + (1 as Int64);
+    }
+    return adj;
+}
+
+pub fun p_adjust_bh(ps: Vec<Float64>): Vec<Float64> {
+    val ord = ps.clone().order();
+    var adj: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < ps.len()) {
+        adj.push(0.0);
+        i = i + (1 as Int64);
+    }
+    val m = ps.len() as Float64;
+    var r = 0 as Int64;
+    while (r < ord.len()) {
+        val v = ps[ord[r]] * m / ((r + (1 as Int64)) as Float64);
+        adj[ord[r]] = if (v > 1.0) { 1.0 } else { v };
+        r = r + (1 as Int64);
+    }
+    var k = ord.len() - (1 as Int64);
+    while (k > (0 as Int64)) {
+        if (adj[ord[k - (1 as Int64)]] > adj[ord[k]]) {
+            adj[ord[k - (1 as Int64)]] = adj[ord[k]];
+        }
+        k = k - (1 as Int64);
+    }
+    return adj;
+}

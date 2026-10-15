@@ -1,0 +1,5 @@
+fun main() {
+    var v = vec![3, 1];
+    v.sort(1);
+    println(v);
+}

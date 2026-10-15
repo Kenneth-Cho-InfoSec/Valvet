@@ -1,0 +1,4 @@
+mode exp;
+fun main() {
+print("hi")
+}

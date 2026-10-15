@@ -1,0 +1,4 @@
+val o = Some(1 as Int64)
+unless let Some(x) = o {
+println(x)
+}

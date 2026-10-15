@@ -1,0 +1,7 @@
+fun main() {
+    var s = "ab"
+    s += "cd"
+    println(s)
+    s += s
+    println(s)
+}

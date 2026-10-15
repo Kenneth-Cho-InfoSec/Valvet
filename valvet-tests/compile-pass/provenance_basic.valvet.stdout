@@ -1,0 +1,4 @@
+source=inline hash=-5170765084002430369 ops=[]
+source=inline hash=-5170765084002430369 ops=[load]
+source=inline hash=-5170765084002430369 ops=[load,group_mean(g,v)]
+Some([2, 2])

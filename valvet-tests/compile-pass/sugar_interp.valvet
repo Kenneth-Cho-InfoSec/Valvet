@@ -1,0 +1,8 @@
+val name = "world"
+val n = 42
+println("hello $name, n=$n!")
+println("${n + 1}")
+println("plain")
+println("")
+println("price $5 and ${n}")
+println("braces {not interp} ok")

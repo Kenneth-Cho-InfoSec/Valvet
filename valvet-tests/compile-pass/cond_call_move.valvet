@@ -1,0 +1,12 @@
+fun is_hi(s: String): Bool {
+    s == "hi"
+}
+
+fun main() {
+    if (is_hi("yo")) {
+        println("a")
+    } else {
+        println("b")
+    }
+    println("done")
+}

@@ -1,0 +1,37 @@
+module std.units;
+
+// Units of measure: annotations, not values.
+//
+// Annotate a numeric binding, parameter, or return type with `@unit`
+// and the compiler checks dimensions and converts scales automatically:
+//
+//   val d: Float64 @m = 100.0
+//   val t: Float64 @s = 9.58
+//   val v = d / t              // Float64 @m/s
+//   val w: Float64 @m/s = v
+//   val kmh: Float64 @km/h = 72.0
+//   val ms: Float64 @m/s = kmh // auto-scales by 3.6
+//
+// Rules:
+// - Same base dimensions unify; scales (`km` vs `m`) convert silently,
+//   left side wins (`val x: Float64 @km = 500.0` keeps the value 500
+//   in km scale; assigning it to a `@m` slot scales to 500000.0).
+// - Dimensionless numeric literals coerce to whatever the other side needs
+//   (`d + 5.0` is meters); dimensionless *variables* do not.
+// - `*` and `/` compose dimensions (`kg * m/s^2` is `N`); `+`, `-`,
+//   comparisons, and `+=`/`-=` need equal dimensions.
+// - `*=`/`/=` need a dimensionless factor (the slot keeps its dimension).
+// - `expr as @unit` asserts and converts explicitly.
+// - Unknown units are E0401; mismatched dimensions are E0201.
+//
+// Known base units: m, g, s, K, mol, A, cd, px, count.
+// Known derived/scaled units include: km, cm, mm, mile, ft, in,
+// kg, tonne, lb, oz, min, h, hr, day, ms, us, Hz, N, J, W, Pa,
+// V, C, eV, kcal, cal, percent, degC, degF, m/s, km/h, m/s^2,
+// m^2, m^3, L, mL, USD, EUR, JPY, GBP, bit, byte, kB, MB, GB.
+//
+// Compound units compose with `*`, `/`, and `^n`:
+// `@kg*m/s^2`, `@m/s`, `@m^2`, `@USD/hr`.
+//
+// Struct fields and `Vec` element types cannot carry `@` units;
+// annotate the binding instead.

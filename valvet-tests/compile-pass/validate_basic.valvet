@@ -1,0 +1,22 @@
+import std::frame::DynamicFrame;
+import std::validate::Check;
+import std::validate::check_range;
+import std::validate::validate;
+import std::validate::report_string;
+fun go(): Int32 {
+val f = DynamicFrame { names: vec!["x", "g"], cols: vec![vec!["1", "2", "99"], vec!["a", "b", "a"]], nrows: 3 as Int64 };
+val c1 = check_range("x", 0.0, 10.0);
+val specs: Vec<Check> = vec![c1];
+val allow: Vec<Vec<String>> = vec![];
+val vr = validate(&f, specs, allow.clone());
+println(report_string(&vr));
+println(vr.errors.len());
+val c2 = check_range("x", 0.0, 200.0);
+val specs2: Vec<Check> = vec![c2];
+val vr2 = validate(&f, specs2, allow);
+println(report_string(&vr2));
+return 0;
+}
+fun main() {
+println(go())
+}

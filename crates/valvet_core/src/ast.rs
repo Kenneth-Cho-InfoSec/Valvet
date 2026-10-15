@@ -12,7 +12,28 @@ pub struct Program {
     pub funs: Vec<FunDecl>,
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
+    /// Script mode: top-level statements of the entry file (empty for
+    /// classic `fun main` programs and for imported modules). The resolver
+    /// validates ownership and synthesizes `main` from these.
+    pub top: Vec<Stmt>,
+    /// Entry mode header (`mode imp;` / `mode exp;`); `Auto` when absent.
+    /// `mode` is contextual (first two tokens only), never a keyword.
+    pub mode: Mode,
+    /// `prelude;` header (imp only): implicit data-scripting imports,
+    /// injected by the resolver (see `inject_prelude`).
+    pub prelude: bool,
     pub span: Span,
+}
+
+/// Entry mode: script (top-level statements run) vs strict classic
+/// (`fun main` required, statements rejected). Default is `Auto`, which
+/// behaves as imp; `mode imp;` is an explicit no-op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    #[default]
+    Auto,
+    Imp,
+    Exp,
 }
 
 /// One `import` declaration: `import a::b::load;`, `import a::b::{x, y as z};`.
@@ -120,6 +141,7 @@ pub struct FunDecl {
     pub params: Vec<Param>,
     pub ret: Ty,
     pub ret_span: Span,
+    pub ret_unit: Option<UnitExpr>,
     pub body: Block,
     pub span: Span,
     /// Owning module (`""` for the entry / single-file mode; stamped by the resolver).
@@ -133,6 +155,17 @@ pub struct Param {
     pub name: String,
     pub span: Span,
     pub ty: Ty,
+    pub unit: Option<UnitExpr>,
+}
+
+/// A units-of-measure expression after `@` (`m/s^2`, `kg*m`, `(km/h)`).
+/// Evaluated by `units.rs` into a dimension vector + scale.
+#[derive(Debug, Clone)]
+pub enum UnitExpr {
+    Name(String, Span),
+    Mul(Box<UnitExpr>, Box<UnitExpr>),
+    Div(Box<UnitExpr>, Box<UnitExpr>),
+    Pow(Box<UnitExpr>, i32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +196,11 @@ pub enum Ty {
         mutable: bool,
         inner: Box<Ty>,
     },
+    /// Poison from an already-reported error (stops cascade diagnostics;
+    /// never user-visible when suppression works, never reaches codegen
+    /// since any error aborts compilation). Behaves like `Unit` (Copy)
+    /// in every predicate.
+    Error,
 }
 
 impl Ty {
@@ -192,6 +230,8 @@ impl Ty {
                 let inner: Vec<String> = args.iter().map(|a| a.name()).collect();
                 format!("{}<{}>", base, inner.join(", "))
             }
+            // Backstop only: suppression (item 2) keeps this out of output.
+            Ty::Error => "<error>".to_string(),
         }
     }
     /// Display name, resolved or not.
@@ -215,6 +255,7 @@ pub enum Stmt {
         name: String,
         name_span: Span,
         ty: Option<Ty>,
+        unit: Option<UnitExpr>,
         init: Expr,
         span: Span,
     },
@@ -223,6 +264,7 @@ pub enum Stmt {
         name: String,
         name_span: Span,
         ty: Option<Ty>,
+        unit: Option<UnitExpr>,
         init: Expr,
         span: Span,
     },
@@ -242,6 +284,15 @@ pub enum Stmt {
         id: NodeId,
         scrutinee: Expr,
         arms: Vec<MatchArm>,
+        span: Span,
+    },
+    /// `let PAT = expr else DIVERGING` (B3): bindings join the current
+    /// scope; the `else` block must diverge (checked via `Flow`).
+    LetElse {
+        id: NodeId,
+        scrutinee: Box<Expr>,
+        pat: Pat,
+        else_b: Box<Block>,
         span: Span,
     },
     While {
@@ -277,6 +328,24 @@ pub enum Stmt {
         value: Option<Expr>,
         span: Span,
     },
+}
+
+/// Span of any statement (all variants carry one).
+pub fn stmt_span(s: &Stmt) -> Span {
+    match s {
+        Stmt::Val { span, .. }
+        | Stmt::Var { span, .. }
+        | Stmt::Expr { span, .. }
+        | Stmt::If { span, .. }
+        | Stmt::While { span, .. }
+        | Stmt::For { span, .. }
+        | Stmt::Loop { span, .. }
+        | Stmt::Break { span, .. }
+        | Stmt::Continue { span, .. }
+        | Stmt::Match { span, .. }
+        | Stmt::LetElse { span, .. }
+        | Stmt::Return { span, .. } => *span,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -365,6 +434,9 @@ pub enum ExprKind {
     Loop {
         body: Box<Block>,
     },
+    /// Desugared statement sequence (`println(a, b)`, chained comparisons):
+    /// parser-only sugar; our desugars never carry a tail.
+    Block(Block),
     /// `expr?` — Result/Option error propagation (T-Prop).
     Try {
         expr: Box<Expr>,
@@ -373,6 +445,11 @@ pub enum ExprKind {
         expr: Box<Expr>,
         target: Ty,
         target_span: Span,
+    },
+    /// `expr as @unit` — assert/convert dimension, keeping the type.
+    AsUnit {
+        expr: Box<Expr>,
+        unit: Box<UnitExpr>,
     },
     /// `Point { x: 1.0, y: 2.0 }` (colons; `=` is only for named call args).
     StructLit {
@@ -402,12 +479,17 @@ pub enum ExprKind {
     VecMacro {
         elems: Vec<Expr>,
     },
-    /// `recv.method(args)` — method call (0.1.0: `Vec` methods only).
+    /// `recv.method(args)` — method call (J1: `Vec` and `String` methods).
     Method {
         receiver: Box<Expr>,
         method: String,
         method_span: Span,
         args: Vec<Expr>,
+    },
+    /// `v[i]` — vector element read (J1: copy out, never an alias).
+    Index {
+        base: Box<Expr>,
+        idx: Box<Expr>,
     },
     /// `Shape::Circle(args)` — enum variant construction.
     Variant {
@@ -459,6 +541,24 @@ pub enum Place {
         inner: Box<Place>,
         span: Span,
     },
+    /// `v[i]` — element slot (J1: bounds are a runtime trap).
+    Index {
+        base: Box<Place>,
+        idx: Box<Expr>,
+        span: Span,
+    },
+}
+
+impl Place {
+    /// Source span of the place itself (outermost layer).
+    pub fn span(&self) -> Span {
+        match self {
+            Place::Var(_, span)
+            | Place::Field { span, .. }
+            | Place::Deref { span, .. }
+            | Place::Index { span, .. } => *span,
+        }
+    }
 }
 
 /// Whether a type contains a reference anywhere inside (for the top-level

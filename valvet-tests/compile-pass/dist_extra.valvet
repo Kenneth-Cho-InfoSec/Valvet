@@ -1,0 +1,33 @@
+import std::dist::hypergeom_pmf;
+import std::dist::hypergeom_cdf;
+import std::dist::nbinom_pmf;
+import std::dist::lognormal_pdf;
+import std::dist::weibull_pdf;
+import std::dist::logistic_cdf;
+import std::dist::cauchy_pdf;
+import std::dist::gumbel_pdf;
+import std::dist::mvn_sample;
+import std::dist::dirichlet_sample;
+import std::infer::fisher_exact;
+fun go(): Int32 {
+println(hypergeom_pmf(2 as Int64, 10 as Int64, 4 as Int64, 5 as Int64));
+println(hypergeom_cdf(2 as Int64, 10 as Int64, 4 as Int64, 5 as Int64));
+println(nbinom_pmf(3 as Int64, 2 as Int64, 0.5));
+println(lognormal_pdf(1.0, 0.0, 1.0));
+println(weibull_pdf(1.0, 1.5, 1.0));
+println(logistic_cdf(0.0, 0.0, 1.0));
+println(cauchy_pdf(0.0, 0.0, 1.0));
+println(gumbel_pdf(0.0, 0.0, 1.0));
+println(fisher_exact(1 as Int64, 9 as Int64, 11 as Int64, 3 as Int64));
+val mu: Vec<Float64> = vec![0.0, 0.0];
+val ch = mat_identity(2 as Int64);
+val ms = mvn_sample(rng_seeded(7 as Int64), mu, ch, 2 as Int64);
+println(ms.len());
+val ds = dirichlet_sample(rng_seeded(7 as Int64), vec![1.0, 1.0, 1.0], 2 as Int64);
+println(ds.len());
+println(ds[0 as Int64].len());
+return 0;
+}
+fun main() {
+println(go())
+}

@@ -1,0 +1,22 @@
+fun main() {
+    // km/h and m/s unify (same dimension, auto-scale 3.6).
+    val v: Float64 @km/h = 72.0;
+    val w: Float64 @m/s = v;
+    println(w);
+    // mile/hr composes from builtins and converts too.
+    val u: Float64 @mile/hr = 60.0;
+    val um: Float64 @m/s = u;
+    println(um > 26.0 && um < 27.0);
+    // N is kg*m/s^2: constructed quantities unify with it.
+    val m: Float64 @kg = 80.0;
+    val a: Float64 @m/s^2 = 9.8;
+    val f: Float64 @N = m * a;
+    println(f);
+    // Composition back: (m/s) * s is m.
+    val t: Float64 @s = 10.0;
+    val d2: Float64 @m = w * t;
+    println(d2);
+    // Mixed-scale addition converts to the left side.
+    val total: Float64 @km = 1.0;
+    println(total + 500.0);
+}

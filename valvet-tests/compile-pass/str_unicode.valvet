@@ -1,0 +1,8 @@
+fun main() {
+println("hello".nchars())
+println("h\u{00E9}llo \u{4E2D}\u{6587}".nchars())
+println("HeLLo".to_upper())
+println("\u{00E0}BC".to_upper())
+println("\u{00C0}BC".to_lower())
+println("abc".len())
+}

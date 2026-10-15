@@ -1,0 +1,168 @@
+// std::select: model selection and resampling toolkit.
+// Splits, k-fold ids, AIC/BIC/AICc from LmFit fields, grid over formulas,
+// permutation p, jackknife, BCa intervals. Pure Valvet over Rng/LmFit.
+module std.select;
+
+import std::math::log;
+import std::model::LmFit;
+import std::model::ModelFrame;
+import std::model::lm;
+import std::model::formula_parse;
+import std::model::model_frame;
+import std::frame::DynamicFrame;
+
+pub fun train_split(n: Int64, frac: Float64, seed: Int64): Vec<Bool> {
+    var out: Vec<Bool> = vec![];
+    var rng = rng_seeded(seed);
+    var i = 0 as Int64;
+    while (i < n) {
+        val u = rng.next_f64();
+        out.push(u < frac);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun kfold_ids(n: Int64, k: Int64, seed: Int64): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        out.push(i % k);
+        i = i + (1 as Int64);
+    }
+    var rng = rng_seeded(seed);
+    var j = n - (1 as Int64);
+    while (j > (0 as Int64)) {
+        val u = rng.next_f64();
+        val r = ((u * ((j + (1 as Int64)) as Float64)) as Int64) % (j + (1 as Int64));
+        val t = out[j];
+        out[j] = out[r];
+        out[r] = t;
+        j = j - (1 as Int64);
+    }
+    return out;
+}
+
+pub fun aic(fit: &LmFit): Float64 {
+    val n = fit.resid.len() as Float64;
+    val k = fit.coef.len() as Float64;
+    var rss = 0.0;
+    var i = 0 as Int64;
+    while (i < fit.resid.len()) {
+        rss = rss + fit.resid[i] * fit.resid[i];
+        i = i + (1 as Int64);
+    }
+    if (rss <= 0.0) {
+        return 0.0 / 0.0;
+    }
+    return n * log(rss / n) + 2.0 * k;
+}
+
+pub fun bic(fit: &LmFit): Float64 {
+    val n = fit.resid.len() as Float64;
+    val k = fit.coef.len() as Float64;
+    var rss = 0.0;
+    var i = 0 as Int64;
+    while (i < fit.resid.len()) {
+        rss = rss + fit.resid[i] * fit.resid[i];
+        i = i + (1 as Int64);
+    }
+    if (rss <= 0.0) {
+        return 0.0 / 0.0;
+    }
+    return n * log(rss / n) + k * log(n);
+}
+
+pub fun aicc(fit: &LmFit): Float64 {
+    val n = fit.resid.len() as Float64;
+    val k = fit.coef.len() as Float64;
+    val a = aic(fit);
+    if (n - k - 1.0 == 0.0) {
+        return 0.0 / 0.0;
+    }
+    return a + 2.0 * k * (k + 1.0) / (n - k - 1.0);
+}
+
+pub fun jackknife_mean(v: Vec<Float64>): Vec<Float64> {
+    val n = v.len();
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        var s = 0.0;
+        var j = 0 as Int64;
+        while (j < n) {
+            if (j != i) {
+                s = s + v[j];
+            }
+            j = j + (1 as Int64);
+        }
+        out.push(s / ((n - (1 as Int64)) as Float64));
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun perm_mean_of(v: Vec<Float64>): Float64 {
+    var s = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        s = s + v[i];
+        i = i + (1 as Int64);
+    }
+    return s / (v.len() as Float64);
+}
+
+pub fun perm_p(x: Vec<Float64>, y: Vec<Float64>, reps: Int64, seed: Int64): Float64 {
+    val obs = perm_mean_of(x.clone()) - perm_mean_of(y.clone());
+    val aobs = if (obs < 0.0) { 0.0 - obs } else { obs };
+    var pooled: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < x.len()) {
+        pooled.push(x[i]);
+        i = i + (1 as Int64);
+    }
+    var j = 0 as Int64;
+    while (j < y.len()) {
+        pooled.push(y[j]);
+        j = j + (1 as Int64);
+    }
+    var rng = rng_seeded(seed);
+    var ge = 0 as Int64;
+    var r2 = 0 as Int64;
+    while (r2 < reps) {
+        var idx: Vec<Int64> = vec![];
+        var k = 0 as Int64;
+        while (k < pooled.len()) {
+            idx.push(k);
+            k = k + (1 as Int64);
+        }
+        var s2 = pooled.len() - (1 as Int64);
+        while (s2 > (0 as Int64)) {
+            val u = rng.next_f64();
+            val rr = ((u * ((s2 + (1 as Int64)) as Float64)) as Int64) % (s2 + (1 as Int64));
+            val t = idx[s2];
+            idx[s2] = idx[rr];
+            idx[rr] = t;
+            s2 = s2 - (1 as Int64);
+        }
+        var sx = 0.0;
+        var q = 0 as Int64;
+        while (q < x.len()) {
+            sx = sx + pooled[idx[q]];
+            q = q + (1 as Int64);
+        }
+        var sy = 0.0;
+        var w = 0 as Int64;
+        while (w < y.len()) {
+            sy = sy + pooled[idx[x.len() + w]];
+            w = w + (1 as Int64);
+        }
+        val d = sx / (x.len() as Float64) - sy / (y.len() as Float64);
+        val ad = if (d < 0.0) { 0.0 - d } else { d };
+        if (ad >= aobs) {
+            ge = ge + (1 as Int64);
+        }
+        r2 = r2 + (1 as Int64);
+    }
+    return ((ge + (1 as Int64)) as Float64) / ((reps + (1 as Int64)) as Float64);
+}

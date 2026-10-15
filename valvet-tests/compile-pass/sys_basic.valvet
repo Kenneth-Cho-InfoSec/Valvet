@@ -1,0 +1,10 @@
+println(sys_run("true"))
+println(sys_run("false"))
+println(sys_capture("echo hi"))
+val missing = sys_getenv("NO_SUCH_VAR_VALVET_XYZ")
+if let None = missing {
+println("missing")
+} else {
+println("present")
+}
+println(sys_cwd().len() > (0 as Int64))

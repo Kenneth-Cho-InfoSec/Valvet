@@ -1,0 +1,4 @@
+fun main() {
+val v = vec![1.0]
+println(par_map(v.clone(), v.clone(), 1 as Int64))
+}

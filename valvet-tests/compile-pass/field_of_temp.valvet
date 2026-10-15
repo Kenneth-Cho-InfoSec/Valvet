@@ -1,0 +1,15 @@
+struct Entry { word: String, count: Int64 }
+
+fun mk(i: Int64): Entry {
+    Entry { word: "w", count: i }
+}
+
+fun main() {
+    // Field reads out of owned temporaries (call/index results) must free
+    // the rest of the temporary (ASan-pinned, no output change).
+    println(mk(7 as Int64).count)
+    var v: Vec<Entry> = vec![]
+    v.push(Entry { word: "a", count: 1 as Int64 })
+    println(v[0 as Int64].count)
+    println(mk(8 as Int64).word.clone())
+}

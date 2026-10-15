@@ -1,0 +1,12 @@
+fun main() {
+    val a = rng_seeded(42);
+    val b = rng_seeded(42);
+    println(a.next_f64() == b.next_f64());
+    println(a.next_int(100 as Int64) == b.next_int(100 as Int64));
+    val c = rng_seeded(43);
+    println(a.next_f64() == c.next_f64());
+    val x = a.next_int(6 as Int64);
+    println(x >= (0 as Int64) && x < (6 as Int64));
+    val f = a.next_f64();
+    println(f >= 0.0 && f < 1.0);
+}

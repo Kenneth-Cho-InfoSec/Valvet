@@ -51,7 +51,7 @@ fn lexer_unterminated_block_comment() {
 
 #[test]
 fn lexer_bad_char() {
-    let s = src("val x = @");
+    let s = src("val x = $");
     let (_, errs) = lexer::lex(&s);
     assert!(errs.iter().any(|e| e.code == "E0001"));
 }
@@ -107,7 +107,7 @@ fn codegen_frees_strings() {
         c.contains("vstr_free"),
         "generated C must deterministically free Strings"
     );
-    assert!(c.contains("int main(void)"));
+    assert!(c.contains("int main(int argc, char **argv)"));
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn codegen_int_main_returns() {
     let s = src("fun add(a: Int32, b: Int32): Int32 { a + b }\nfun main(): Int32 { add(1, 2) }\n");
     let checked = pipeline::front_end(&s).expect("front end");
     let c = valvet_core::codegen::lower(&checked).expect("lower");
-    assert!(c.contains("v_add_fn("));
+    assert!(c.contains("v_add_a2_fn("));
     // Tail values materialize before scope frees (owned locals stay live).
     assert!(c.contains("return _vt"));
 }
@@ -344,8 +344,11 @@ fn match_guard_falls_through() {
     let checked = pipeline::front_end(&s).expect("front end");
     let c = valvet_core::codegen::lower(&checked).expect("lower");
     // Sequential ifs (correct) rather than else-if chain (wrong on guard-false).
+    // Scoped to the lowered function: the shared prelude legitimately
+    // contains `else if` chains of its own.
+    let body = &c[c.find("v_f_a1_fn").expect("lowered f")..];
     assert!(
-        !c.contains("else if"),
+        !body.contains("else if"),
         "guard fallthrough needs sequential ifs"
     );
 }
@@ -566,6 +569,23 @@ fn vec_unknown_method_rejected() {
 }
 
 #[test]
+fn vec_sort_accepted() {
+    check_ok("fun main() {\n var v = vec![3, 1, 2]\n v.sort()\n print(v.len())\n}\n");
+    check_ok("fun main() {\n val v = vec![\"b\", \"a\"]\n print(v.order())\n}\n");
+    check_ok("fun main() {\n var v = vec![true, false]\n v.sort()\n print(v.len())\n}\n");
+}
+
+#[test]
+fn vec_sort_rejected() {
+    let codes = check_codes("fun main() {\n var v = vec![3, 1]\n v.sort(1)\n print(v.len())\n}\n");
+    assert!(codes.contains(&"E0201"), "{:?}", codes);
+    let codes = check_codes("struct S { x: Int32 }\nfun main() {\n var v = vec![S { x: 1 }]\n v.sort()\n print(v.len())\n}\n");
+    assert!(codes.contains(&"E0201"), "{:?}", codes);
+    let codes = check_codes("fun main() {\n val v = vec![2, 1]\n print(v.order(0))\n}\n");
+    assert!(codes.contains(&"E0201"), "{:?}", codes);
+}
+
+#[test]
 fn vec_push_wrong_type_rejected() {
     let codes =
         check_codes("fun main() {\n var v = vec![1.0]\n v.push(\"s\")\n print(v.len())\n}\n");
@@ -682,7 +702,7 @@ fn file_mode_basic_import() {
     let checked = pipeline::front_end_file(&dir.join("main.valvet")).expect("check");
     let c = valvet_core::codegen::lower(&checked).expect("lower");
     assert!(
-        c.contains("v_math___double_fn"),
+        c.contains("v_math___double_a1_fn"),
         "imported fns mangle with their module"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -765,7 +785,7 @@ fn file_mode_forward_call_gets_prototype() {
     let checked = pipeline::front_end(&s).expect("front end");
     let c = valvet_core::codegen::lower(&checked).expect("lower");
     assert!(
-        c.contains("v_f_fn(void);"),
+        c.contains("v_f_a0_fn(void);"),
         "prototypes must precede definitions"
     );
 }
@@ -845,4 +865,571 @@ fn println_nested_helpers_generated() {
 fn recursive_type_through_vec_rejected() {
     let codes = check_codes("struct S { v: Vec<S> }\nfun main() {\n println(1)\n}\n");
     assert!(codes.contains(&"E0201"), "{:?}", codes);
+}
+
+#[test]
+fn script_top_level_accepted_single_source() {
+    check_ok("val x = 40 + 2;\nprintln(x);\n");
+}
+
+#[test]
+fn script_exp_header_rejects_statements() {
+    let codes = check_codes("mode exp;\nprintln(1);\n");
+    assert!(codes.contains(&"E0604"), "{:?}", codes);
+}
+
+#[test]
+fn script_statements_and_main_clash() {
+    let codes = check_codes("println(1);\nfun main() {\n println(2)\n}\n");
+    assert!(codes.contains(&"E0604"), "{:?}", codes);
+}
+
+// ---------- Error-reporting upgrades: snippets, poison, move notes ----------
+
+#[test]
+fn snippet_renders_source_line_and_caret() {
+    let s = src("val x = 1 as Int64\nval y = x + \"s\"\n");
+    match pipeline::front_end(&s) {
+        Ok(_) => panic!("expected failure"),
+        Err(ds) => {
+            assert_eq!(ds.len(), 1, "{:?}", pipeline::render_diags(&s, &ds));
+            let r = ds[0].render(&s);
+            assert!(r.contains("val y = x + \"s\""), "{}", r);
+            assert!(r.contains("^^^"), "{}", r);
+            assert!(r.contains("--> test.valvet:2:"), "{}", r);
+        }
+    }
+}
+
+#[test]
+fn no_cascade_unknown_var() {
+    // One root cause, one diagnostic (used to append E0201 for println).
+    assert_eq!(check_codes("println(nope)\n"), vec!["E0401"]);
+}
+
+#[test]
+fn no_cascade_binop() {
+    assert_eq!(check_codes("val x = nope + 1\n"), vec!["E0401"]);
+}
+
+#[test]
+fn no_cascade_chained() {
+    // Poison flows through `a`, `b`, `c` without further diagnostics.
+    assert_eq!(
+        check_codes("val a = nope\nval b = a + 1\nval c = b + 2\nprintln(c)\n"),
+        vec!["E0401"]
+    );
+}
+
+#[test]
+fn move_note_labels_move_site() {
+    let s = src("val v = vec![1 as Int64]\nval w = v\nprintln(v)\n");
+    match pipeline::front_end(&s) {
+        Ok(_) => panic!("expected failure"),
+        Err(ds) => {
+            assert_eq!(ds.len(), 1, "{:?}", pipeline::render_diags(&s, &ds));
+            let d = &ds[0];
+            assert_eq!(d.code, "E0301");
+            assert_eq!(d.labels.len(), 1, "{:?}", d.labels);
+            assert_eq!(d.labels[0].1, "value moved here");
+            let r = d.render(&s);
+            assert!(r.contains("note: value moved here"), "{}", r);
+            assert!(r.contains("val w = v"), "{}", r);
+        }
+    }
+}
+
+#[test]
+fn no_cascade_optfield_payload() {
+    // `?.` on a non-struct payload used to append a println E0201.
+    assert_eq!(
+        check_codes("val o = Some(1 as Int64)\nprintln(o?.nosuch)\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn no_cascade_try_mismatch() {
+    assert_eq!(
+        check_codes("val o: Option<Int64> = None\nprintln(o?)\n"),
+        vec!["E0702"]
+    );
+}
+
+#[test]
+fn no_cascade_try_init() {
+    // Init and println follow-ons are gone; only the E0702 remains.
+    assert_eq!(
+        check_codes("val o: Option<Int64> = None\nval y = o?\nprintln(y)\n"),
+        vec!["E0702"]
+    );
+}
+
+#[test]
+fn no_cascade_vec_empty_no_context() {
+    assert_eq!(check_codes("val v = vec![]\nprintln(v)\n"), vec!["E0201"]);
+}
+
+#[test]
+fn no_cascade_none_no_context() {
+    assert_eq!(check_codes("val x = None\n"), vec!["E0201"]);
+}
+
+#[test]
+fn no_cascade_if_no_else_value() {
+    // `if` as a value without `else` no longer cascades into the binding.
+    assert_eq!(
+        check_codes("val y = if (true) { 1 as Int64 }\nprintln(y)\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn broken_top_level_statement_errors() {
+    // A top-level statement that fails to parse must diagnose (used to
+    // vanish silently and continue with later lines).
+    assert_eq!(check_codes("println(o ??)\n"), vec!["E0005"]);
+}
+
+#[test]
+fn sugar_unless_until_accepted() {
+    check_ok("unless (false) {\nprintln(1)\n}\nvar i = 0\nuntil (i == 1) {\ni = i + 1\n}\n");
+}
+
+#[test]
+fn sugar_unless_let_rejected() {
+    assert_eq!(
+        check_codes("val o = Some(1 as Int64)\nunless let Some(x) = o {\nprintln(x)\n}\n"),
+        vec!["E0005"]
+    );
+}
+
+#[test]
+fn sugar_postfix_if_accepted() {
+    check_ok("val ok = true\nprintln(1) if ok\nprintln(2) unless ok\n");
+}
+
+#[test]
+fn sugar_postfix_decl_rejected() {
+    // Postfix conditions apply to action statements, not declarations.
+    assert_eq!(check_codes("val c = true\nval y = 1 if c\n"), vec!["E0004"]);
+}
+
+#[test]
+fn sugar_postfix_next_line_is_new_statement() {
+    // A newline before `if` means two statements, not postfix.
+    check_ok("val ok = true\nprintln(1)\nif (ok) {\nprintln(2)\n}\n");
+}
+
+#[test]
+fn sugar_println_multi_accepted() {
+    check_ok("println(1, \"a\", true)\n");
+}
+
+#[test]
+fn sugar_index_from_end_accepted() {
+    check_ok("val v = vec![1 as Int64]\nprintln(v[^1])\n");
+}
+
+#[test]
+fn sugar_coalesce_some_none() {
+    check_ok("val o = Some(1 as Int64)\nprintln(o ?? 2 as Int64)\nval n: Option<Int64> = None\nprintln(n ?? 2 as Int64)\n");
+}
+
+#[test]
+fn sugar_coalesce_int_rejected() {
+    // `??` on a non-Option is one match-scrutinee error, nothing more.
+    assert_eq!(check_codes("println(5 ?? 6)\n"), vec!["E0201"]);
+}
+
+#[test]
+fn sugar_chained_cmp_accepted() {
+    check_ok("val x = 5 as Int64\nprintln((0 as Int64) < x < (10 as Int64))\nprintln(1 < 2 < 3)\n");
+}
+
+#[test]
+fn sugar_while_let_accepted() {
+    check_ok("var vs = vec![1 as Int64]\nwhile let Some(x) = vs.pop() {\nprintln(x)\n}\n");
+}
+
+#[test]
+fn sugar_until_let_rejected() {
+    assert_eq!(
+        check_codes("var vs = vec![1 as Int64]\nuntil let Some(x) = vs.pop() {\nprintln(x)\n}\n"),
+        vec!["E0005"]
+    );
+}
+
+#[test]
+fn sugar_if_let_chain_accepted() {
+    check_ok("val o = Some(5 as Int64)\nif let Some(x) = o && x > (3 as Int64) {\nprintln(x)\n} else {\nprintln(0)\n}\n");
+}
+
+#[test]
+fn sugar_if_let_double_chain_accepted() {
+    check_ok("val a = Some(1 as Int64)\nval b = Some(2 as Int64)\nif let Some(x) = a && let Some(y) = b {\nprintln(x + y)\n} else {\nprintln(0)\n}\n");
+}
+
+#[test]
+fn sugar_iflet_or_needs_parens() {
+    assert_eq!(
+        check_codes("val o = Some(1 as Int64)\nif let Some(x) = o || true {\nprintln(x)\n}\n"),
+        vec!["E0005"]
+    );
+}
+
+#[test]
+fn sugar_let_else_accepted() {
+    check_ok("fun get(v: Int64): Option<Int64> {\nif (v > (0 as Int64)) {\nreturn Some(v)\n}\nreturn None\n}\nfun show(v: Int64) {\nlet Some(x) = get(v) else {\nprintln(0)\nreturn\n};\nprintln(x)\n}\nfun main() {\nshow(5 as Int64)\n}\n");
+}
+
+#[test]
+fn sugar_let_else_nodiv_rejected() {
+    // One E0201 for the non-diverging else, nothing more.
+    assert_eq!(
+        check_codes("fun main() {\nval o = Some(3 as Int64)\nlet Some(x) = o else {\nprintln(0)\n}\nprintln(x)\n}\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn sugar_suffix_pins_types() {
+    check_ok("val x = 1i64\nval y: Int64 = x\nval a = 5i32\nval f = 2.5f64\nprintln(y)\nprintln(a)\nprintln(f)\n");
+}
+
+#[test]
+fn sugar_suffix_bad_rejected() {
+    assert_eq!(check_codes("val x = 1u8\n"), vec!["E0010"]);
+}
+
+#[test]
+fn sugar_suffix_range_rejected() {
+    assert_eq!(check_codes("val x = 99999999999i32\n"), vec!["E0201"]);
+}
+
+#[test]
+fn sugar_ufcs_accepted() {
+    check_ok("fun double(x: Int64): Int64 {\nx * (2 as Int64)\n}\nfun main() {\nval v = 21 as Int64\nprintln(v.double())\n}\n");
+}
+
+#[test]
+fn sugar_ufcs_moved_rejected() {
+    // The receiver is a real first argument: moving it flags later uses.
+    assert_eq!(
+        check_codes("struct Wrap {\ns: String,\n}\nfun eat(w: Wrap): Int64 {\nprintln(w.s)\n1 as Int64\n}\nfun main() {\nval w = Wrap { s: \"hi\" }\nprintln(w.eat())\nprintln(w.eat())\n}\n"),
+        vec!["E0301"]
+    );
+}
+
+#[test]
+fn sugar_ufcs_vec_method_wins() {
+    // Real methods beat same-named free functions: still the Vec error.
+    assert_eq!(
+        check_codes("fun first(v: Vec<Int64>): Int64 {\nv[0]\n}\nfun main() {\nval v = vec![7 as Int64]\nprintln(v.first())\n}\n"),
+        vec!["E0401"]
+    );
+}
+
+#[test]
+fn sugar_multi_assign_accepted() {
+    check_ok("var a = 1\nvar b = 2\na, b = b, a\nprintln(a, b)\n");
+}
+
+#[test]
+fn sugar_multi_arity_rejected() {
+    assert_eq!(
+        check_codes("var a = 1\nvar b = 2\na, b = b\n"),
+        vec!["E0005"]
+    );
+}
+
+#[test]
+fn sugar_interp_accepted() {
+    check_ok("val name = \"world\"\nval n = 42\nprintln(\"hello $name, n=$n!\")\nprintln(\"${n + 1}\")\nprintln(\"braces {ok} and price $5\")\n");
+}
+
+#[test]
+fn sugar_interp_unknown_var_single_error() {
+    // Poison flows through concat without follow-ons.
+    assert_eq!(check_codes("println(\"a${nope}b\")\n"), vec!["E0401"]);
+}
+
+#[test]
+fn sugar_interp_adjacent_strings_still_error() {
+    assert_eq!(check_codes("println(\"a\" \"b\")\n"), vec!["E0005"]);
+}
+
+#[test]
+fn exp_denies_print_alias() {
+    assert_eq!(
+        check_codes("mode exp;\nfun main() {\nprint(\"hi\")\n}\n"),
+        vec!["W1002"]
+    );
+}
+
+#[test]
+fn imp_warns_print_alias_only() {
+    // Same program without the header stays well-formed (warning only).
+    check_ok("fun main() {\nprint(\"hi\")\n}\n");
+}
+
+#[test]
+fn lint_needless_cast() {
+    assert_eq!(
+        check_codes("mode exp;\nfun main() {\nval x = 5 as Int32\nprintln(x)\n}\n"),
+        vec!["W1003"]
+    );
+}
+
+#[test]
+fn lint_shadowing() {
+    assert_eq!(
+        check_codes("mode exp;\nfun main() {\nval x = 1\nif (true) {\nval x = 2\nprintln(x)\n}\nprintln(x)\n}\n"),
+        vec!["W1004"]
+    );
+}
+
+#[test]
+fn script_args_implicit() {
+    check_ok("println(args.len())\nprintln(args)\n");
+}
+
+#[test]
+fn script_args_user_binding_wins() {
+    check_ok("val args = vec![\"mine\"]\nprintln(args)\n");
+}
+
+#[test]
+fn script_args_absent_in_exp() {
+    assert_eq!(
+        check_codes("mode exp;\nfun main() {\nprintln(args)\n}\n"),
+        vec!["E0401"]
+    );
+}
+
+#[test]
+fn repl_echo_bare_expr() {
+    assert!(pipeline::is_bare_expr("1 + 2"));
+    assert!(pipeline::is_bare_expr("println(\"hi\")"));
+    assert!(pipeline::is_bare_expr("  x  "));
+}
+
+#[test]
+fn repl_echo_rejects_statements() {
+    assert!(!pipeline::is_bare_expr("val x = 1"));
+    assert!(!pipeline::is_bare_expr("1; 2"));
+    assert!(!pipeline::is_bare_expr("nope("));
+    assert!(!pipeline::is_bare_expr(""));
+}
+
+#[test]
+fn sys_run_accepted_imp() {
+    check_ok("fun main() {\nprintln(sys_run(\"true\"))\nprintln(sys_capture(\"echo hi\"))\n}\n");
+}
+
+#[test]
+fn sys_run_rejected_exp() {
+    assert_eq!(
+        check_codes("mode exp;\nfun main() {\nprintln(sys_run(\"true\"))\n}\n"),
+        vec!["E0401"]
+    );
+}
+
+#[test]
+fn sys_run_arity_checked() {
+    assert_eq!(
+        check_codes("fun main() {\nprintln(sys_run(\"a\", \"b\"))\n}\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn sys_getenv_option() {
+    check_ok("fun main() {\nval v = sys_getenv(\"HOME\")\nif let None = v {\nprintln(0)\n} else {\nprintln(1)\n}\n}\n");
+}
+
+#[test]
+fn prelude_header_parses() {
+    let s = src("prelude;\nprintln(1)\n");
+    let prog = pipeline::parse_unit(&s).expect("parses");
+    assert!(prog.prelude);
+}
+
+#[test]
+fn prelude_header_either_order() {
+    let s = src("prelude;\nmode imp;\nprintln(1)\n");
+    let prog = pipeline::parse_unit(&s).expect("parses");
+    assert!(prog.prelude);
+    let s = src("mode imp;\nprelude;\nprintln(1)\n");
+    let prog = pipeline::parse_unit(&s).expect("parses");
+    assert!(prog.prelude);
+}
+
+#[test]
+fn prelude_bare_word_not_header() {
+    // `prelude` without `;` stays an ordinary identifier.
+    check_ok("val prelude = 1\nprintln(prelude)\n");
+}
+
+#[test]
+fn prelude_single_source_rejected() {
+    assert_eq!(check_codes("prelude;\nprintln(1)\n"), vec!["E0604"]);
+}
+
+#[test]
+fn seq_accepted() {
+    check_ok("println(seq(1, 5, 1))\nprintln(seq(5, 1, -2))\n");
+}
+
+#[test]
+fn seq_arity_rejected() {
+    assert_eq!(check_codes("println(seq(1, 5))\n"), vec!["E0201"]);
+}
+
+#[test]
+fn arith_literal_pins_int() {
+    check_ok("val x = 2 as Int64\nprintln(1 + x)\nprintln(x * 3)\n");
+}
+
+#[test]
+fn arith_literal_pins_float() {
+    check_ok("println(1 + 2.0)\n");
+}
+
+#[test]
+fn arith_literal_inexact_rejected() {
+    // Beyond 2^53 the int-to-float pin would lie: still E0201.
+    assert_eq!(
+        check_codes("println(99999999999999999 + 1.0)\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn arith_suffixed_literal_rejected() {
+    assert_eq!(check_codes("println(1i32 + (2 as Int64))\n"), vec!["E0201"]);
+}
+
+#[test]
+fn arith_mixed_vars_rejected() {
+    assert_eq!(
+        check_codes("val a = 1 as Int32\nval b = 2 as Int64\nprintln(a + b)\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn vec_recycle_runs() {
+    // Runtime behaviour is fixture-checked; here just well-formedness.
+    check_ok("fun main() {\nval a = vec![1 as Int64, 2 as Int64]\nval b = vec![10 as Int64]\nlet Ok(v) = a.clone().add(b.clone()) else {\nreturn\n};\nprintln(v)\n}\n");
+}
+
+#[test]
+fn is_in_accepted() {
+    check_ok("println(is_in(vec![1 as Int64], vec![2 as Int64]))\n");
+}
+
+#[test]
+fn is_in_mismatch_rejected() {
+    assert_eq!(
+        check_codes("println(is_in(vec![1 as Int64], vec![\"a\"]))\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn mat_outer_kron_accepted() {
+    check_ok("println(mat_outer(vec![1.0], vec![2.0]))\nprintln(mat_kron(mat_identity(1 as Int64), mat_identity(1 as Int64)))\n");
+}
+
+#[test]
+fn comprehension_accepted() {
+    check_ok("fun main() {\nval v = vec![1 as Int64]\nval w: Vec<Int64> = [x + (1 as Int64) for x in v]\nprintln(w)\n}\n");
+}
+
+#[test]
+fn comprehension_filtered_accepted() {
+    check_ok("fun main() {\nval v = vec![1 as Int64, 2 as Int64]\nval w: Vec<Int64> = [x for x in v if x > (1 as Int64)]\nprintln(w)\n}\n");
+}
+
+#[test]
+fn comprehension_needs_annotation() {
+    assert_eq!(
+        check_codes(
+            "fun main() {\nval v = vec![1 as Int64]\nval w = [x for x in v]\nprintln(w)\n}\n"
+        ),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn par_map_accepted() {
+    check_ok("fun double(x: Float64): Float64 {\nx * 2.0\n}\nfun main() {\nval v = vec![1.0]\nprintln(par_map(v.clone(), double, 1 as Int64))\n}\n");
+}
+
+#[test]
+fn par_map_arity_rejected() {
+    assert_eq!(
+        check_codes("fun double(x: Float64): Float64 {\nx * 2.0\n}\nfun main() {\nval v = vec![1.0]\nprintln(par_map(v.clone(), double))\n}\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn match_guard_call_accepted() {
+    check_ok("fun p(s: String): Bool {\nreturn s.len() > (1 as Int64);\n}\nfun main() {\nprintln(match (\"ab\") { s if p(s) -> 1 as Int64, _ -> 0 as Int64, })\n}\n");
+}
+
+#[test]
+fn broadcast_accepted() {
+    check_ok("fun double(x: Float64): Float64 {\nx * 2.0\n}\nfun main() {\nval v = vec![1.0]\nprintln(double.(v))\n}\n");
+}
+
+#[test]
+fn broadcast_arity_rejected() {
+    // Two E0005s: the arity error plus the systemic recovery cascade for
+    // abortive in-function parses (same as unclosed calls/indices).
+    assert_eq!(
+        check_codes("fun double(x: Float64): Float64 {\nx * 2.0\n}\nfun main() {\nval v = vec![1.0]\nprintln(double.(v, v))\n}\n"),
+        vec!["E0005", "E0005"]
+    );
+}
+
+#[test]
+fn str_unicode_accepted() {
+    check_ok("fun main() {\nprintln(\"hello\".nchars())\nprintln(\"HeLLo\".to_upper())\nprintln(\"HeLLo\".to_lower())\n}\n");
+}
+
+#[test]
+fn trig_builtins_accepted() {
+    check_ok("fun main() {\nprintln(sin(1.0))\nprintln(cos(1.0))\nprintln(atan2(1.0, 2.0))\n}\n");
+}
+
+#[test]
+fn trig_builtins_reject_int() {
+    assert_eq!(
+        check_codes("fun main() {\nprintln(sin(1))\n}\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn overload_arity_accepted() {
+    check_ok("fun add(a: Int64, b: Int64): Int64 {\na + b\n}\nfun add(a: Int64): Int64 {\na * (2 as Int64)\n}\nfun main() {\nprintln(add(1 as Int64, 2 as Int64))\nprintln(add(21 as Int64))\n}\n");
+}
+
+#[test]
+fn overload_arities_listed() {
+    assert_eq!(
+        check_codes("fun add(a: Int64, b: Int64): Int64 {\na + b\n}\nfun main() {\nprintln(add(1 as Int64))\n}\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn overload_duplicate_rejected() {
+    assert_eq!(
+        check_codes("fun dup(x: Int64): Int64 {\nx\n}\nfun dup(x: Int64): Int64 {\nx\n}\nfun main() {\nprintln(1)\n}\n"),
+        vec!["E0401"]
+    );
 }

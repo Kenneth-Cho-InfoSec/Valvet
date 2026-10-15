@@ -1,0 +1,96 @@
+module std.csv;
+
+pub struct CsvTable { header: Vec<String>, rows: Vec<Vec<String>> }
+
+pub fun is_na(s: &String): Bool {
+    *s == "" || *s == "NA" || *s == "null"
+}
+
+fun build_table(rows: Vec<Vec<String>>, skip_ragged: Bool): Result<CsvTable, String> {
+    if (rows.len() == (0 as Int64)) {
+        return Err("empty csv: no rows");
+    }
+    val ncols = rows[0].len()
+    var header: Vec<String> = vec![]
+    var c = 0 as Int64
+    while (c < ncols) {
+        header.push(rows[0][c]);
+        c += 1 as Int64
+    }
+    var data: Vec<Vec<String>> = vec![]
+    var r = 1 as Int64
+    var err = ""
+    while (r < rows.len()) {
+        if (rows[r].len() != ncols) {
+            if (skip_ragged) {
+                r += 1 as Int64;
+            } else {
+                err = "ragged row at " + to_string(r + (1 as Int64));
+                r = rows.len();
+            }
+        } else {
+            data.push(rows[r]);
+            r += 1 as Int64;
+        }
+    }
+    if (err != "") {
+        return Err(err);
+    }
+    return Ok(CsvTable { header: header, rows: data });
+}
+
+pub fun read_csv(path: String, strict: Bool): Result<CsvTable, String> {
+    val text = read_file(path)?;
+    val rows = csv_rows(text, strict)?;
+    return build_table(rows, false);
+}
+
+pub fun read_csv_lenient(path: String, max_bad: Int64): Result<CsvTable, String> {
+    val text = read_file(path)?;
+    val rows = csv_rows(text.clone(), false)?;
+    val bad = csv_bad_rows(text);
+    if (bad.len() > max_bad) {
+        return Err("too many malformed rows: " + to_string(bad.len()));
+    }
+    return build_table(rows, true);
+}
+
+pub fun read_json(path: String): Result<CsvTable, String> {
+    val text = read_file(path)?;
+    val rows = json_rows(text)?;
+    return build_table(rows, false);
+}
+
+pub fun infer_schema(t: &CsvTable): Vec<String> {
+    val kinds: Vec<String> = vec![]
+    val ncols = t.header.len()
+    var c = 0 as Int64
+    while (c < ncols) {
+        var level = 0
+        var seen = 0
+        var r = 0 as Int64
+        while (r < t.rows.len() && seen < 1000) {
+            val cell = t.rows[r][c]
+            if (!is_na(&cell)) {
+                seen += 1;
+                if (level == 0) {
+                    val ok = match (cell.parse_int()) { Some(v) -> true, None -> false, };
+                    if (!ok) {
+                        level = 1;
+                    }
+                }
+                if (level == 1) {
+                    val ok = match (cell.parse_float()) { Some(v) -> true, None -> false, };
+                    if (!ok) {
+                        level = 2;
+                    }
+                }
+            }
+            r += 1 as Int64
+        }
+        val name = if (level == 0) { "int" } else { if (level == 1) { "float" } else { "string" } }
+        kinds.push(name);
+        c += 1 as Int64
+    }
+    kinds
+}

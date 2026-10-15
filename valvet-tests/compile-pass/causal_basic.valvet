@@ -1,0 +1,41 @@
+import std::causal::did_2x2;
+import std::causal::tsls_diff;
+import std::causal::ps_match;
+import std::causal::robust_se;
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::model::formula_parse;
+import std::model::model_frame;
+import std::model::lm;
+fun go(): Int32 {
+println(did_2x2(1.0, 2.0, 1.5, 3.0));
+println(tsls_diff(vec![1.0, 2.0, 3.0, 4.0], vec![0.0, 1.0, 0.0, 1.0], vec![0.0, 0.0, 1.0, 1.0]));
+println(ps_match(vec![0.1, 0.8, 0.15, 0.9], vec![true, false, true, false]));
+val h = vec!["x", "y"];
+val r0 = vec!["1", "2.1"];
+val r1 = vec!["2", "3.9"];
+val r2 = vec!["3", "6.2"];
+val r3 = vec!["4", "7.8"];
+val r4 = vec!["5", "10.1"];
+val t = frame_from_table(CsvTable { header: h, rows: vec![r0, r1, r2, r3, r4] });
+let Some(fo) = formula_parse("y ~ x") else {
+return 1;
+};
+let Ok(mf) = model_frame(&t, fo) else {
+return 1;
+};
+let Ok(fit) = lm(mf) else {
+return 1;
+};
+let Some(fo2) = formula_parse("y ~ x") else {
+return 1;
+};
+let Ok(mf2) = model_frame(&t, fo2) else {
+return 1;
+};
+println(robust_se(&fit, &mf2));
+return 0;
+}
+fun main() {
+println(go())
+}

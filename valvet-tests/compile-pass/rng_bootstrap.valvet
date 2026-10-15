@@ -1,0 +1,29 @@
+import std::stats::quantile;
+import std::stats::MissingPolicy;
+
+fun main() {
+    val data = vec![2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+    val n = data.len();
+    val rng = rng_seeded(1234);
+    var means: Vec<Float64> = vec![]
+    var b = 0 as Int64
+    while (b < (200 as Int64)) {
+        var total = 0.0
+        var i = 0 as Int64
+        while (i < n) {
+            val j = rng.next_int(n);
+            total += data[j];
+            i += 1 as Int64
+        }
+        means.push(total / (n as Float64));
+        b += 1 as Int64
+    }
+    var mmeans: Vec<Missing<Float64>> = vec![]
+    for (x in means) {
+        mmeans.push(Missing::Present(x));
+    }
+    println(means.len());
+    println(match (quantile(mmeans.clone(), MissingPolicy::Skip, 0.025)) { Some(x) -> x, None -> 0.0, });
+    println(match (quantile(mmeans.clone(), MissingPolicy::Skip, 0.5)) { Some(x) -> x, None -> 0.0, });
+    println(match (quantile(mmeans, MissingPolicy::Skip, 0.975)) { Some(x) -> x, None -> 0.0, });
+}

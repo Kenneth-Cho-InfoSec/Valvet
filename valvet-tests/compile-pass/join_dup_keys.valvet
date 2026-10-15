@@ -1,0 +1,28 @@
+import std::csv::CsvTable;
+import std::frame::DynamicFrame;
+import std::frame::frame_from_table;
+import std::frame::frame_join_inner;
+import std::frame::frame_col;
+import std::frame::audit_summary;
+
+fun audit_of(l: &DynamicFrame, r: &DynamicFrame): String {
+    match (frame_join_inner(l, "id", r, "id")) { Ok(j) -> audit_summary(&j.audit), Err(e) -> e, }
+}
+
+fun vals_of(l: &DynamicFrame, r: &DynamicFrame): Option<Vec<String>> {
+    val empty: Option<Vec<String>> = None;
+    match (frame_join_inner(l, "id", r, "id")) { Ok(j) -> frame_col(&j.frame, "v"), Err(e) -> empty, }
+}
+
+fun main() {
+    val lh = vec!["id", "k"];
+    val l0 = vec!["1", "a"];
+    val l1 = vec!["1", "b"];
+    val l = frame_from_table(CsvTable { header: lh, rows: vec![l0, l1] });
+    val rh = vec!["id", "v"];
+    val r0 = vec!["1", "x"];
+    val r1 = vec!["1", "y"];
+    val r = frame_from_table(CsvTable { header: rh, rows: vec![r0, r1] });
+    println(audit_of(&l, &r));
+    println(vals_of(&l, &r));
+}

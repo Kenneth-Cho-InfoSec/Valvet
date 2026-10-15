@@ -1,0 +1,28 @@
+// std::report: LaTeX and HTML model tables plus plot helpers ride plot.
+module std.report;
+
+import std::model::LmFit;
+
+pub fun model_table_latex(fit: &LmFit): String {
+    var out = "\\begin{tabular}{lrrr}\nterm and coef and se and z \\\\\n\\hline\n";
+    var j = 0 as Int64;
+    while (j < fit.coef.len() && j < fit.se.len() && j < fit.names.len()) {
+        val z = fit.coef[j] / fit.se[j];
+        out = out + fit.names[j] + " and " + to_string(fit.coef[j]) + " and " + to_string(fit.se[j]) + " and " + to_string(z) + " \\\\\n";
+        j = j + (1 as Int64);
+    }
+    out = out + "\\end{tabular}\n";
+    return out;
+}
+
+pub fun model_table_html(fit: &LmFit): String {
+    var out = "<table><tr><th>term</th><th>coef</th><th>se</th><th>z</th></tr>";
+    var j = 0 as Int64;
+    while (j < fit.coef.len() && j < fit.se.len() && j < fit.names.len()) {
+        val z = fit.coef[j] / fit.se[j];
+        out = out + "<tr><td>" + fit.names[j] + "</td><td>" + to_string(fit.coef[j]) + "</td><td>" + to_string(fit.se[j]) + "</td><td>" + to_string(z) + "</td></tr>";
+        j = j + (1 as Int64);
+    }
+    out = out + "</table>";
+    return out;
+}

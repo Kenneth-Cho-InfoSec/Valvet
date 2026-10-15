@@ -1,0 +1,2 @@
+matched=4 left_only=0 right_only=0 out=4
+Some([x, y, x, y])

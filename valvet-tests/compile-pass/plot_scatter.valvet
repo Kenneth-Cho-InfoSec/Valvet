@@ -1,0 +1,8 @@
+import std::plot::plot_points;
+import std::plot::plot_title;
+import std::plot::plot_svg;
+
+fun main() {
+    val p = plot_title(plot_points(vec![1.0, 2.0, 3.0], vec![2.0, 4.0, 3.0]), "demo");
+    println(match (plot_svg(p)) { Ok(s) -> s, Err(e) -> e, });
+}

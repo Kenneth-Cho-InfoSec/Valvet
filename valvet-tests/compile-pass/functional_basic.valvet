@@ -1,0 +1,45 @@
+fun double_it(x: Float64): Float64 {
+    return x * 2.0;
+}
+
+fun is_pos(x: Float64): Bool {
+    return x > 0.0;
+}
+
+fun add_up(acc: Float64, x: Float64): Float64 {
+    return acc + x;
+}
+
+fun shout(s: String): String {
+    return s + "!";
+}
+
+fun gmean(g: Vec<Float64>): Float64 {
+    var s = 0.0;
+    var i = 0 as Int64;
+    while (i < g.len()) {
+        s = s + g[i];
+        i = i + (1 as Int64);
+    }
+    return s / (g.len() as Float64);
+}
+
+fun main() {
+    // map/filter/fold over named functions (vs Python comprehensions).
+    // Data borrows: v is reused across all three verbs.
+    val v = vec![1.0, 0.0 - 2.0, 3.0];
+    println(map(v, double_it));
+    println(filter(v, is_pos));
+    println(fold(v, 0.0, add_up));
+    println(fold(v, "n=", shout2));
+    // Owned elements clone through the kernel (originals intact).
+    println(map(vec!["a", "b"], shout));
+    // split_apply: per-level means in level order (tapply core).
+    val f = factor_from_strings(vec!["x", "y", "x", "y", "x"]);
+    println(split_apply(f, vec![10.0, 20.0, 30.0, 40.0, 50.0], gmean));
+    println(f.levels());
+}
+
+fun shout2(acc: String, x: Float64): String {
+    return acc + to_string(x);
+}

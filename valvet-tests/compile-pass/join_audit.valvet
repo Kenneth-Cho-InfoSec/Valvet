@@ -1,0 +1,53 @@
+import std::csv::CsvTable;
+import std::frame::DynamicFrame;
+import std::frame::frame_from_table;
+import std::frame::frame_join_inner;
+import std::frame::frame_join_left;
+import std::frame::frame_col;
+import std::frame::audit_summary;
+
+fun inner_audit(l: &DynamicFrame, r: &DynamicFrame): String {
+    match (frame_join_inner(l, "id", r, "id")) { Ok(j) -> audit_summary(&j.audit), Err(e) -> e, }
+}
+
+fun left_audit(l: &DynamicFrame, r: &DynamicFrame): String {
+    match (frame_join_left(l, "id", r, "id")) { Ok(j) -> audit_summary(&j.audit), Err(e) -> e, }
+}
+
+fun inner_names(l: &DynamicFrame, r: &DynamicFrame): Option<Vec<String>> {
+    val empty: Option<Vec<String>> = None;
+    match (frame_join_inner(l, "id", r, "id")) { Ok(j) -> frame_col(&j.frame, "name"), Err(e) -> empty, }
+}
+
+fun inner_scores(l: &DynamicFrame, r: &DynamicFrame): Option<Vec<String>> {
+    val empty: Option<Vec<String>> = None;
+    match (frame_join_inner(l, "id", r, "id")) { Ok(j) -> frame_col(&j.frame, "score"), Err(e) -> empty, }
+}
+
+fun left_scores(l: &DynamicFrame, r: &DynamicFrame): Option<Vec<String>> {
+    val empty: Option<Vec<String>> = None;
+    match (frame_join_left(l, "id", r, "id")) { Ok(j) -> frame_col(&j.frame, "score"), Err(e) -> empty, }
+}
+
+fun bad_key(l: &DynamicFrame, r: &DynamicFrame): String {
+    match (frame_join_inner(l, "nope", r, "id")) { Ok(j) -> "joined", Err(e) -> e, }
+}
+
+fun main() {
+    val lh = vec!["id", "name"];
+    val l0 = vec!["1", "a"];
+    val l1 = vec!["2", "b"];
+    val l2 = vec!["3", "c"];
+    val l = frame_from_table(CsvTable { header: lh, rows: vec![l0, l1, l2] });
+    val rh = vec!["id", "score"];
+    val r0 = vec!["2", "x"];
+    val r1 = vec!["3", "y"];
+    val r2 = vec!["4", "z"];
+    val r = frame_from_table(CsvTable { header: rh, rows: vec![r0, r1, r2] });
+    println(inner_audit(&l, &r));
+    println(inner_names(&l, &r));
+    println(inner_scores(&l, &r));
+    println(left_audit(&l, &r));
+    println(left_scores(&l, &r));
+    println(bad_key(&l, &r));
+}

@@ -1,0 +1,5 @@
+fun main() {
+val v = vec![1 as Int64]
+val x = [a for a in v]
+println(x)
+}

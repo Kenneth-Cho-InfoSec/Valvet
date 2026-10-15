@@ -1,0 +1,7 @@
+fun main() {
+val o = Some(3 as Int64)
+let Some(x) = o else {
+println(0)
+}
+println(x)
+}

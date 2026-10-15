@@ -17,6 +17,21 @@ pub fn qname(module: &str, name: &str) -> String {
     }
 }
 
+/// Valvet source extensions in preference order.
+pub const SOURCE_EXTS: &[&str] = &["valvet", "vv", "vvt"];
+
+/// First existing `stem` + extension candidate, `.valvet` first.
+fn first_hit(stem: &Path) -> Option<PathBuf> {
+    SOURCE_EXTS
+        .iter()
+        .map(|e| {
+            let mut p = stem.to_path_buf();
+            p.set_extension(e);
+            p
+        })
+        .find(|p| p.is_file())
+}
+
 /// File-based module loader (Phase H): `import a::b::Item` in the entry file
 /// loads `<root>/a/b.valvet` (root = entry file's directory), which must
 /// declare `module a.b;`. Units are parsed separately (per-file errors) and
@@ -72,6 +87,16 @@ impl Crate {
             funs,
             structs,
             enums,
+            // Script synthesis already ran per unit in `load_unit`
+            // (entry `top` became `main`; anything else errored).
+            top: vec![],
+            // Entry mode governs the joint program (`units[0]` is the entry).
+            mode: self
+                .units
+                .first()
+                .map(|u| u.program.mode)
+                .unwrap_or(crate::ast::Mode::Auto),
+            prelude: self.units.first().is_some_and(|u| u.program.prelude),
             span,
         }
     }
@@ -82,6 +107,24 @@ impl Crate {
         renumber(&mut prog);
         prog
     }
+}
+
+/// Ordered stdlib roots for `std::` imports (J0), first hit wins:
+/// explicit `VALVET_STDLIB` override, install layout beside the binary,
+/// then a live dev checkout. Missing candidates are skipped, so any
+/// subset may exist.
+pub fn default_stdlib_roots() -> Vec<PathBuf> {
+    let mut roots = vec![];
+    if let Ok(v) = std::env::var("VALVET_STDLIB") {
+        roots.push(PathBuf::from(v));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.join("../share/valvet/stdlib"));
+        }
+    }
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../stdlib"));
+    roots.into_iter().filter(|p| p.is_dir()).collect()
 }
 
 /// Load the entry file plus its transitive imports. Always returns the
@@ -95,6 +138,7 @@ pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
         .unwrap_or_else(|| PathBuf::from("."));
     let mut l = Loader {
         root,
+        stdlib_roots: default_stdlib_roots(),
         units: vec![],
         sources: vec![],
         index: HashMap::new(),
@@ -114,6 +158,9 @@ pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
 
 struct Loader {
     root: PathBuf,
+    /// Ordered fallbacks for `std::` imports (J0): explicit override,
+    /// install layout, then a live dev checkout.
+    stdlib_roots: Vec<PathBuf>,
     units: Vec<Unit>,
     sources: Vec<Source>,
     /// Normalized absolute path -> unit index (diamond dedup).
@@ -206,6 +253,50 @@ impl Loader {
                 }
             }
         };
+        // Script mode is entry-only. Imported files hold items; a mode
+        // header or top-level statements there is E0604. The entry's
+        // top-level statements become a synthesized `fun main` (dummy
+        // ids — `renumber` reassigns every id before sema).
+        if !expected.is_empty() {
+            if program.mode != crate::ast::Mode::Auto {
+                self.errs.push(
+                    Diagnostic::error(
+                        "E0604",
+                        program.span,
+                        "only the entry file may declare `mode`",
+                    )
+                    .with_file(display),
+                );
+                return Err(());
+            }
+            if program.prelude {
+                self.errs.push(
+                    Diagnostic::error(
+                        "E0604",
+                        program.span,
+                        "only the entry file may declare `prelude`",
+                    )
+                    .with_file(display),
+                );
+                return Err(());
+            }
+            if !program.top.is_empty() {
+                self.errs.push(
+                    Diagnostic::error(
+                        "E0604",
+                        crate::ast::stmt_span(&program.top[0]),
+                        "top-level statements are entry-only (imported files hold items)",
+                    )
+                    .with_file(display),
+                );
+                return Err(());
+            }
+        } else if !apply_entry_script(&mut program, display, &mut self.errs) {
+            return Err(());
+        }
+        if program.prelude && !inject_prelude(&mut program, display, &mut self.errs) {
+            return Err(());
+        }
         // Stamp ownership before recursing (sema reads these, not the parser).
         for f in program.funs.iter_mut() {
             f.module = module.clone();
@@ -248,8 +339,39 @@ impl Loader {
             for seg in &ipath {
                 rel.push(seg);
             }
-            rel.set_extension("valvet");
-            let target = self.root.join(&rel);
+            // Valvet source extensions in preference order (`.valvet`
+            // first: existing files keep resolving exactly as before).
+            let fallback = {
+                let mut fb = self.root.join(&rel);
+                fb.set_extension("valvet");
+                fb
+            };
+            let target = if ipath.first().map(|s| s == "std").unwrap_or(false) {
+                // `std::` imports also consult the stdlib roots in order;
+                // anything else resolves from the entry directory only.
+                // Under a stdlib root the leading `std` segment is dropped
+                // (`import std.math::sqrt` lives at `<root>/math.valvet`
+                // declaring `module std.math;`). A miss everywhere falls back
+                // to the entry-relative path so the diagnostic still names
+                // the file the user would create.
+                match first_hit(&self.root.join(&rel)) {
+                    Some(h) => h,
+                    None if ipath.len() > 1 => {
+                        let mut srel = PathBuf::new();
+                        for seg in &ipath[1..] {
+                            srel.push(seg);
+                        }
+                        self.stdlib_roots
+                            .iter()
+                            .filter_map(|r| first_hit(&r.join(&srel)))
+                            .next()
+                            .unwrap_or(fallback)
+                    }
+                    None => fallback,
+                }
+            } else {
+                first_hit(&self.root.join(&rel)).unwrap_or(fallback)
+            };
             let target_display = target.display().to_string();
             self.load_unit(&target, &target_display, dotted, Some((display, ispan)))?;
         }
@@ -279,6 +401,374 @@ fn normalize(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// Prelude verbs injected for an entry `prelude;` header (imp only):
+/// (module path, item name). Kept tight: string/csv/frame/sys scripting core.
+const PRELUDE_ITEMS: &[(&[&str], &str)] = &[
+    (&["std", "str"], "str_contains"),
+    (&["std", "str"], "str_starts_with"),
+    (&["std", "str"], "str_ends_with"),
+    (&["std", "str"], "str_replace"),
+    (&["std", "str"], "str_substring"),
+    (&["std", "csv"], "read_csv"),
+    (&["std", "csv"], "read_json"),
+    (&["std", "frame"], "frame_from_table"),
+    (&["std", "frame"], "frame_nrows"),
+    (&["std", "frame"], "frame_ncols"),
+    (&["std", "frame"], "frame_names"),
+    (&["std", "frame"], "frame_col"),
+    (&["std", "frame"], "frame_select"),
+    (&["std", "sys"], "run"),
+    (&["std", "sys"], "capture"),
+    (&["std", "sys"], "getenv"),
+    (&["std", "sys"], "cwd"),
+];
+
+/// Inject implicit prelude imports into the entry program. Skips verbs the
+/// user already imports or defines (those clashes are E0401, so skipping
+/// keeps the header friction-free). Imp-only.
+pub fn inject_prelude(program: &mut Program, display: &str, errs: &mut Vec<Diagnostic>) -> bool {
+    if program.mode == crate::ast::Mode::Exp {
+        errs.push(
+            Diagnostic::error(
+                "E0604",
+                program.span,
+                "prelude needs imp mode (`mode exp` is explicit-only)",
+            )
+            .with_help("drop `mode exp;` or import verbs explicitly")
+            .with_file(display),
+        );
+        return false;
+    }
+    // Names the user already takes (imports by local name, plus own
+    // items which shadow imports): prelude skips those silently.
+    let mut taken = std::collections::HashSet::new();
+    for imp in &program.imports {
+        for item in &imp.items {
+            taken.insert(item.local().to_string());
+        }
+    }
+    for f in &program.funs {
+        taken.insert(f.name.clone());
+    }
+    for d in &program.structs {
+        taken.insert(d.name.clone());
+    }
+    for d in &program.enums {
+        taken.insert(d.name.clone());
+    }
+    for (path, name) in PRELUDE_ITEMS {
+        if taken.contains(*name) {
+            continue;
+        }
+        taken.insert(name.to_string());
+        program.imports.push(crate::ast::ImportDecl {
+            path: path.iter().map(|s| s.to_string()).collect(),
+            items: vec![crate::ast::ImportItem {
+                name: name.to_string(),
+                alias: None,
+                span: program.span,
+            }],
+            from: String::new(),
+            span: program.span,
+        });
+    }
+    true
+}
+/// from its top-level statements (dummy ids — the caller runs `renumber`
+/// before sema). Returns false with an `E0604` diagnostic when statements
+/// meet a user `main`.
+pub fn apply_entry_script(
+    program: &mut Program,
+    display: &str,
+    errs: &mut Vec<Diagnostic>,
+) -> bool {
+    if program.top.is_empty() {
+        return true;
+    }
+    if let Some(m) = program.funs.iter().find(|f| f.name == "main") {
+        errs.push(
+            Diagnostic::error(
+                "E0604",
+                m.name_span,
+                "entry has both top-level statements and `fun main` (ambiguous entry)",
+            )
+            .with_help("delete one: statements run as the program, or keep `fun main` alone")
+            .with_file(display),
+        );
+        return false;
+    }
+    let ret = script_ret(&program.top);
+    let span = program.span;
+    // Implicit script `args` (imp mode only): `val args: Vec<String>`
+    // collected from argv, unless the user binds `args` themselves.
+    if program.mode != crate::ast::Mode::Exp
+        && !program.top.iter().any(|s| match s {
+            crate::ast::Stmt::Val { name, .. } | crate::ast::Stmt::Var { name, .. } => {
+                name == "args"
+            }
+            _ => false,
+        })
+    {
+        let argv = crate::ast::Expr {
+            id: 0,
+            kind: crate::ast::ExprKind::Call {
+                name: "__argv".to_string(),
+                args: vec![],
+            },
+            span,
+        };
+        program.top.insert(
+            0,
+            crate::ast::Stmt::Val {
+                id: 0,
+                name: "args".to_string(),
+                name_span: span,
+                ty: Some(crate::ast::Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![crate::ast::Ty::Str],
+                }),
+                unit: None,
+                init: argv,
+                span,
+            },
+        );
+    }
+    // Result carriers need a value on fallthrough: scripts end with an
+    // implicit `return Ok(0)` (skipped when the last statement already
+    // returns). Int32/Unit mains fall through to `return 0` in codegen.
+    if matches!(
+        ret,
+        crate::ast::Ty::Generic { ref base, .. } if base == "Result"
+    ) && !matches!(program.top.last(), Some(crate::ast::Stmt::Return { .. }))
+    {
+        program.top.push(crate::ast::Stmt::Return {
+            id: 0,
+            value: Some(crate::ast::Expr {
+                id: 0,
+                kind: crate::ast::ExprKind::Call {
+                    name: "Ok".to_string(),
+                    args: vec![crate::ast::Expr {
+                        id: 0,
+                        kind: crate::ast::ExprKind::Int(0),
+                        span,
+                    }],
+                },
+                span,
+            }),
+            span,
+        });
+    }
+    program.funs.push(crate::ast::FunDecl {
+        id: 0,
+        name: "main".to_string(),
+        name_span: span,
+        params: vec![],
+        ret,
+        ret_span: span,
+        ret_unit: None,
+        body: crate::ast::Block {
+            id: 0,
+            stmts: std::mem::take(&mut program.top),
+            tail: None,
+            span,
+        },
+        span,
+        module: String::new(),
+        is_pub: false,
+    });
+    true
+}
+
+/// Synthesized `main` return for top-level statements: `Result<Int32,
+/// String>` when any `?` occurs (propagation needs a matching carrier),
+/// else `Int32` for a valued `return`, else `Unit` (bare `return;` and
+/// plain statements; fallthrough exits 0 like a Unit main).
+fn script_ret(top: &[crate::ast::Stmt]) -> crate::ast::Ty {
+    let mut saw_try = false;
+    let mut saw_ret_val = false;
+    for s in top {
+        scan_stmt(s, &mut saw_try, &mut saw_ret_val);
+    }
+    if saw_try {
+        crate::ast::Ty::Generic {
+            base: "Result".to_string(),
+            args: vec![crate::ast::Ty::Int32, crate::ast::Ty::Str],
+        }
+    } else if saw_ret_val {
+        crate::ast::Ty::Int32
+    } else {
+        crate::ast::Ty::Unit
+    }
+}
+
+fn scan_block(b: &crate::ast::Block, saw_try: &mut bool, saw_ret_val: &mut bool) {
+    for s in &b.stmts {
+        scan_stmt(s, saw_try, saw_ret_val);
+    }
+    if let Some(t) = &b.tail {
+        scan_expr(t, saw_try, saw_ret_val);
+    }
+}
+
+fn scan_stmt(s: &crate::ast::Stmt, saw_try: &mut bool, saw_ret_val: &mut bool) {
+    use crate::ast::Stmt::*;
+    match s {
+        Val { init, .. } | Var { init, .. } => scan_expr(init, saw_try, saw_ret_val),
+        Expr { expr, .. } => scan_expr(expr, saw_try, saw_ret_val),
+        If {
+            cond,
+            then_b,
+            else_b,
+            ..
+        } => {
+            scan_expr(cond, saw_try, saw_ret_val);
+            scan_block(then_b, saw_try, saw_ret_val);
+            if let Some(b) = else_b {
+                scan_block(b, saw_try, saw_ret_val);
+            }
+        }
+        Match {
+            scrutinee, arms, ..
+        } => {
+            scan_expr(scrutinee, saw_try, saw_ret_val);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    scan_expr(g, saw_try, saw_ret_val);
+                }
+                scan_block(&a.body, saw_try, saw_ret_val);
+            }
+        }
+        LetElse {
+            scrutinee, else_b, ..
+        } => {
+            scan_expr(scrutinee, saw_try, saw_ret_val);
+            scan_block(else_b, saw_try, saw_ret_val);
+        }
+        While { cond, body, .. } => {
+            scan_expr(cond, saw_try, saw_ret_val);
+            scan_block(body, saw_try, saw_ret_val);
+        }
+        For { iter, body, .. } => {
+            match iter {
+                crate::ast::ForIter::Range { lo, hi, .. } => {
+                    scan_expr(lo, saw_try, saw_ret_val);
+                    scan_expr(hi, saw_try, saw_ret_val);
+                }
+                crate::ast::ForIter::Each { vec, .. } => scan_expr(vec, saw_try, saw_ret_val),
+            }
+            scan_block(body, saw_try, saw_ret_val);
+        }
+        Loop { body, .. } => scan_block(body, saw_try, saw_ret_val),
+        Break { value, .. } => {
+            if let Some(v) = value {
+                scan_expr(v, saw_try, saw_ret_val);
+            }
+        }
+        Continue { .. } => {}
+        Return { value, .. } => {
+            if value.is_some() {
+                *saw_ret_val = true;
+            }
+            if let Some(v) = value {
+                scan_expr(v, saw_try, saw_ret_val);
+            }
+        }
+    }
+}
+
+fn scan_expr(e: &crate::ast::Expr, saw_try: &mut bool, saw_ret_val: &mut bool) {
+    use crate::ast::ExprKind::*;
+    match &e.kind {
+        Int(_) | Float(_) | Bool(_) | Str(_) | Var(_) => {}
+        Call { args, .. } => {
+            for a in args {
+                scan_expr(a, saw_try, saw_ret_val);
+            }
+        }
+        Binary { lhs, rhs, .. } => {
+            scan_expr(lhs, saw_try, saw_ret_val);
+            scan_expr(rhs, saw_try, saw_ret_val);
+        }
+        Unary { expr, .. }
+        | Cast { expr, .. }
+        | AsUnit { expr, .. }
+        | AddrOf { expr, .. }
+        | Field { base: expr, .. }
+        | OptField { base: expr, .. } => scan_expr(expr, saw_try, saw_ret_val),
+        Index { base, idx, .. } => {
+            scan_expr(base, saw_try, saw_ret_val);
+            scan_expr(idx, saw_try, saw_ret_val);
+        }
+        Assign { target, value, .. } => {
+            scan_place(target, saw_try, saw_ret_val);
+            scan_expr(value, saw_try, saw_ret_val);
+        }
+        If {
+            cond,
+            then_b,
+            else_b,
+            ..
+        } => {
+            scan_expr(cond, saw_try, saw_ret_val);
+            scan_block(then_b, saw_try, saw_ret_val);
+            if let Some(b) = else_b {
+                scan_block(b, saw_try, saw_ret_val);
+            }
+        }
+        Match {
+            scrutinee, arms, ..
+        } => {
+            scan_expr(scrutinee, saw_try, saw_ret_val);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    scan_expr(g, saw_try, saw_ret_val);
+                }
+                scan_block(&a.body, saw_try, saw_ret_val);
+            }
+        }
+        Loop { body, .. } => scan_block(body, saw_try, saw_ret_val),
+        Block(b) => scan_block(b, saw_try, saw_ret_val),
+        Try { expr } => {
+            *saw_try = true;
+            scan_expr(expr, saw_try, saw_ret_val);
+        }
+        StructLit { fields, .. } => {
+            for (_, _, f) in fields {
+                scan_expr(f, saw_try, saw_ret_val);
+            }
+        }
+        VecMacro { elems, .. } => {
+            for el in elems {
+                scan_expr(el, saw_try, saw_ret_val);
+            }
+        }
+        Method { receiver, args, .. } => {
+            scan_expr(receiver, saw_try, saw_ret_val);
+            for a in args {
+                scan_expr(a, saw_try, saw_ret_val);
+            }
+        }
+        Variant { args, .. } => {
+            for a in args {
+                scan_expr(a, saw_try, saw_ret_val);
+            }
+        }
+    }
+}
+
+fn scan_place(p: &crate::ast::Place, saw_try: &mut bool, saw_ret_val: &mut bool) {
+    match p {
+        crate::ast::Place::Var(_, _) => {}
+        crate::ast::Place::Field { base, .. } | crate::ast::Place::Deref { inner: base, .. } => {
+            scan_place(base, saw_try, saw_ret_val)
+        }
+        crate::ast::Place::Index { base, idx, .. } => {
+            scan_place(base, saw_try, saw_ret_val);
+            scan_expr(idx, saw_try, saw_ret_val);
+        }
+    }
 }
 
 /// Assign globally-unique `NodeId`s across a joint program. Each source unit
@@ -352,6 +842,16 @@ fn renumber_stmt(s: &mut crate::ast::Stmt, next: &mut crate::ast::NodeId) {
                 renumber_arm(a, next);
             }
         }
+        LetElse {
+            id,
+            scrutinee,
+            else_b,
+            ..
+        } => {
+            *id = bump(next);
+            renumber_expr(scrutinee, next);
+            renumber_block(else_b, next);
+        }
         While { id, cond, body, .. } => {
             *id = bump(next);
             renumber_expr(cond, next);
@@ -380,6 +880,18 @@ fn renumber_stmt(s: &mut crate::ast::Stmt, next: &mut crate::ast::NodeId) {
         }
         Continue { id, .. } => {
             *id = bump(next);
+        }
+    }
+}
+
+fn renumber_place(p: &mut crate::ast::Place, next: &mut crate::ast::NodeId) {
+    use crate::ast::Place::*;
+    match p {
+        Var(_, _) => {}
+        Field { base, .. } | Deref { inner: base, .. } => renumber_place(base, next),
+        Index { base, idx, .. } => {
+            renumber_place(base, next);
+            renumber_expr(idx, next);
         }
     }
 }
@@ -415,10 +927,18 @@ fn renumber_expr(e: &mut crate::ast::Expr, next: &mut crate::ast::NodeId) {
         Unary { expr, .. }
         | Try { expr }
         | Cast { expr, .. }
+        | AsUnit { expr, .. }
         | AddrOf { expr, .. }
         | Field { base: expr, .. }
         | OptField { base: expr, .. } => renumber_expr(expr, next),
-        Assign { value, .. } => renumber_expr(value, next),
+        Index { base, idx } => {
+            renumber_expr(base, next);
+            renumber_expr(idx, next);
+        }
+        Assign { target, value, .. } => {
+            renumber_place(target, next);
+            renumber_expr(value, next);
+        }
         StructLit { fields, .. } => {
             for (_, _, fe) in fields {
                 renumber_expr(fe, next);
@@ -442,6 +962,7 @@ fn renumber_expr(e: &mut crate::ast::Expr, next: &mut crate::ast::NodeId) {
             }
         }
         Loop { body } => renumber_block(body, next),
+        Block(b) => renumber_block(b, next),
     }
 }
 

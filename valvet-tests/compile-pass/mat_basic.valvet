@@ -1,0 +1,33 @@
+fun dims(m: Mat) {
+    println(m.rows())
+    println(m.cols())
+}
+
+fun main() {
+    // Constructors print row-major nested lists.
+    val z = mat_zeros(2, 3)
+    dims(z.clone())
+    println(z)
+    val id = mat_identity(3)
+    dims(id.clone())
+    println(id)
+    // from_rows with inferred Vec<Vec<Float64>>.
+    val m = match (mat_from_rows(vec![vec![1.0, 2.0], vec![3.0, 4.0]])) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0, 0),
+    }
+    dims(m.clone())
+    println(m)
+    // Transpose swaps rows/cols; receiver keeps its shape.
+    println(m.transpose())
+    println(m.rows())
+    // Clone is deep: the copy survives moves of the original.
+    val c = m.clone()
+    println(c)
+    // Ragged rows are Err, never a trap.
+    val rag = match (mat_from_rows(vec![vec![1.0], vec![2.0, 3.0]])) {
+        Ok(_) -> "ok",
+        Err(_) -> "ragged",
+    }
+    println(rag)
+}

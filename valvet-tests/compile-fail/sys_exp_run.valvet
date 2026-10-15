@@ -1,0 +1,4 @@
+mode exp;
+fun main() {
+println(sys_run("true"))
+}

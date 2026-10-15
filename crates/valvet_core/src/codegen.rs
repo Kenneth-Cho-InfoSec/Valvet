@@ -5,7 +5,8 @@ use std::process::Command;
 use crate::ast::*;
 use crate::ast::{EnumDef, StructDef};
 use crate::diag::Ice;
-use crate::sema::{is_copy_ty, Checked};
+use crate::sema::{is_copy_ty, ty_has_error, Checked};
+use crate::units::Dim;
 
 /// C11 runtime prelude: owned strings without GC, deterministic free on NULL-check.
 const PRELUDE: &str = r#"
@@ -15,6 +16,10 @@ const PRELUDE: &str = r#"
 #include <string.h>
 #include <inttypes.h>
 #include <math.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <limits.h>
+#include <sys/wait.h>
 
 static int32_t v_f2i32(double v) {
     if (isnan(v)) return 0;
@@ -63,6 +68,116 @@ static int vstr_eq(VStr a, VStr b) {
     if (alen == 0) return 1;
     return memcmp(a.s, b.s, (size_t)alen) == 0;
 }
+/// M2 lexicographic order (byte-wise; shorter prefix sorts first).
+static int vstr_lt(VStr a, VStr b) {
+    int64_t alen = a.s ? a.len : 0, blen = b.s ? b.len : 0;
+    int64_t n = alen < blen ? alen : blen;
+    if (n > 0) {
+        int c = memcmp(a.s, b.s, (size_t)n);
+        if (c != 0) return c < 0;
+    }
+    return alen < blen;
+}
+/// J1 conversions + string kernels (all allocate fresh owned values).
+static VStr vstr_from_i32(int32_t v) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%" PRId32, v);
+    return vstr_from_c(buf);
+}
+static VStr vstr_from_i64(int64_t v) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%" PRId64, v);
+    return vstr_from_c(buf);
+}
+static VStr vstr_from_f64(double v) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%.17g", v);
+    return vstr_from_c(buf);
+}
+static VStr vstr_from_bool(int v) {
+    return vstr_from_c(v ? "true" : "false");
+}
+/// Scripting subprocess + environment reads (std::sys): `vsys_run`
+/// inherits stdio and returns the exit status; `vsys_capture` returns
+/// stdout up to 1MB (stderr inherits); missing env names are `None`.
+static int64_t vsys_run(VStr cmd) {
+    if (!cmd.s) return 127;
+    int rc = system(cmd.s);
+    if (rc == -1) return 127;
+    if (WIFEXITED(rc)) return (int64_t)WEXITSTATUS(rc);
+    return 125;
+}
+static VStr vsys_capture(VStr cmd) {
+    if (!cmd.s) return (VStr){NULL, 0};
+    FILE *p = popen(cmd.s, "r");
+    if (!p) return (VStr){NULL, 0};
+    size_t cap = (size_t)1 << 20, n = 0;
+    char *buf = (char *)malloc(cap + 1);
+    if (!buf) { fprintf(stderr, "alloc error\n"); abort(); }
+    size_t r;
+    while ((r = fread(buf + n, 1, cap - n, p)) > 0) {
+        n += r;
+        if (n == cap) break;
+    }
+    pclose(p);
+    buf[n] = '\0';
+    return (VStr){buf, (int64_t)n};
+}
+static VStr vsys_cwd(void) {
+    char buf[4096];
+    if (!getcwd(buf, sizeof buf)) return (VStr){NULL, 0};
+    return vstr_from_c(buf);
+}
+static VStr vstr_trim(VStr v) {
+    int64_t a = 0, b = v.s ? v.len : 0;
+    while (a < b && (v.s[a] == ' ' || v.s[a] == '\t' || v.s[a] == '\n' || v.s[a] == '\r')) a++;
+    while (b > a && (v.s[b - 1] == ' ' || v.s[b - 1] == '\t' || v.s[b - 1] == '\n' || v.s[b - 1] == '\r')) b--;
+    char *p = (char *)malloc((size_t)(b - a) + 1);
+    if (!p) { fprintf(stderr, "alloc error\n"); abort(); }
+    if (b > a) memcpy(p, v.s + a, (size_t)(b - a));
+    p[b - a] = '\0';
+    return (VStr){p, b - a};
+}
+/// J5 xoshiro256++ (Blackman & Vigna 2021, public domain reference structure:
+/// rotl/add-xor-shift/xor-rotate; seeded here via splitmix64). All state is
+/// the inline `s[4]` array: `VRng` is `Copy` (256-bit memcpy, same choice as
+/// Rust's `rand_xoshiro`), so assignment forks the stream. Unsigned
+/// arithmetic is modular by definition (`-fwrapv` covers signed paths).
+typedef struct { uint64_t s[4]; } VRng;
+static inline uint64_t vrotl(const uint64_t x, int k) {
+    return (x << k) | (x >> (64 - k));
+}
+static uint64_t vsplitmix64(uint64_t *x) {
+    uint64_t z = (*x += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+static VRng vrng_seeded(uint64_t seed) {
+    VRng r;
+    uint64_t x = seed;
+    for (int i = 0; i < 4; i++) r.s[i] = vsplitmix64(&x);
+    if (!r.s[0] && !r.s[1] && !r.s[2] && !r.s[3]) r.s[0] = 1;
+    return r;
+}
+static uint64_t vrng_next(VRng *r) {
+    const uint64_t result = vrotl(r->s[0] + r->s[3], 23) + r->s[0];
+    const uint64_t t = r->s[1] << 17;
+    r->s[2] ^= r->s[0];
+    r->s[3] ^= r->s[1];
+    r->s[1] ^= r->s[2];
+    r->s[0] ^= r->s[3];
+    r->s[2] ^= t;
+    r->s[3] = vrotl(r->s[3], 45);
+    return result;
+}
+static double vrng_next_f64(VRng *r) {
+    return (double)(vrng_next(r) >> 11) * (1.0 / 9007199254740992.0);
+}
+static int64_t vrng_next_int(VRng *r, int64_t n) {
+    if (n <= 0) { fprintf(stderr, "rng range must be positive\n"); abort(); }
+    return (int64_t)(vrng_next(r) % (uint64_t)n);
+}
 /// Element formatters (no trailing newline; composite `vfmt_` helpers call
 /// these per element, and top-level `vprint_` wraps them with `"\n"`).
 static void vfmt_i32(int32_t v) { printf("%" PRId32, v); }
@@ -79,6 +194,486 @@ static void vprint_bool(int v) { vfmt_bool(v); printf("\n"); }
 static void vprint_str(VStr v) { vfmt_str(v); printf("\n"); }
 "#;
 
+/// J2 file + CSV/JSON kernels. Row buffers use plain layouts identical to
+/// the generated `VVec_String` / `VVec_Vec_String` structs, so the typed
+/// wrappers (emitted post-layout) convert by field copy, no element traffic.
+const PRELUDE_J2: &str = r##"
+typedef struct { VStr *fields; int64_t nfields, capfields; } VCsvRow;
+typedef struct { VCsvRow *rows; int64_t nrows, caprows; } VCsvTable;
+typedef struct { int64_t *rows; int64_t n, cap; } VBadRows;
+typedef struct { VStr text; VStr err; int has_err; } VFileOut;
+static void vcsv_row_push_field(VCsvRow *r, char *p, int64_t len) {
+    if (r->nfields == r->capfields) {
+        int64_t ncap = r->capfields ? r->capfields * 2 : 4;
+        VStr *nd = (VStr *)realloc(r->fields, (size_t)ncap * sizeof(VStr));
+        if (!nd) { fprintf(stderr, "alloc error\n"); abort(); }
+        r->fields = nd; r->capfields = ncap;
+    }
+    r->fields[r->nfields++] = (VStr){p, len};
+}
+static void vcsv_table_push_row(VCsvTable *t, VCsvRow r) {
+    if (t->nrows == t->caprows) {
+        int64_t ncap = t->caprows ? t->caprows * 2 : 4;
+        VCsvRow *nd = (VCsvRow *)realloc(t->rows, (size_t)ncap * sizeof(VCsvRow));
+        if (!nd) { fprintf(stderr, "alloc error\n"); abort(); }
+        t->rows = nd; t->caprows = ncap;
+    }
+    t->rows[t->nrows++] = r;
+}
+static void vbad_push(VBadRows *b, int64_t r) {
+    if (b->n == b->cap) {
+        int64_t ncap = b->cap ? b->cap * 2 : 4;
+        int64_t *nd = (int64_t *)realloc(b->rows, (size_t)ncap * sizeof(int64_t));
+        if (!nd) { fprintf(stderr, "alloc error\n"); abort(); }
+        b->rows = nd; b->cap = ncap;
+    }
+    b->rows[b->n++] = r;
+}
+static void vcsv_free_row(VCsvRow *r) {
+    for (int64_t j = 0; j < r->nfields; j++) free(r->fields[j].s);
+    free(r->fields); r->fields = NULL; r->nfields = r->capfields = 0;
+}
+static void vcsv_free_table(VCsvTable *t) {
+    for (int64_t i = 0; i < t->nrows; i++) {
+        VCsvRow *r = &t->rows[i];
+        for (int64_t j = 0; j < r->nfields; j++) free(r->fields[j].s);
+        free(r->fields);
+    }
+    free(t->rows); t->rows = NULL; t->nrows = t->caprows = 0;
+}
+// K2: FNV-1a 64 over string bytes (content hash for provenance).
+static int64_t v_hash_str(VStr s) {
+    uint64_t h = 14695981039346656037ULL;
+    int64_t n = (s.s && s.len > 0) ? s.len : 0;
+    for (int64_t i = 0; i < n; i++) {
+        h ^= (uint64_t)((unsigned char)s.s[i]);
+        h *= 1099511628211ULL;
+    }
+    return (int64_t)h;
+}
+static VFileOut v_read_file(VStr path) {    VFileOut o = {{NULL, 0}, {NULL, 0}, 0};
+    if (!path.s || path.len == 0) { o.err = vstr_from_c("empty path"); o.has_err = 1; return o; }
+    FILE *f = fopen(path.s, "rb");
+    if (!f) {
+        VStr pre = vstr_from_c("cannot open file: ");
+        o.err = vstr_concat(pre, path);
+        vstr_free(&pre);
+        o.has_err = 1;
+        return o;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); o.err = vstr_from_c("cannot seek file"); o.has_err = 1; return o; }
+    long n = ftell(f);
+    if (n < 0) { fclose(f); o.err = vstr_from_c("cannot size file"); o.has_err = 1; return o; }
+    rewind(f);
+    char *p = (char *)malloc((size_t)n + 1);
+    if (!p) { fclose(f); fprintf(stderr, "alloc error\n"); abort(); }
+    size_t got = fread(p, 1, (size_t)n, f);
+    fclose(f);
+    p[got] = '\0';
+    o.text = (VStr){p, (int64_t)got};
+    return o;
+}
+static void vcsv_buf_put(char **buf, int64_t *bcap, int64_t *blen, char c) {
+    if (*blen + 1 >= *bcap) {
+        *bcap *= 2;
+        char *nb = (char *)realloc(*buf, (size_t)*bcap);
+        if (!nb) { fprintf(stderr, "alloc error\n"); abort(); }
+        *buf = nb;
+    }
+    (*buf)[(*blen)++] = c;
+}
+static VStr vcsv_buf_take(char **buf, int64_t *blen) {
+    char *p = (char *)malloc((size_t)*blen + 1);
+    if (!p) { fprintf(stderr, "alloc error\n"); abort(); }
+    if (*blen) memcpy(p, *buf, (size_t)*blen);
+    p[*blen] = '\0';
+    VStr f = {p, *blen};
+    *blen = 0;
+    return f;
+}
+static VStr vcsv_err(int64_t rec_line, const char *reason) {
+    char num[32];
+    snprintf(num, sizeof num, "%lld", (long long)rec_line);
+    VStr a = vstr_from_c("row ");
+    VStr b = vstr_from_c(num);
+    VStr c = vstr_from_c(": ");
+    VStr d = vstr_from_c(reason);
+    VStr ab = vstr_concat(a, b);
+    VStr cd = vstr_concat(c, d);
+    VStr m = vstr_concat(ab, cd);
+    vstr_free(&a); vstr_free(&b); vstr_free(&c);
+    vstr_free(&d); vstr_free(&ab); vstr_free(&cd);
+    return m;
+}
+// RFC 4180 parse. mode 0 = strict (stop at first bad record, report);
+// mode 1 = lenient (drop the bad record, log its line, resync past it).
+// Returns 0 when input is consumed; strict-malformed returns the record
+// start line with *emsg set (caller frees the partial table + buffer).
+static int64_t vcsv_run(VCsvTable *t, VBadRows *bad, const char *s, int64_t n, int mode, VStr *emsg) {
+    int64_t bcap = 64;
+    char *buf = (char *)malloc((size_t)bcap);
+    if (!buf) { fprintf(stderr, "alloc error\n"); abort(); }
+    int64_t blen = 0;
+    VCsvRow row = {NULL, 0, 0};
+    int in_q = 0, started = 0, closed = 0, row_has = 0;
+    int64_t line = 1, rec_line = 1;
+    int64_t i = 0;
+    int done = 0;
+    while (!done) {
+        char c = (i < n) ? s[i] : '\0';
+        int at_end = (i >= n);
+        if (in_q) {
+            if (c == '"') {
+                if (!at_end && i + 1 < n && s[i + 1] == '"') {
+                    vcsv_buf_put(&buf, &bcap, &blen, '"');
+                    i += 2;
+                } else { in_q = 0; closed = 1; i++; }
+            } else if (at_end) {
+                if (mode == 0) {
+                    vcsv_free_row(&row); vcsv_free_table(t); free(buf);
+                    *emsg = vcsv_err(rec_line, "unterminated quoted field");
+                    return rec_line;
+                }
+                if (bad) vbad_push(bad, rec_line);
+                vcsv_free_row(&row); free(buf);
+                return 0;
+            } else {
+                vcsv_buf_put(&buf, &bcap, &blen, c);
+                if (c == '\n') line++;
+                i++;
+            }
+        } else if (c == '"') {
+            if (started) goto malformed_stray;
+            in_q = 1; started = 1; i++;
+        } else if (c == ',') {
+            VStr f = vcsv_buf_take(&buf, &blen);
+            vcsv_row_push_field(&row, f.s, f.len);
+            started = 0; closed = 0; row_has = 1; i++;
+        } else if (c == '\n' || c == '\r' || at_end) {
+            if (at_end && !started && blen == 0 && !row_has) { done = 1; }
+            else {
+                VStr f = vcsv_buf_take(&buf, &blen);
+                vcsv_row_push_field(&row, f.s, f.len);
+                vcsv_table_push_row(t, row);
+                row.fields = NULL; row.nfields = row.capfields = 0;
+                started = 0; closed = 0; row_has = 0;
+                if (at_end) { done = 1; }
+                else {
+                    if (c == '\r' && i + 1 < n && s[i + 1] == '\n') i++;
+                    line++; rec_line = line; i++;
+                }
+            }
+        } else {
+            if (closed) goto malformed_after;
+            vcsv_buf_put(&buf, &bcap, &blen, c);
+            started = 1; i++;
+        }
+        continue;
+malformed_stray:
+        if (mode == 0) {
+            vcsv_free_row(&row); vcsv_free_table(t); free(buf);
+            *emsg = vcsv_err(rec_line, "stray quote in unquoted field");
+            return rec_line;
+        }
+        goto skip_record;
+malformed_after:
+        if (mode == 0) {
+            vcsv_free_row(&row); vcsv_free_table(t); free(buf);
+            *emsg = vcsv_err(rec_line, "unexpected character after closing quote");
+            return rec_line;
+        }
+skip_record:
+        if (bad) vbad_push(bad, rec_line);
+        vcsv_free_row(&row);
+        row.fields = NULL; row.nfields = row.capfields = 0;
+        blen = 0; in_q = 0; started = 0; closed = 0; row_has = 0;
+        while (i < n && s[i] != '\n') i++;
+        if (i < n) { i++; line++; }
+        rec_line = line;
+    }
+    free(buf);
+    return 0;
+}
+static void vjson_skip_ws(const char *s, int64_t n, int64_t *i, int64_t *line) {
+    while (*i < n && (s[*i] == ' ' || s[*i] == '\t' || s[*i] == '\n' || s[*i] == '\r')) {
+        if (s[*i] == '\n') (*line)++;
+        (*i)++;
+    }
+}
+static VStr vjson_err(int64_t off, const char *reason) {
+    char num[32];
+    snprintf(num, sizeof num, "%lld", (long long)off);
+    VStr a = vstr_from_c("offset ");
+    VStr b = vstr_from_c(num);
+    VStr c = vstr_from_c(": ");
+    VStr d = vstr_from_c(reason);
+    VStr ab = vstr_concat(a, b);
+    VStr cd = vstr_concat(c, d);
+    VStr m = vstr_concat(ab, cd);
+    vstr_free(&a); vstr_free(&b); vstr_free(&c);
+    vstr_free(&d); vstr_free(&ab); vstr_free(&cd);
+    return m;
+}
+static void vjson_push_utf8(char **buf, int64_t *bcap, int64_t *blen, unsigned cp) {
+    if (cp < 0x80) { vcsv_buf_put(buf, bcap, blen, (char)cp); }
+    else if (cp < 0x800) {
+        vcsv_buf_put(buf, bcap, blen, (char)(0xC0 | (cp >> 6)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        vcsv_buf_put(buf, bcap, blen, (char)(0xE0 | (cp >> 12)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | ((cp >> 6) & 0x3F)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | (cp & 0x3F)));
+    } else {
+        vcsv_buf_put(buf, bcap, blen, (char)(0xF0 | (cp >> 18)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | ((cp >> 12) & 0x3F)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | ((cp >> 6) & 0x3F)));
+        vcsv_buf_put(buf, bcap, blen, (char)(0x80 | (cp & 0x3F)));
+    }
+}
+// One backslash escape at s[*i] (must be '\\'); advances past it.
+// Returns 0 on malformed escape. Surrogate pairs combine; lone
+// surrogates and out-of-range values become U+FFFD.
+static int vjson_hex(const char *s, int64_t n, int64_t i, unsigned *out);
+static int vjson_escape(char **buf, int64_t *bcap, int64_t *blen, const char *s, int64_t n, int64_t *i) {
+    char e = s[*i + 1];
+    if (e == '"' || e == '\\' || e == '/') { vcsv_buf_put(buf, bcap, blen, e); *i += 2; return 1; }
+    if (e == 'n') { vcsv_buf_put(buf, bcap, blen, '\n'); *i += 2; return 1; }
+    if (e == 't') { vcsv_buf_put(buf, bcap, blen, '\t'); *i += 2; return 1; }
+    if (e == 'r') { vcsv_buf_put(buf, bcap, blen, '\r'); *i += 2; return 1; }
+    if (e == 'b') { vcsv_buf_put(buf, bcap, blen, '\b'); *i += 2; return 1; }
+    if (e == 'f') { vcsv_buf_put(buf, bcap, blen, '\f'); *i += 2; return 1; }
+    if (e == 'u') {
+        unsigned cp;
+        if (!vjson_hex(s, n, *i + 2, &cp)) return 0;
+        *i += 6;
+        if (cp >= 0xD800 && cp <= 0xDBFF && *i + 1 < n && s[*i] == '\\' && s[*i + 1] == 'u') {
+            unsigned lo;
+            if (vjson_hex(s, n, *i + 2, &lo) && lo >= 0xDC00 && lo <= 0xDFFF) {
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                *i += 6;
+            } else { cp = 0xFFFD; }
+        } else if (cp >= 0xD800 && cp <= 0xDFFF) { cp = 0xFFFD; }
+        if (cp > 0x10FFFF) cp = 0xFFFD;
+        vjson_push_utf8(buf, bcap, blen, cp);
+        return 1;
+    }
+    return 0;
+}
+static int vjson_hex(const char *s, int64_t n, int64_t i, unsigned *out) {
+    if (i + 4 > n) return 0;
+    unsigned v = 0;
+    for (int k = 0; k < 4; k++) {
+        char c = s[i + k];
+        v *= 16;
+        if (c >= '0' && c <= '9') v += (unsigned)(c - '0');
+        else if (c >= 'a' && c <= 'f') v += (unsigned)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') v += (unsigned)(c - 'A' + 10);
+        else return 0;
+    }
+    *out = v;
+    return 1;
+}
+// Flat JSON only: top-level array of flat objects with string/number/
+// true/false/null values. Row 0 of the table is the key union in first-
+// appearance order; missing keys become "". Returns 0 on success, else
+// the byte offset+1 with *emsg set.
+static int64_t vjson_parse(VCsvTable *t, const char *s, int64_t n, VStr *emsg) {
+    int64_t bcap = 64;
+    char *buf = (char *)malloc((size_t)bcap);
+    if (!buf) { fprintf(stderr, "alloc error\n"); abort(); }
+    int64_t blen = 0;
+    VCsvRow keys = {NULL, 0, 0};
+    int64_t line = 1;
+    int64_t i = 0;
+    vjson_skip_ws(s, n, &i, &line);
+    if (i >= n || s[i] != '[') {
+        free(buf);
+        *emsg = vjson_err(i, "top level must be an array");
+        return i + 1;
+    }
+    i++;
+    int first = 1;
+    VCsvRow cur = {NULL, 0, 0};
+    int in_obj = 0;
+    for (;;) {
+        vjson_skip_ws(s, n, &i, &line);
+        if (i < n && s[i] == ']') { i++; break; }
+        if (!first) {
+            if (i >= n || s[i] != ',') goto jfail_comma;
+            i++;
+            vjson_skip_ws(s, n, &i, &line);
+        }
+        first = 0;
+        if (i >= n || s[i] != '{') goto jfail_obj;
+        i++;
+        cur.fields = NULL; cur.nfields = cur.capfields = 0;
+        in_obj = 1;
+        int need_comma = 0;
+        for (;;) {
+            vjson_skip_ws(s, n, &i, &line);
+            if (i < n && s[i] == '}') { i++; break; }
+            if (need_comma) {
+                if (i >= n || s[i] != ',') goto jfail_comma_in;
+                i++;
+                vjson_skip_ws(s, n, &i, &line);
+            }
+            need_comma = 1;
+            if (i >= n || s[i] != '"') goto jfail_key;
+            i++;
+            blen = 0;
+            while (i < n && s[i] != '"') {
+                if (s[i] == '\\' && i + 1 < n) {
+                    if (!vjson_escape(&buf, &bcap, &blen, s, n, &i)) goto jfail_esc;
+                } else if (s[i] == '\n') { line++; vcsv_buf_put(&buf, &bcap, &blen, s[i]); i++; }
+                else { vcsv_buf_put(&buf, &bcap, &blen, s[i]); i++; }
+            }
+            if (i >= n) goto jfail_key;
+            i++;
+            VStr kf = vcsv_buf_take(&buf, &blen);
+            int64_t kidx = -1;
+            for (int64_t k = 0; k < keys.nfields; k++) {
+                if (keys.fields[k].len == kf.len && memcmp(keys.fields[k].s, kf.s, (size_t)kf.len) == 0) { kidx = k; break; }
+            }
+            if (kidx < 0) {
+                vcsv_row_push_field(&keys, kf.s, kf.len);
+                kidx = keys.nfields - 1;
+                for (int64_t r = 0; r < t->nrows; r++) {
+                    while (t->rows[r].nfields < kidx) {
+                        char *zp = (char *)malloc(1);
+                        if (!zp) { fprintf(stderr, "alloc error\n"); abort(); }
+                        zp[0] = '\0';
+                        vcsv_row_push_field(&t->rows[r], zp, 0);
+                    }
+                }
+            } else { free(kf.s); }
+            while (cur.nfields < kidx) {
+                char *zp = (char *)malloc(1);
+                if (!zp) { fprintf(stderr, "alloc error\n"); abort(); }
+                zp[0] = '\0';
+                vcsv_row_push_field(&cur, zp, 0);
+            }
+            vjson_skip_ws(s, n, &i, &line);
+            if (i >= n || s[i] != ':') goto jfail_colon;
+            i++;
+            vjson_skip_ws(s, n, &i, &line);
+            if (i >= n) goto jfail_val;
+            if (s[i] == '"') {
+                i++;
+                blen = 0;
+                while (i < n && s[i] != '"') {
+                    if (s[i] == '\\' && i + 1 < n) {
+                        if (!vjson_escape(&buf, &bcap, &blen, s, n, &i)) goto jfail_esc;
+                    } else if (s[i] == '\n') { line++; vcsv_buf_put(&buf, &bcap, &blen, s[i]); i++; }
+                    else { vcsv_buf_put(&buf, &bcap, &blen, s[i]); i++; }
+                }
+                if (i >= n) goto jfail_val;
+                i++;
+                VStr vf = vcsv_buf_take(&buf, &blen);
+                vcsv_row_push_field(&cur, vf.s, vf.len);
+            } else if ((s[i] >= '0' && s[i] <= '9') || s[i] == '-') {
+                int64_t st = i;
+                if (s[i] == '-') i++;
+                int digits = 0;
+                while (i < n && s[i] >= '0' && s[i] <= '9') { i++; digits = 1; }
+                if (i < n && s[i] == '.') { i++; while (i < n && s[i] >= '0' && s[i] <= '9') { i++; digits = 1; } }
+                if (i < n && (s[i] == 'e' || s[i] == 'E')) {
+                    i++;
+                    if (i < n && (s[i] == '+' || s[i] == '-')) i++;
+                    int expd = 0;
+                    while (i < n && s[i] >= '0' && s[i] <= '9') { i++; expd = 1; }
+                    if (!expd) goto jfail_val;
+                }
+                if (!digits) goto jfail_val;
+                int64_t vlen = i - st;
+                char *vp = (char *)malloc((size_t)vlen + 1);
+                if (!vp) { fprintf(stderr, "alloc error\n"); abort(); }
+                memcpy(vp, s + st, (size_t)vlen);
+                vp[vlen] = '\0';
+                vcsv_row_push_field(&cur, vp, vlen);
+            } else if (i + 4 <= n && memcmp(s + i, "true", 4) == 0) {
+                char *vp = (char *)malloc(5);
+                if (!vp) { fprintf(stderr, "alloc error\n"); abort(); }
+                memcpy(vp, "true", 5);
+                vcsv_row_push_field(&cur, vp, 4);
+                i += 4;
+            } else if (i + 5 <= n && memcmp(s + i, "false", 5) == 0) {
+                char *vp = (char *)malloc(6);
+                if (!vp) { fprintf(stderr, "alloc error\n"); abort(); }
+                memcpy(vp, "false", 6);
+                vcsv_row_push_field(&cur, vp, 5);
+                i += 5;
+            } else if (i + 4 <= n && memcmp(s + i, "null", 4) == 0) {
+                char *vp = (char *)malloc(1);
+                if (!vp) { fprintf(stderr, "alloc error\n"); abort(); }
+                vp[0] = '\0';
+                vcsv_row_push_field(&cur, vp, 0);
+                i += 4;
+            } else if (s[i] == '{' || s[i] == '[') {
+                *emsg = vjson_err(i, "nested values need flat objects");
+                goto jfail_free;
+            } else goto jfail_val;
+        }
+        while (cur.nfields < keys.nfields) {
+            char *zp = (char *)malloc(1);
+            if (!zp) { fprintf(stderr, "alloc error\n"); abort(); }
+            zp[0] = '\0';
+            vcsv_row_push_field(&cur, zp, 0);
+        }
+        vcsv_table_push_row(t, cur);
+        cur.fields = NULL; cur.nfields = cur.capfields = 0;
+        in_obj = 0;
+    }
+    vjson_skip_ws(s, n, &i, &line);
+    if (i < n) {
+        *emsg = vjson_err(i, "trailing characters");
+        goto jfail_free;
+    }
+    {
+        VCsvRow hdr = {NULL, 0, 0};
+        for (int64_t k = 0; k < keys.nfields; k++) {
+            vcsv_row_push_field(&hdr, keys.fields[k].s, keys.fields[k].len);
+        }
+        free(keys.fields);
+        VCsvTable combo = {NULL, 0, 0};
+        vcsv_table_push_row(&combo, hdr);
+        for (int64_t r = 0; r < t->nrows; r++) {
+            vcsv_table_push_row(&combo, t->rows[r]);
+        }
+        free(t->rows);
+        *t = combo;
+    }
+    free(buf);
+    return 0;
+jfail_comma:
+    *emsg = vjson_err(i, "expected `,` between objects");
+    goto jfail_free;
+jfail_comma_in:
+    *emsg = vjson_err(i, "expected `,` between members");
+    goto jfail_free;
+jfail_obj:
+    *emsg = vjson_err(i, "expected object");
+    goto jfail_free;
+jfail_key:
+    *emsg = vjson_err(i, "expected string key");
+    goto jfail_free;
+jfail_esc:
+    *emsg = vjson_err(i, "bad string escape");
+    goto jfail_free;
+jfail_colon:
+    *emsg = vjson_err(i, "expected `:`");
+    goto jfail_free;
+jfail_val:
+    *emsg = vjson_err(i, "expected value");
+    goto jfail_free;
+jfail_free:
+    if (in_obj) vcsv_free_row(&cur);
+    vcsv_free_table(t);
+    vcsv_free_row(&keys);
+    free(buf);
+    return i + 1;
+}
+"##;
+
 /// HIR (checked AST) -> C11 source.
 ///
 /// Memory discipline (mirrors ownership.rs, D4 §1–2):
@@ -89,6 +684,12 @@ static void vprint_str(VStr v) { vfmt_str(v); printf("\n"); }
 /// - `cur_move` threads the move-context so borrowed uses (operands, `print`,
 ///   conditions) never NULL their source while moved uses do.
 pub fn lower(checked: &Checked) -> Result<String, Ice> {
+    // Tripwire (poison types): `Ty::Error` must never reach lowering; any
+    // error aborts in sema/ownership before this point.
+    debug_assert!(
+        !checked.types.values().any(ty_has_error),
+        "Ty::Error leaked into codegen"
+    );
     let mut g = Gen {
         checked,
         out: String::new(),
@@ -97,6 +698,7 @@ pub fn lower(checked: &Checked) -> Result<String, Ice> {
         owned: HashMap::new(),
         vartypes: HashMap::new(),
         nulls: vec![],
+        null_shields: vec![],
         tmp_frames: vec![],
         cur_move: false,
         fn_ret: Ty::Unit,
@@ -107,7 +709,7 @@ pub fn lower(checked: &Checked) -> Result<String, Ice> {
             .program
             .funs
             .iter()
-            .map(|f| (f.module.clone(), f.name.clone()))
+            .map(|f| (f.module.clone(), f.name.clone(), f.params.len()))
             .collect(),
         type_set: checked
             .program
@@ -123,13 +725,19 @@ pub fn lower(checked: &Checked) -> Result<String, Ice> {
             )
             .collect(),
         print_insts: checked.print_insts.clone(),
+        is_in_insts: checked.is_in_insts.clone(),
+        fun_kernels: checked.fun_kernels.clone(),
         structs: checked.structs.clone(),
         enums: checked.enums.clone(),
         generic_insts: checked.generic_insts.clone(),
+        dims: checked.dims.clone(),
+        fn_ret_dim: crate::units::Dim::dimensionless(),
     };
     g.out.push_str(PRELUDE);
+    g.out.push_str(PRELUDE_J2);
     g.out.push('\n');
     g.emit_adts()?;
+    g.emit_sys_helpers()?;
     // Prototypes for every function (cross-module calls + forward references;
     // C23 rejects implicit declarations). `main` is never called: no proto.
     for f in &checked.program.funs {
@@ -151,6 +759,8 @@ enum LNode {
     Struct(String),
     Enum(String),
     Vec(String),
+    Mat(String),
+    Factor(String),
     Union(String),
 }
 
@@ -167,6 +777,12 @@ struct Gen<'a> {
     vartypes: HashMap<String, Ty>,
     /// pending moved-from slots to poison: (lvalue, type).
     nulls: Vec<(String, Ty)>,
+    /// stacked shields for `if`-condition poisons (see Stmt::If): each entry
+    /// holds nulls queued before a branch region. Diverging paths (`break`,
+    /// `continue`, `return`, `?`) flush through the whole stack — every
+    /// queued poison post-dominates its move on such paths — while
+    /// fallthrough restores shields for the enclosing statement-end flush.
+    null_shields: Vec<Vec<(String, Ty)>>,
     /// ADT tables for layout/drop/poison lowering.
     structs: HashMap<String, StructDef>,
     enums: HashMap<String, EnumDef>,
@@ -185,12 +801,20 @@ struct Gen<'a> {
     /// Import aliases from sema: (from, local) -> (target module, target name).
     aliases: HashMap<(String, String), (String, String)>,
     /// All functions by (module, name) for callee-module resolution.
-    fun_set: std::collections::HashSet<(String, String)>,
+    fun_set: std::collections::HashSet<(String, String, usize)>,
     /// All struct/enum types by (module, name) for qualifier resolution.
     type_set: std::collections::HashSet<(String, String)>,
     /// Composite instantiations printed via `println` (keys into
     /// `generic_insts`); format helpers emit exactly for these.
     print_insts: std::collections::HashSet<String>,
+    is_in_insts: std::collections::HashSet<String>,
+    /// Stage-1 functional kernels (see sema's `Checked::fun_kernels`).
+    fun_kernels: Vec<(String, Vec<Ty>)>,
+    /// NodeId -> resolved dimension (units of measure; absent =
+    /// dimensionless). Drives `*k` scale conversions.
+    dims: HashMap<NodeId, Dim>,
+    /// Current function's declared return dimension.
+    fn_ret_dim: Dim,
 }
 
 /// Innermost-enclosing-loop info for `break`/`continue` codegen.
@@ -215,19 +839,70 @@ impl<'a> Gen<'a> {
         self.checked.types.get(&id).cloned().unwrap_or(Ty::Unit)
     }
 
+    /// Dimension of a node (dimensionless default).
+    fn dim_of(&self, id: NodeId) -> Dim {
+        self.dims
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(Dim::dimensionless)
+    }
+
+    /// Wrap emitted `text` (dimension `from`) into `to`: `((text) * k)`.
+    /// Identity when scales match (the common case costs nothing).
+    /// Vectors are already known equal; only scales convert.
+    fn coerce(&self, text: String, from: &Dim, to: &Dim) -> String {
+        let k = from.to(to);
+        if (k - 1.0).abs() < f64::EPSILON {
+            text
+        } else {
+            format!("(({}) * {})", text, k)
+        }
+    }
+
+    /// Declared parameter dimensions of a user function, in order
+    /// (sema already validated names; unknown units fall back to
+    /// dimensionless here — sema reported them).
+    fn callee_param_dims(&self, module: &str, name: &str, arity: usize) -> Vec<Dim> {
+        match self
+            .checked
+            .program
+            .funs
+            .iter()
+            .find(|f| f.module == module && f.name == name && f.params.len() == arity)
+        {
+            Some(f) => f
+                .params
+                .iter()
+                .map(|p| match &p.unit {
+                    None => Dim::dimensionless(),
+                    Some(u) => crate::units::eval(u).unwrap_or_else(|_| Dim::dimensionless()),
+                })
+                .collect(),
+            None => vec![],
+        }
+    }
+
     /// Resolve a callee name from the current module: own items first, then
     /// imports (mirrors sema's `resolve_fun`; sema already rejected bad
     /// programs, so misses here are ICEs). Returns (module, name).
-    fn resolve_fun(&self, name: &str) -> Option<(String, String)> {
+    fn resolve_fun(&self, name: &str, arity: usize) -> Option<(String, String)> {
         if self
             .fun_set
-            .contains(&(self.cur_module.clone(), name.to_string()))
+            .contains(&(self.cur_module.clone(), name.to_string(), arity))
         {
             return Some((self.cur_module.clone(), name.to_string()));
         }
-        self.aliases
+        if let Some((tm, tn)) = self
+            .aliases
             .get(&(self.cur_module.clone(), name.to_string()))
             .cloned()
+        {
+            if self.fun_set.contains(&(tm.clone(), tn.clone(), arity)) {
+                return Some((tm, tn));
+            }
+            return None;
+        }
+        None
     }
 
     /// Resolve a type name like `resolve_fun` (structs + enums share one
@@ -255,7 +930,7 @@ impl<'a> Gen<'a> {
     fn resolve_pat_ty(&self, q: &Option<String>) -> Result<Option<String>, Ice> {
         match q {
             None => Ok(None),
-            Some(t) if t == "Option" || t == "Result" => Ok(Some(t.clone())),
+            Some(t) if t == "Option" || t == "Result" || t == "Missing" => Ok(Some(t.clone())),
             Some(t) => Ok(Some(
                 self.resolve_type(t)
                     .ok_or_else(|| Ice(format!("unknown enum {}", t)))?,
@@ -270,13 +945,13 @@ impl<'a> Gen<'a> {
             self.out.push_str(&format!(
                 "static {} {}_fn(void);\n",
                 ret,
-                cfun(&f.module, &f.name)
+                cfun(&f.module, &f.name, f.params.len())
             ));
         } else {
             self.out.push_str(&format!(
                 "static {} {}_fn({});\n",
                 ret,
-                cfun(&f.module, &f.name),
+                cfun(&f.module, &f.name, f.params.len()),
                 f.params
                     .iter()
                     .map(|p| format!("{} {}", self.cty(&p.ty), mangle(&p.name)))
@@ -309,7 +984,11 @@ impl<'a> Gen<'a> {
             // Sema resolves every nominal type in place; reaching this means a
             // compiler bug, never user input.
             Ty::Named(n) => unreachable!("unresolved type {}", n),
+            Ty::Generic { base, args } if base == "Rng" && args.is_empty() => "VRng".to_string(),
             Ty::Generic { base, args } => ctype_inst(base, args),
+            // Unreachable: any error aborts before lowering (see tripwire
+            // in `lower`); maps like `Unit` so codegen stays total.
+            Ty::Error => "void".to_string(),
         }
     }
 
@@ -351,13 +1030,78 @@ impl<'a> Gen<'a> {
     /// Slots already poisoned (moved out) are safely skipped.
     fn pop_frame(&mut self) {
         if let Some(frame) = self.tmp_frames.pop() {
+            // Skip temps with queued poisons: ownership already moved
+            // (the callee frees); the poison writes at the statement-level
+            // flush. Freeing here double-frees (e.g. moved call args in an
+            // `if` condition, whose frame pops before the flush).
+            let queued: std::collections::HashSet<String> = self
+                .nulls
+                .iter()
+                .map(|(n, _)| n.clone())
+                .chain(
+                    self.null_shields
+                        .iter()
+                        .flat_map(|s| s.iter().map(|(n, _)| n.clone())),
+                )
+                .collect();
             for (t, cty) in frame.iter().rev() {
+                if queued.contains(t) {
+                    continue;
+                }
                 if cty == "VStr" {
                     self.out.push_str(&format!("vstr_free(&{});\n", t));
                 } else {
                     let vty = self.valvet_ty_of_cty(cty);
                     self.emit_destroy(t, &vty);
                 }
+            }
+        }
+    }
+
+    /// Emit destruction for every live temp in every frame WITHOUT
+    /// popping: for `return` inside a partially-evaluated construct, the
+    /// enclosing owners still pop (and destroy) on fallthrough paths, and
+    /// exactly one path runs at runtime. Popping here orphaned those pops:
+    /// they found nothing, leaking every temp on non-return paths.
+    fn destroy_all_temps(&mut self) {
+        let live: Vec<(String, String)> = self
+            .tmp_frames
+            .iter()
+            .rev()
+            .flat_map(|f| f.iter().rev().cloned())
+            .collect();
+        for (t, cty) in &live {
+            if cty == "VStr" {
+                self.out.push_str(&format!("vstr_free(&{});\n", t));
+            } else {
+                let vty = self.valvet_ty_of_cty(cty);
+                self.emit_destroy(t, &vty);
+            }
+        }
+    }
+
+    /// Emit destruction for temps in frames above `depth` WITHOUT popping,
+    /// for `break`/`continue`: the taken path jumps away, while enclosing
+    /// constructs still pop (and destroy) the same frames on fallthrough
+    /// paths. Popping here orphaned those pops — they destroyed the wrong
+    /// frame's temps (or nothing), leaking temps on fallthrough; and
+    /// destroys ran without flushing queued move-poisons first
+    /// (double free on moved call temps). Callers flush first.
+    fn destroy_frames_above(&mut self, depth: usize) {
+        let live: Vec<(String, String)> = self
+            .tmp_frames
+            .get(depth..)
+            .unwrap_or(&[])
+            .iter()
+            .rev()
+            .flat_map(|f| f.iter().rev().cloned())
+            .collect();
+        for (t, cty) in &live {
+            if cty == "VStr" {
+                self.out.push_str(&format!("vstr_free(&{});\n", t));
+            } else {
+                let vty = self.valvet_ty_of_cty(cty);
+                self.emit_destroy(t, &vty);
             }
         }
     }
@@ -438,6 +1182,47 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Push the currently queued poisons behind a shield (branch regions
+    /// must not flush them early — see Stmt::If).
+    fn push_null_shield(&mut self) {
+        self.null_shields.push(std::mem::take(&mut self.nulls));
+    }
+
+    /// Pop the innermost shield, restoring its poisons ahead of any queued
+    /// since (they were queued earliest).
+    fn pop_null_shield(&mut self) {
+        if let Some(sh) = self.null_shields.pop() {
+            let mut kept = sh;
+            kept.extend(std::mem::take(&mut self.nulls));
+            self.nulls = kept;
+        }
+    }
+
+    /// Flush everything, including shielded poisons, for diverging paths
+    /// (`break`/`continue`/`return`/`?`): every queued poison's move
+    /// dominates the jump, and nothing after the jump can use the slots.
+    fn flush_all_nulls(&mut self) {
+        // Non-draining: diverging paths (`return`/`break`/`continue`/`?`
+        // inside a branch) must poison for the taken path WITHOUT consuming
+        // poisons other paths still need. Draining here starved merge-point
+        // flushes: the taken path's poisons executed only on that path,
+        // while fall-through pops freed the (already callee-freed) temps
+        // (double free). Rewrites are idempotent NULL stores. Order matches
+        // the old drain-then-flush (queue first, then shields innermost
+        // out) so first-occurrence dedup is unchanged.
+        let mut combined = self.nulls.clone();
+        for sh in self.null_shields.iter().rev() {
+            combined.extend(sh.iter().cloned());
+        }
+        let mut seen = HashSet::new();
+        for (n, t) in &combined {
+            if seen.insert(n.clone()) {
+                let (nn, tt) = (n.clone(), t.clone());
+                self.emit_poison(&nn, &tt);
+            }
+        }
+    }
+
     /// Emit poisoning statements for moved-from lvalue `lval` of type `ty`.
     fn emit_poison(&mut self, lval: &str, ty: &Ty) {
         match ty {
@@ -459,6 +1244,20 @@ impl<'a> Gen<'a> {
                 let _ = args;
                 self.out.push_str(&format!("{}.data = NULL;\n", lval));
                 self.out.push_str(&format!("{}.len = 0;\n", lval));
+            }
+            Ty::Generic { base, args } if base == "Mat" && args.is_empty() => {
+                // Neutering a moved-from Mat: drop skips NULL buffers.
+                self.out.push_str(&format!("{}.data = NULL;\n", lval));
+                self.out.push_str(&format!("{}.rows = 0;\n", lval));
+                self.out.push_str(&format!("{}.cols = 0;\n", lval));
+            }
+            Ty::Generic { base, args } if base == "Factor" && args.is_empty() => {
+                // Neutering a moved-from Factor: vec drops skip NULLs.
+                self.out
+                    .push_str(&format!("{}.levels.data = NULL;\n", lval));
+                self.out.push_str(&format!("{}.levels.len = 0;\n", lval));
+                self.out.push_str(&format!("{}.codes.data = NULL;\n", lval));
+                self.out.push_str(&format!("{}.codes.len = 0;\n", lval));
             }
             Ty::Generic { base, args } => {
                 let variants = self.generic_variants(base, args);
@@ -542,6 +1341,20 @@ impl<'a> Gen<'a> {
             Ty::Generic { base, args } if base == "Vec" => {
                 format!("{}.data = NULL;\n{}.len = 0;\n", lval, lval)
             }
+            Ty::Generic { base, args } if base == "Mat" && args.is_empty() => {
+                let _ = args;
+                format!(
+                    "{}.data = NULL;\n{}.rows = 0;\n{}.cols = 0;\n",
+                    lval, lval, lval
+                )
+            }
+            Ty::Generic { base, args } if base == "Factor" && args.is_empty() => {
+                let _ = args;
+                format!(
+                    "{}.levels.data = NULL;\n{}.levels.len = 0;\n{}.codes.data = NULL;\n{}.codes.len = 0;\n",
+                    lval, lval, lval, lval
+                )
+            }
             Ty::Generic { base, args } => {
                 let mut out = String::new();
                 for (i, (_, pts)) in self.generic_variants(base, args).iter().enumerate() {
@@ -601,11 +1414,11 @@ impl<'a> Gen<'a> {
         }
         if let ExprKind::Var(name) = &e.kind {
             let cname = mangle(name);
-            // Bare `None` (unshadowed — sema guarantees) is a constructor.
+            // Bare `None`/`Missing` (unshadowed — sema guarantees) is a constructor.
             // Handled here too because this fast path bypasses emit_expr.
-            if name == "None" && !self.owned.contains_key(&cname) {
+            if (name == "None" || name == "Missing") && !self.owned.contains_key(&cname) {
                 if let Ty::Generic { base, args } = self.ty_of(e.id) {
-                    if base == "Option" {
+                    if base == "Option" || base == "Missing" {
                         return Ok(format!("({}){{ .tag = 1 }}", ctype_inst(&base, &args)));
                     }
                 }
@@ -690,6 +1503,10 @@ impl<'a> Gen<'a> {
                     if let Some(key) = self.inst_key_for(base, args) {
                         if base == "Vec" {
                             out.push(LNode::Vec(key));
+                        } else if base == "Mat" {
+                            out.push(LNode::Mat(key));
+                        } else if base == "Factor" {
+                            out.push(LNode::Factor(key));
                         } else {
                             out.push(LNode::Union(key));
                         }
@@ -725,9 +1542,22 @@ impl<'a> Gen<'a> {
             }
             let node = if base == "Vec" {
                 LNode::Vec(key.clone())
+            } else if base == "Mat" {
+                LNode::Mat(key.clone())
+            } else if base == "Factor" {
+                LNode::Factor(key.clone())
             } else {
                 LNode::Union(key.clone())
             };
+            // `Factor` holds two vecs by value: order their layouts first
+            // (its generic args are empty, so this is not automatic).
+            if base == "Factor" {
+                for (b, a) in [("Vec", vec![Ty::Str]), ("Vec", vec![Ty::Int32])] {
+                    if let Some(k) = self.inst_key_for(b, &a) {
+                        d.push(LNode::Vec(k));
+                    }
+                }
+            }
             d.retain(|x| *x != node);
             deps.insert(node, d);
         }
@@ -837,10 +1667,53 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// One `Factor` layout (levels + 1-based codes, 0 = missing).
+    fn emit_factor_layout(&mut self, key: &str) -> Result<(), Ice> {
+        let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
+        if base != "Factor" || !args.is_empty() {
+            return Ok(());
+        }
+        let ct = ctype_inst(&base, &args);
+        let lct = ctype_inst("Vec", std::slice::from_ref(&Ty::Str));
+        let cct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int32));
+        self.out.push_str(&format!(
+            "typedef struct {{ {} levels; {} codes; }} {};\n",
+            lct, cct, ct
+        ));
+        Ok(())
+    }
+    fn emit_mat_layout(&mut self, key: &str) -> Result<(), Ice> {
+        let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
+        if base != "Mat" || !args.is_empty() {
+            return Ok(());
+        }
+        let ct = ctype_inst(&base, &args);
+        self.out.push_str(&format!(
+            "typedef struct {{ double *data; int64_t rows; int64_t cols; }} {};\n",
+            ct
+        ));
+        Ok(())
+    }
+
     /// One `Option`/`Result` tagged-union layout.
+    fn emit_sys_helpers(&mut self) -> Result<(), Ice> {
+        // `vsys_getenv` names `VOption_String`, which only exists once
+        // ADT layouts are emitted; define it here when instantiated.
+        let need = self
+            .generic_insts
+            .values()
+            .any(|(base, args)| base == "Option" && args.len() == 1 && matches!(&args[0], Ty::Str));
+        if !need {
+            return Ok(());
+        }
+        self.out.push_str(
+            "static VOption_String vsys_getenv(VStr k) {\n    if (!k.s) return (VOption_String){ .tag = 1 };\n    const char *v = getenv(k.s);\n    if (!v) return (VOption_String){ .tag = 1 };\n    return (VOption_String){ .tag = 0, .u = { .v0 = { .v___0 = vstr_from_c(v) } } };\n}\n",
+        );
+        Ok(())
+    }
     fn emit_union_layout(&mut self, key: &str) -> Result<(), Ice> {
         let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
-        if base == "Vec" {
+        if base == "Vec" || base == "Mat" || base == "Factor" {
             return Ok(());
         }
         let ct = ctype_inst(&base, &args);
@@ -884,6 +1757,8 @@ impl<'a> Gen<'a> {
                 LNode::Struct(n) => self.emit_struct_layout(n)?,
                 LNode::Enum(n) => self.emit_enum_layout(n)?,
                 LNode::Vec(key) => self.emit_vec_layout(key)?,
+                LNode::Mat(key) => self.emit_mat_layout(key)?,
+                LNode::Factor(key) => self.emit_factor_layout(key)?,
                 LNode::Union(key) => self.emit_union_layout(key)?,
             }
         }
@@ -985,6 +1860,20 @@ impl<'a> Gen<'a> {
                         ));
                     }
                 }
+            } else if base == "Mat" && args.is_empty() {
+                // M1: Mat drop/clone declarations (kernels defined below).
+                let ct = ctype_inst(&base, &args);
+                let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
+                self.out.push_str(&format!(
+                    "static void v_drop_{iname}({ct} *v);\nstatic {ct} v_clone_{iname}({ct} v);\n"
+                ));
+            } else if base == "Factor" && args.is_empty() {
+                // F1: Factor drop/clone declarations (kernels below).
+                let ct = ctype_inst(&base, &args);
+                let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
+                self.out.push_str(&format!(
+                    "static void v_drop_{iname}({ct} *v);\nstatic {ct} v_clone_{iname}({ct} v);\n"
+                ));
             } else {
                 let t = Ty::Generic {
                     base: base.clone(),
@@ -1024,11 +1913,30 @@ impl<'a> Gen<'a> {
                 self.emit_vec_clone(&args)?;
                 continue;
             }
+            if base == "Mat" && args.is_empty() {
+                self.emit_mat_fns()?;
+                continue;
+            }
+            if base == "Factor" && args.is_empty() {
+                self.emit_factor_fns()?;
+                continue;
+            }
             if self.type_needs_drop(&t) {
                 self.emit_inst_drop(&base, &args)?;
                 self.emit_inst_clone(&base, &args)?;
             }
         }
+        // C1 functional kernels over named functions (need vec layouts
+        // above; user-function prototypes were emitted before definitions).
+        // Sema deduped entries; check order is deterministic.
+        let fkeys = self.fun_kernels.clone();
+        for (kind, tys) in &fkeys {
+            self.emit_fun_kernel(kind, tys)?;
+        }
+        // J1 string kernels (need vec/union layouts above to exist).
+        self.emit_str_kernels()?;
+        // J2 CSV/JSON/file kernels (need vec/union layouts above to exist).
+        self.emit_csv_kernels()?;
         // `println` format helpers, gated on printed instantiations (sorted
         // for reproducibility; protos first — formatters call each other).
         let mut pkeys: Vec<String> = self.print_insts.iter().cloned().collect();
@@ -1055,6 +1963,446 @@ impl<'a> Gen<'a> {
                 .cloned()
                 .ok_or_else(|| Ice(format!("missing instantiation {}", key)))?;
             self.emit_print_fmt(&base, &args)?;
+        }
+        Ok(())
+    }
+
+    /// J1 string kernels over the generated vec/union layouts above.
+    /// Each emits only when its result instantiation was recorded.
+    fn emit_str_kernels(&mut self) -> Result<(), Ice> {
+        // F2 byte-access primitives (unconditional: no layout deps).
+        // `byte_at`/`slice` trap out of bounds like `Vec` indexing.
+        self.out
+            .push_str("static int64_t vstr_len(VStr v) { return v.s ? v.len : 0; }\n");
+        // Unicode scalar count: structural UTF-8 decode (overlongs and
+        // surrogates count once; invalid bytes count as U+FFFD each).
+        self.out.push_str(
+            "static int64_t vstr_nchars(VStr v) {\nint64_t n = v.s ? v.len : 0, c = 0, i = 0;\nwhile (i < n) {{\nunsigned char b = (unsigned char)v.s[i];\nint64_t w = 1;\nif (b < 0x80) w = 1;\nelse if ((b & 0xE0) == 0xC0) w = 2;\nelse if ((b & 0xF0) == 0xE0) w = 3;\nelse if ((b & 0xF8) == 0xF0) w = 4;\nint64_t k = 1;\nwhile (k < w && i + k < n && (((unsigned char)v.s[i + k] & 0xC0) == 0x80)) k++;\nif (k < w) i += 1; else i += w;\nc++;\n}}\nreturn c;\n}\n",
+        );
+        // ASCII + Latin-1 case fold (length-preserving ranges only; other
+        // scalars pass through; `ß`/Turkish dotted-I out of scope).
+        self.out.push_str(
+            "static VStr vstr_case(VStr v, int up) {\nint64_t n = v.s ? v.len : 0;\nchar *p = (char *)malloc((size_t)n + 1);\nif (!p) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n;) {{\nunsigned char b = (unsigned char)v.s[i];\nif (up && b >= 'a' && b <= 'z') {{ p[i] = (char)(b - 32); i++; }}\nelse if (!up && b >= 'A' && b <= 'Z') {{ p[i] = (char)(b + 32); i++; }}\nelse if (i + 1 < n && b == 0xC3) {{\nunsigned char c2 = (unsigned char)v.s[i + 1];\nif (up && c2 >= 0xA0 && c2 <= 0xBE && c2 != 0xB7) {{ p[i] = (char)b; p[i + 1] = (char)(c2 - 32); i += 2; }}\nelse if (!up && c2 >= 0x80 && c2 <= 0x9E && c2 != 0x97) {{ p[i] = (char)b; p[i + 1] = (char)(c2 + 32); i += 2; }}\nelse {{ p[i] = (char)b; i++; }}\n}} else {{ p[i] = (char)b; i++; }}\n}}\np[n] = '\\0';\nreturn (VStr){p, n};\n}\nstatic VStr vstr_to_upper(VStr v) { return vstr_case(v, 1); }\nstatic VStr vstr_to_lower(VStr v) { return vstr_case(v, 0); }\n",
+        );
+        self.out.push_str(
+            "static int64_t vstr_byte_at(VStr v, int64_t i) {\nint64_t n = v.s ? v.len : 0;\nif (i < 0 || i >= n) { fprintf(stderr, \"index out of bounds\\n\"); abort(); }\nreturn (int64_t)((unsigned char)v.s[i]);\n}\n",
+        );
+        self.out.push_str(
+            "static VStr vstr_slice(VStr v, int64_t a, int64_t b) {\nint64_t n = v.s ? v.len : 0;\nif (a < 0 || b < a || b > n) { fprintf(stderr, \"index out of bounds\\n\"); abort(); }\nint64_t len = b - a;\nchar *p = (char *)malloc((size_t)len + 1);\nif (!p) { fprintf(stderr, \"alloc error\\n\"); abort(); }\nif (len) memcpy(p, v.s + a, (size_t)len);\np[len] = '\\0';\nreturn (VStr){p, len};\n}\n",
+        );
+        if self.has_inst("Vec", &[Ty::Str]) {
+            let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Str));
+            let iname = iname_of(&vct);
+            self.out.push_str(&format!(
+                concat!(
+                    "static {vct} vstr_split(VStr v, VStr d) {{",
+                    "{vct} out = vvec_{iname}_new();",
+                    "char sep = (d.s && d.len > 0) ? d.s[0] : '\\0';",
+                    "int64_t n = v.s ? v.len : 0;int64_t start = 0;",
+                    "for (int64_t i = 0; i <= n; ++i) {{",
+                    "if (i == n || (sep != '\\0' && v.s[i] == sep)) {{",
+                    "int64_t len = i - start;",
+                    "char *p = (char *)malloc((size_t)len + 1);",
+                    "if (!p) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "if (len) memcpy(p, v.s + start, (size_t)len);p[len] = '\\0';",
+                    "vvec_{iname}_push(&out, (VStr){{p, len}});start = i + 1;",
+                    "}}}}return out;}}\n"
+                ),
+                vct = vct,
+                iname = iname
+            ));
+        }
+        if self.has_inst("Option", &[Ty::Int64]) {
+            let oct = ctype_inst("Option", std::slice::from_ref(&Ty::Int64));
+            let none = format!("({oct}){{ .tag = 1 }}", oct = oct);
+            let some = |x: &str| {
+                format!(
+                    "({oct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    oct = oct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {oct} vstr_parse_int(VStr v) {{",
+                    "int64_t n = v.s ? v.len : 0;int64_t i = 0;int neg = 0;",
+                    "if (i < n && (v.s[i] == '+' || v.s[i] == '-')) {{ neg = (v.s[i] == '-'); i++; }}",
+                    "if (i >= n) return {none};",
+                    "uint64_t acc = 0;",
+                    "for (; i < n; i++) {{",
+                    "if (v.s[i] < '0' || v.s[i] > '9') return {none};",
+                    "unsigned d = (unsigned)(v.s[i] - '0');",
+                    "if (acc > (18446744073709551615ULL - d) / 10) return {none};",
+                    "acc = acc * 10 + d;}}",
+                    "if (!neg && acc > 9223372036854775807ULL) return {none};",
+                    "if (neg && acc > 9223372036854775808ULL) return {none};",
+                    "int64_t val = neg ? (int64_t)(~acc + 1) : (int64_t)acc;",
+                    "return {some};}}\n"
+                ),
+                oct = oct,
+                none = none,
+                some = some("val")
+            ));
+        }
+        if self.has_inst("Option", &[Ty::Float64]) {
+            let oct = ctype_inst("Option", std::slice::from_ref(&Ty::Float64));
+            let none = format!("({oct}){{ .tag = 1 }}", oct = oct);
+            let some = |x: &str| {
+                format!(
+                    "({oct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    oct = oct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {oct} vstr_parse_float(VStr v) {{",
+                    "int64_t n = v.s ? v.len : 0;",
+                    "if (n == 0) return {none};",
+                    "char *p = (char *)malloc((size_t)n + 1);",
+                    "if (!p) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "memcpy(p, v.s, (size_t)n);p[n] = '\\0';",
+                    "char *end = 0;double d = strtod(p, &end);",
+                    "int ok = (end != p && *end == '\\0');free(p);",
+                    "if (!ok) return {none};",
+                    "return {some};}}\n"
+                ),
+                oct = oct,
+                none = none,
+                some = some("d")
+            ));
+        }
+        Ok(())
+    }
+
+    /// J1 `String` methods (sema checked name/arity/types; receiver borrows).
+    fn emit_str_method(&mut self, method: &str, r: &str, args: &[Expr]) -> Result<String, Ice> {
+        match method {
+            "trim" => Ok(format!("vstr_trim({})", r)),
+            "clone" => Ok(format!("vstr_clone({})", r)),
+            "len" => Ok(format!("vstr_len({})", r)),
+            "nchars" => Ok(format!("vstr_nchars({})", r)),
+            "to_upper" => Ok(format!("vstr_to_upper({})", r)),
+            "to_lower" => Ok(format!("vstr_to_lower({})", r)),
+            "byte_at" => {
+                let a = args.first().ok_or_else(|| Ice("byte_at arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let v = self.emit_expr(a)?;
+                self.cur_move = saved;
+                Ok(format!("vstr_byte_at({}, (int64_t)({}))", r, v))
+            }
+            "slice" => {
+                let a = args.first().ok_or_else(|| Ice("slice arity".into()))?;
+                let b = args.get(1).ok_or_else(|| Ice("slice arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let va = self.emit_expr(a)?;
+                let vb = self.emit_expr(b)?;
+                self.cur_move = saved;
+                Ok(format!(
+                    "vstr_slice({}, (int64_t)({}), (int64_t)({}))",
+                    r, va, vb
+                ))
+            }
+            "split" => {
+                let a = args.first().ok_or_else(|| Ice("split arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let d = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vstr_split({}, {})", r, d))
+            }
+            "parse_int" => Ok(format!("vstr_parse_int({})", r)),
+            "parse_float" => Ok(format!("vstr_parse_float({})", r)),
+            _ => Err(Ice("unknown String method".into())),
+        }
+    }
+
+    /// J2 CSV/JSON/file wrappers over the prelude row buffers. The plain
+    /// layouts are identical to the generated vec structs, so conversion
+    /// is a field copy. Each emits only when its result type was recorded.
+    fn emit_csv_kernels(&mut self) -> Result<(), Ice> {
+        let vvec = |t: Ty| Ty::Generic {
+            base: "Vec".to_string(),
+            args: vec![t],
+        };
+        let rows_t = vvec(vvec(Ty::Str));
+        let inner_vec_t = vvec(Ty::Str);
+        // `read_file(path): Result<String, String>`.
+        if self.has_inst("Result", &[Ty::Str, Ty::Str]) {
+            let rct = ctype_inst("Result", &[Ty::Str, Ty::Str]);
+            let some = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            let none = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {rct} v_read_file_wrap(VStr path) {{",
+                    "VFileOut o = v_read_file(path);",
+                    "if (o.has_err) return {err};",
+                    "return {ok};}}\n"
+                ),
+                rct = rct,
+                err = none("o.err"),
+                ok = some("o.text")
+            ));
+        }
+        // `csv_rows(content, strict): Result<Vec<Vec<String>>, String>`.
+        if self.has_inst("Result", &[rows_t.clone(), Ty::Str]) {
+            let rct = ctype_inst("Result", &[rows_t.clone(), Ty::Str]);
+            let vct = ctype_inst("Vec", std::slice::from_ref(&inner_vec_t));
+            let some = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            let none = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {rct} v_csv_rows_wrap(VStr content, int strict) {{",
+                    "VCsvTable t = {{NULL, 0, 0}};VStr emsg = {{NULL, 0}};",
+                    "int64_t bad = vcsv_run(&t, NULL, content.s ? content.s : \"\", content.s ? content.len : 0, strict ? 0 : 1, &emsg);",
+                    "if (bad) {{ vcsv_free_table(&t); return {err}; }}",
+                    "{vct} rows;rows.data = ({vinner} *)t.rows;rows.len = t.nrows;rows.cap = t.caprows;",
+                    "return {ok};}}\n"
+                ),
+                rct = rct,
+                vct = vct,
+                vinner = ctype_inst("Vec", std::slice::from_ref(&Ty::Str)),
+                err = none("emsg"),
+                ok = some("rows")
+            ));
+        }
+        // `csv_bad_rows(content): Vec<Int64>` (rows strict mode rejects).
+        if self.has_inst("Vec", &[Ty::Int64]) {
+            let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int64));
+            self.out.push_str(&format!(
+                concat!(
+                    "static {vct} v_csv_bad_rows_wrap(VStr content) {{",
+                    "VCsvTable t = {{NULL, 0, 0}};VBadRows bad = {{NULL, 0, 0}};VStr dummy = {{NULL, 0}};",
+                    "vcsv_run(&t, &bad, content.s ? content.s : \"\", content.s ? content.len : 0, 1, &dummy);",
+                    "vcsv_free_table(&t);",
+                    "{vct} out;out.data = bad.rows;out.len = bad.n;out.cap = bad.cap;",
+                    "return out;}}\n"
+                ),
+                vct = vct
+            ));
+        }
+        // `json_rows(content): Result<Vec<Vec<String>>, String>` (row 0 = keys).
+        if self.has_inst("Result", &[rows_t.clone(), Ty::Str]) {
+            let rct = ctype_inst("Result", &[rows_t.clone(), Ty::Str]);
+            let vct = ctype_inst("Vec", std::slice::from_ref(&inner_vec_t));
+            let some = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            let none = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {rct} v_json_rows_wrap(VStr content) {{",
+                    "VCsvTable t = {{NULL, 0, 0}};VStr emsg = {{NULL, 0}};",
+                    "int64_t bad = vjson_parse(&t, content.s ? content.s : \"\", content.s ? content.len : 0, &emsg);",
+                    "if (bad) {{ vcsv_free_table(&t); return {err}; }}",
+                    "{vct} rows;rows.data = ({vinner} *)t.rows;rows.len = t.nrows;rows.cap = t.caprows;",
+                    "return {ok};}}\n"
+                ),
+                rct = rct,
+                vct = vct,
+                vinner = ctype_inst("Vec", std::slice::from_ref(&Ty::Str)),
+                err = none("emsg"),
+                ok = some("rows")
+            ));
+        }
+        // `write_file(path, content): Result<Int64, String>` (bytes written).
+        if self.has_inst("Result", &[Ty::Int64, Ty::Str]) {
+            let rct = ctype_inst("Result", &[Ty::Int64, Ty::Str]);
+            let some = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            let none = |x: &str| {
+                format!(
+                    "({rct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = {x} }} }} }}",
+                    rct = rct,
+                    x = x
+                )
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static {rct} v_write_file_wrap(VStr path, VStr content) {{",
+                    "if (!path.s || path.len == 0) return {e1};",
+                    "FILE *f = fopen(path.s, \"wb\");",
+                    "if (!f) {{ VStr pre = vstr_from_c(\"cannot open file: \");",
+                    "VStr m = vstr_concat(pre, path); vstr_free(&pre); return {e2}; }}",
+                    "size_t n = content.s ? (size_t)content.len : 0;",
+                    "size_t wrote = n ? fwrite(content.s, 1, n, f) : 0;",
+                    "fclose(f);",
+                    "if (wrote != n) {{ VStr m2 = vstr_from_c(\"short write\"); return {e3}; }}",
+                    "return {ok};}}\n"
+                ),
+                rct = rct,
+                e1 = none("vstr_from_c(\"empty path\")"),
+                e2 = none("m"),
+                e3 = none("m2"),
+                ok = some("(int64_t)wrote")
+            ));
+        }
+        // K4: deterministic parallel sum over `Vec<Float64>` (fixed
+        // 4096-element blocks summed sequentially, block partials
+        // combined in index order: the partition is a pure function of
+        // the length, so every thread count gives bit-identical results).
+        if self.has_inst("Vec", &[Ty::Float64]) {
+            let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Float64));
+            self.out.push_str(&format!(
+                concat!(
+                    "typedef struct {{ double *a; int64_t n; int64_t nb;",
+                    " int64_t tid; int64_t nt; double *partials; }} VParSumTask;",
+                    "static void *vpar_sum_work(void *p) {{",
+                    "VParSumTask *t = (VParSumTask *)p;",
+                    "for (int64_t b = t->tid; b < t->nb; b += t->nt) {{",
+                    "int64_t lo = b * 4096; int64_t hi = lo + 4096;",
+                    "if (hi > t->n) hi = t->n;",
+                    "double s = 0.0;",
+                    "for (int64_t i = lo; i < hi; i++) s += t->a[i];",
+                    "t->partials[b] = s;",
+                    "}} return NULL; }}",
+                    "static double v_par_sum_wrap({vct} *v, int64_t nt) {{",
+                    "double *a = (v && v->data) ? v->data : NULL;",
+                    "int64_t n = (v && a) ? v->len : 0;",
+                    "if (n <= 0) return 0.0;",
+                    "if (nt < 1) nt = 1;",
+                    "int64_t nb = (n + 4095) / 4096;",
+                    "if (nt > nb) nt = nb;",
+                    "double *partials = (double *)malloc((size_t)nb * sizeof(double));",
+                    "if (!partials) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "if (nt == 1) {{",
+                    "VParSumTask one = {{a, n, nb, 0, 1, partials}};",
+                    "vpar_sum_work(&one);",
+                    "}} else {{",
+                    "pthread_t *ths = (pthread_t *)malloc((size_t)nt * sizeof(pthread_t));",
+                    "VParSumTask *tasks = (VParSumTask *)malloc((size_t)nt * sizeof(VParSumTask));",
+                    "if (!ths || !tasks) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "int64_t started = 0; int failed = 0;",
+                    "for (int64_t t = 0; t < nt; t++) {{",
+                    "tasks[t] = (VParSumTask){{a, n, nb, t, nt, partials}};",
+                    "if (pthread_create(&ths[t], NULL, vpar_sum_work, &tasks[t]) != 0)",
+                    " {{ failed = 1; break; }}",
+                    "started++; }}",
+                    "for (int64_t t = 0; t < started; t++) pthread_join(ths[t], NULL);",
+                    "if (failed) {{",
+                    "for (int64_t b = 0; b < nb; b++) {{",
+                    "int64_t lo = b * 4096; int64_t hi = lo + 4096;",
+                    "if (hi > n) hi = n;",
+                    "double s = 0.0;",
+                    "for (int64_t i = lo; i < hi; i++) s += a[i];",
+                    "partials[b] = s; }} }}",
+                    "free(ths); free(tasks); }}",
+                    "double total = 0.0;",
+                    "for (int64_t b = 0; b < nb; b++) total += partials[b];",
+                    "free(partials); return total; }}\n"
+                ),
+                vct = vct,
+            ));
+        }
+        // F1: data-parallel map over named `(double) -> double` functions
+        // (same fixed-4096-block discipline as `par_sum`; concatenation in
+        // index order is trivially bit-identical across thread counts).
+        if self.has_inst("Vec", &[Ty::Float64]) {
+            let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Float64));
+            self.out.push_str(&format!(
+                concat!(
+                    "typedef struct {{ double *a; double *o; int64_t n; int64_t nb;",
+                    " int64_t tid; int64_t nt; double (*f)(double); }} VParMapTask;",
+                    "static void *vpar_map_work(void *p) {{",
+                    "VParMapTask *t = (VParMapTask *)p;",
+                    "for (int64_t b = t->tid; b < t->nb; b += t->nt) {{",
+                    "int64_t lo = b * 4096; int64_t hi = lo + 4096;",
+                    "if (hi > t->n) hi = t->n;",
+                    "for (int64_t i = lo; i < hi; i++) t->o[i] = t->f(t->a[i]);",
+                    "}} return NULL; }}",
+                    "static {vct} v_par_map_wrap({vct} *v, double (*f)(double), int64_t nt) {{",
+                    "double *a = (v && v->data) ? v->data : NULL;",
+                    "int64_t n = (v && a) ? v->len : 0;",
+                    "{vct} o = vvec_Vec_Float64_new();",
+                    "if (n <= 0) return o;",
+                    "o.data = (double *)malloc((size_t)n * sizeof(double));",
+                    "if (!o.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "o.len = n; o.cap = n;",
+                    "if (nt < 1) nt = 1;",
+                    "int64_t nb = (n + 4095) / 4096;",
+                    "if (nt > nb) nt = nb;",
+                    "if (nt == 1) {{",
+                    "VParMapTask one = {{a, o.data, n, nb, 0, 1, f}};",
+                    "vpar_map_work(&one);",
+                    "}} else {{",
+                    "pthread_t *ths = (pthread_t *)malloc((size_t)nt * sizeof(pthread_t));",
+                    "VParMapTask *tasks = (VParMapTask *)malloc((size_t)nt * sizeof(VParMapTask));",
+                    "if (!ths || !tasks) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "int64_t started = 0; int failed = 0;",
+                    "for (int64_t t = 0; t < nt; t++) {{",
+                    "tasks[t] = (VParMapTask){{a, o.data, n, nb, t, nt, f}};",
+                    "if (pthread_create(&ths[t], NULL, vpar_map_work, &tasks[t]) != 0)",
+                    " {{ failed = 1; break; }}",
+                    "started++; }}",
+                    "for (int64_t t = 0; t < started; t++) pthread_join(ths[t], NULL);",
+                    "if (failed) {{",
+                    "for (int64_t i = 0; i < n; i++) o.data[i] = f(a[i]); }}",
+                    "free(ths); free(tasks); }}",
+                    "return o; }}\n"
+                ),
+                vct = vct,
+            ));
+        }
+        // Stepped integer sequence `seq(lo, hi, by)`: empty when the step
+        // cannot reach (wrong direction); `by == 0` aborts (trap).
+        if self.has_inst("Vec", &[Ty::Int64]) {
+            let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int64));
+            self.out.push_str(&format!(
+                concat!(
+                    "static {vct} v_seq_wrap(int64_t lo, int64_t hi, int64_t by) {{",
+                    "{vct} o = vvec_Vec_Int64_new();",
+                    "if (by == 0) {{ fprintf(stderr, \"seq step is zero\\n\"); abort(); }}",
+                    "if ((by > 0 && lo <= hi) || (by < 0 && lo >= hi)) {{",
+                    "int64_t x = lo;",
+                    "for (;;) {{ vvec_Vec_Int64_push(&o, x);",
+                    " if (x == hi) break;",
+                    " if ((by > 0 && x > hi - by) || (by < 0 && x < hi - by)) break;",
+                    " x += by; }} }}",
+                    "return o; }}\n"
+                ),
+                vct = vct,
+            ));
         }
         Ok(())
     }
@@ -1132,7 +2480,7 @@ impl<'a> Gen<'a> {
             let want_vec_res = self.has_inst("Result", &[vt_here.clone(), shape.clone()]);
             if want_vec_res {
                 self.out.push_str(&format!(
-                    "static {rct} vvec_{iname}_add({vct} *a, {vct} *b) {{\nif (a->len != b->len) {{ return {shape}; }}\n{vct} r = vvec_{iname}_new();\nfor (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] + b->data[i]; vvec_{iname}_push(&r, x); }}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = r }} }} }};\nreturn o;\n}}\n",
+                    "static {rct} vvec_{iname}_add({vct} *a, {vct} *b) {{\n{vct} r = vvec_{iname}_new();\nif (a->len == b->len) {{ for (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] + b->data[i]; vvec_{iname}_push(&r, x); }} }} else if (a->len == 1 && b->len > 0) {{ for (int64_t i = 0; i < b->len; ++i) {{ {et} x = a->data[0] + b->data[i]; vvec_{iname}_push(&r, x); }} }} else if (b->len == 1 && a->len > 0) {{ for (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] + b->data[0]; vvec_{iname}_push(&r, x); }} }} else {{ return {shape}; }}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = r }} }} }};\nreturn o;\n}}\n",
                     rct = rct,
                     iname = iname,
                     vct = vct,
@@ -1140,7 +2488,7 @@ impl<'a> Gen<'a> {
                     shape = shape_lit("a->len", "b->len")
                 ));
                 self.out.push_str(&format!(
-                    "static {rct} vvec_{iname}_mul({vct} *a, {vct} *b) {{\nif (a->len != b->len) {{ return {shape}; }}\n{vct} r = vvec_{iname}_new();\nfor (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] * b->data[i]; vvec_{iname}_push(&r, x); }}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = r }} }} }};\nreturn o;\n}}\n",
+                    "static {rct} vvec_{iname}_mul({vct} *a, {vct} *b) {{\n{vct} r = vvec_{iname}_new();\nif (a->len == b->len) {{ for (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] * b->data[i]; vvec_{iname}_push(&r, x); }} }} else if (a->len == 1 && b->len > 0) {{ for (int64_t i = 0; i < b->len; ++i) {{ {et} x = a->data[0] * b->data[i]; vvec_{iname}_push(&r, x); }} }} else if (b->len == 1 && a->len > 0) {{ for (int64_t i = 0; i < a->len; ++i) {{ {et} x = a->data[i] * b->data[0]; vvec_{iname}_push(&r, x); }} }} else {{ return {shape}; }}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = r }} }} }};\nreturn o;\n}}\n",
                     rct = rct,
                     iname = iname,
                     vct = vct,
@@ -1197,6 +2545,156 @@ impl<'a> Gen<'a> {
                 let _ = rf;
             }
         }
+        // Membership kernel (`%in%`): emitted only for element types
+        // with an `is_in` call (usage-gated like print helpers).
+        // Strings compare via `vstr_eq`; NaN never matches, documented.
+        if matches!(t, Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str)
+            && self.is_in_insts.contains(&t.name())
+        {
+            let bct = ctype_inst("Vec", std::slice::from_ref(&Ty::Bool));
+            let vct = ctype_inst("Vec", std::slice::from_ref(&t));
+            let eq = if matches!(t, Ty::Str) {
+                "vstr_eq(a->data[i], b->data[j])".to_string()
+            } else {
+                "a->data[i] == b->data[j]".to_string()
+            };
+            self.out.push_str(&format!(
+                    "static {bct} vvec_{iname}_is_in({vct} *a, {vct} *b) {{\n{bct} r = vvec_Vec_Bool_new();\nfor (int64_t i = 0; i < a->len; ++i) {{ int f = 0;\nfor (int64_t j = 0; j < b->len && !f; ++j) {{ if ({eq}) {{ f = 1; }} }}\nvvec_Vec_Bool_push(&r, f); }}\nreturn r; }}\n",
+                    bct = bct,
+                    iname = iname,
+                    vct = vct,
+                    eq = eq,
+                ));
+        }
+
+        // J5 shuffle/sample: element-agnostic Fisher-Yates over any `T`
+        // (memcpy swap: permutation only, never duplicates ownership).
+        // Sampled elements clone out like `get`.
+        let elem_copy = if self.type_needs_drop(&t) {
+            self.clone_call(&t, "v->data[idx[i]]")
+        } else {
+            "v->data[idx[i]]".to_string()
+        };
+        self.out.push_str(&format!(
+            concat!(
+                "static void vvec_{iname}_shuffle({vct} *v, VRng *r) {{",
+                "if (v->len < 2) return;",
+                "char tmp[64];",
+                "for (int64_t i = v->len - 1; i > 0; --i) {{",
+                "int64_t j = (int64_t)(vrng_next(r) % (uint64_t)(i + 1));",
+                "if ((uint64_t)sizeof({et}) <= sizeof(tmp)) {{",
+                "memcpy(tmp, &v->data[i], sizeof({et}));",
+                "memcpy(&v->data[i], &v->data[j], sizeof({et}));",
+                "memcpy(&v->data[j], tmp, sizeof({et}));",
+                "}} else {{",
+                "char *big = (char *)malloc(sizeof({et}));",
+                "if (!big) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                "memcpy(big, &v->data[i], sizeof({et}));",
+                "memcpy(&v->data[i], &v->data[j], sizeof({et}));",
+                "memcpy(&v->data[j], big, sizeof({et}));",
+                "free(big);",
+                "}}}}",
+                "}}\n",
+                "static {vct} vvec_{iname}_sample({vct} *v, int64_t n, VRng *r) {{",
+                "{vct} out = vvec_{iname}_new();",
+                "if (v->len == 0 || n <= 0) return out;",
+                "if (n > v->len) n = v->len;",
+                "int64_t *idx = (int64_t *)malloc((size_t)v->len * sizeof(int64_t));",
+                "if (!idx) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                "for (int64_t i = 0; i < v->len; ++i) idx[i] = i;",
+                "for (int64_t i = 0; i < n; ++i) {{",
+                "int64_t j = i + (int64_t)(vrng_next(r) % (uint64_t)(v->len - i));",
+                "int64_t t2 = idx[i]; idx[i] = idx[j]; idx[j] = t2;",
+                "}}",
+                "for (int64_t i = 0; i < n; ++i) vvec_{iname}_push(&out, {elem});",
+                "free(idx);",
+                "return out;}}\n"
+            ),
+            iname = iname,
+            vct = ct,
+            et = et,
+            elem = elem_copy
+        ));
+        // M2 stable sort (bottom-up mergesort) + order permutation.
+        // Comparison is a total order with NaN last (R-like na.last);
+        // merge takes the left run unless the right is strictly less,
+        // so both are stable and ties keep original order.
+        if matches!(t, Ty::Int32 | Ty::Int64 | Ty::Float64 | Ty::Bool | Ty::Str) {
+            let cmp = |x: &str, y: &str| {
+                match &t {
+                Ty::Float64 => format!("(({x}) < ({y}) ? -1 : (({x}) > ({y}) ? 1 : (({x}) == ({y}) ? 0 : ((({x}) != ({x})) ? ((({y}) != ({y})) ? 0 : 1) : -1))))"),
+                Ty::Str => format!("((vstr_lt({x}, {y})) ? -1 : ((vstr_lt({y}, {x})) ? 1 : 0))"),
+                _ => format!("(({x}) < ({y}) ? -1 : (({x}) > ({y}) ? 1 : 0))"),
+            }
+            };
+            // One mergesort pass skeleton; {l}/{r} are the element reads
+            // from the left/right runs, {dst} the destination slot.
+            // NOTE: substituted as a value (single braces), unlike the
+            // format! templates around it.
+            let pass = "for (int64_t lo = 0; lo < v->len; lo += 2 * w) { int64_t mid = lo + w < v->len ? lo + w : v->len; int64_t hi = lo + 2 * w < v->len ? lo + 2 * w : v->len; int64_t i = lo, j = mid, k = lo;";
+            let merge = |l: &str, r: &str, dst: &str, dl: &str, dr: &str| {
+                format!("while (i < mid && j < hi) {{ if ({c} < 0) {{ tmp[k++] = {r}; j++; }} else {{ tmp[k++] = {l}; i++; }} }} while (i < mid) {{ tmp[k++] = {l}; i++; }} while (j < hi) {{ tmp[k++] = {r}; j++; }} for (k = lo; k < hi; ++k) {{ {dst} = tmp[k]; }} }}",
+                    c = cmp(dr, dl))
+            };
+            self.out.push_str(&format!(
+                concat!(
+                    "static void vvec_{iname}_sort({vct} *v) {{",
+                    "if (v->len < 2) return;",
+                    "{et} *tmp = ({et} *)malloc((size_t)v->len * sizeof({et}));",
+                    "if (!tmp) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                    "for (int64_t w = 1; w < v->len; w *= 2) {{",
+                    "{pass}",
+                    "{merge}",
+                    "}}",
+                    "free(tmp);",
+                    "}}\n"
+                ),
+                iname = iname,
+                vct = ct,
+                et = et,
+                pass = pass,
+                merge = merge(
+                    "v->data[i]",
+                    "v->data[j]",
+                    "v->data[k]",
+                    "v->data[i]",
+                    "v->data[j]"
+                ),
+            ));
+            // order() references VVec_Int64 helpers, so its definition is
+            // gated on that instantiation existing (sema records it
+            // whenever `order` is called; without a call nothing references
+            // the missing helpers). Sort is self-contained like shuffle.
+            if self.has_inst("Vec", &[Ty::Int64]) {
+                self.out.push_str(&format!(
+                    concat!(
+                        "static VVec_Int64 vvec_{iname}_order({vct} *v) {{",
+                        "VVec_Int64 idx = vvec_Vec_Int64_new();",
+                        "for (int64_t i = 0; i < v->len; ++i) {{ vvec_Vec_Int64_push(&idx, i); }}",
+                        "if (v->len < 2) return idx;",
+                        "int64_t *tmp = (int64_t *)malloc((size_t)v->len * sizeof(int64_t));",
+                        "if (!tmp) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                        "for (int64_t w = 1; w < v->len; w *= 2) {{",
+                        "{pass}",
+                        "{merge}",
+                        "}}",
+                        "free(tmp);",
+                        "return idx;",
+                        "}}\n"
+                    ),
+                    iname = iname,
+                    vct = ct,
+                    pass = pass,
+                    merge = merge(
+                        "idx.data[i]",
+                        "idx.data[j]",
+                        "idx.data[k]",
+                        "v->data[idx.data[i]]",
+                        "v->data[idx.data[j]]"
+                    ),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1212,7 +2710,7 @@ impl<'a> Gen<'a> {
         if self.type_needs_drop(&t) {
             let stmt = match &t {
                 Ty::Str => "vstr_free(&v->data[i]);".to_string(),
-                _ => format!("{};", self.drop_call(&t, "&v->data[i]")),
+                _ => format!("{};", self.drop_call(&t, "v->data[i]")),
             };
             self.out.push_str(&format!(
                 "for (int64_t i = 0; i < v->len; ++i) {{ {} }}\n",
@@ -1243,6 +2741,204 @@ impl<'a> Gen<'a> {
             self.out.push_str("c.data[i] = v.data[i];\n");
         }
         self.out.push_str("}\n}\nreturn c;\n}\n");
+        Ok(())
+    }
+
+    /// F1 factor runtime: levels/codes store plus the level-algebra
+    /// verbs. Codes are 1-based, 0 is missing. Inputs borrow; every
+    /// result is a fresh owned value (callers free via drop glue).
+    fn emit_factor_fns(&mut self) -> Result<(), Ice> {
+        let ct = ctype_inst("Factor", &[]);
+        let lct = ctype_inst("Vec", std::slice::from_ref(&Ty::Str));
+        let cct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int32));
+        self.out.push_str(&format!(
+            "static void v_drop_Factor_({ct} *v) {{\nv_drop_Vec_String(&v->levels);\nv_drop_Vec_Int32(&v->codes);\n}}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {ct} v_clone_Factor_({ct} v) {{\n{ct} c = {{v_clone_Vec_String(v.levels), v_clone_Vec_Int32(v.codes)}};\nreturn c;\n}}\n"
+        ));
+        // Constructor: levels in first-appearance order, `""` is missing.
+        self.out.push_str(&format!(
+            "static {ct} vfactor_from_strings({lct} *s) {{\n{ct} f = {{vvec_Vec_String_new(), vvec_Vec_Int32_new()}};\nfor (int64_t i = 0; i < s->len; ++i) {{\nif (s->data[i].len == 0) {{ vvec_Vec_Int32_push(&f.codes, 0); continue; }}\nint32_t found = -1;\nfor (int64_t k = 0; k < f.levels.len; ++k) {{\nif (vstr_eq(f.levels.data[k], s->data[i])) {{ found = (int32_t)k; break; }}\n}}\nif (found < 0) {{\nvvec_Vec_String_push(&f.levels, vstr_clone(s->data[i]));\nfound = (int32_t)(f.levels.len - 1);\n}}\nvvec_Vec_Int32_push(&f.codes, found + 1);\n}}\nreturn f;\n}}\n"
+        ));
+        // Accessors clone out (never alias the store).
+        self.out.push_str(&format!(
+            "static {lct} vfactor_levels({ct} *v) {{ return v_clone_Vec_String(v->levels); }}\nstatic {cct} vfactor_codes({ct} *v) {{ return v_clone_Vec_Int32(v->codes); }}\n"
+        ));
+        // Missing codes render as NA (documented; collides with a literal
+        // "NA" level exactly like R's own NA handling).
+        self.out.push_str(&format!(
+            "static {lct} vfactor_as_strings({ct} *v) {{\n{lct} o = vvec_Vec_String_new();\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nif (c <= 0 || c > v->levels.len) {{ vvec_Vec_String_push(&o, vstr_from_c(\"NA\")); }}\nelse {{ vvec_Vec_String_push(&o, vstr_clone(v->levels.data[c - 1])); }}\n}}\nreturn o;\n}}\n"
+        ));
+        // Move one level first; unknown names return an unchanged clone.
+        self.out.push_str(&format!(
+            "static {ct} vfactor_relevel({ct} *v, VStr lvl) {{\nint64_t at = -1;\nfor (int64_t k = 0; k < v->levels.len; ++k) {{\nif (vstr_eq(v->levels.data[k], lvl)) {{ at = k; break; }}\n}}\nif (at < 0) {{ return v_clone_Factor_(*v); }}\n{ct} f = {{vvec_Vec_String_new(), vvec_Vec_Int32_new()}};\nvvec_Vec_String_push(&f.levels, vstr_clone(v->levels.data[at]));\nfor (int64_t k = 0; k < v->levels.len; ++k) {{\nif (k != at) {{ vvec_Vec_String_push(&f.levels, vstr_clone(v->levels.data[k])); }}\n}}\nint64_t n = v->levels.len;\nint32_t *map = (int32_t *)malloc((size_t)(n + 1) * sizeof(int32_t));\nif (!map) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t k = 0; k < n; ++k) {{ map[k] = (int32_t)(k < at ? k + 2 : (k == at ? 1 : k + 1)); }}\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nvvec_Vec_Int32_push(&f.codes, c <= 0 ? 0 : map[c - 1]);\n}}\nfree(map);\nreturn f;\n}}\n"
+        ));
+        // Levels by descending frequency (ties keep first-appearance order).
+        self.out.push_str(&format!(
+            "static {ct} vfactor_reorder_by_count({ct} *v) {{\nint64_t n = v->levels.len;\n{ct} f = {{vvec_Vec_String_new(), vvec_Vec_Int32_new()}};\nif (n == 0) {{ return f; }}\nint64_t *cnt = (int64_t *)calloc((size_t)n, sizeof(int64_t));\nif (!cnt) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nif (c > 0 && c <= n) {{ cnt[c - 1] += 1; }}\n}}\nint64_t *ord = (int64_t *)malloc((size_t)(n + 1) * sizeof(int64_t));\nif (!ord) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t k = 0; k < n; ++k) {{ ord[k] = k; }}\nfor (int64_t i = 1; i < n; ++i) {{\nint64_t t = ord[i];\nint64_t j = i;\nwhile (j > 0 && cnt[t] > cnt[ord[j - 1]]) {{ ord[j] = ord[j - 1]; --j; }}\nord[j] = t;\n}}\nint32_t *map = (int32_t *)malloc((size_t)(n + 1) * sizeof(int32_t));\nif (!map) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t k = 0; k < n; ++k) {{\nvvec_Vec_String_push(&f.levels, vstr_clone(v->levels.data[ord[k]]));\nmap[ord[k]] = (int32_t)(k + 1);\n}}\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nvvec_Vec_Int32_push(&f.codes, c <= 0 ? 0 : map[c - 1]);\n}}\nfree(cnt); free(ord); free(map);\nreturn f;\n}}\n"
+        ));
+        // Drop unused levels, remap surviving codes (missing preserved).
+        self.out.push_str(&format!(
+            "static {ct} vfactor_droplevels({ct} *v) {{\nint64_t n = v->levels.len;\n{ct} f = {{vvec_Vec_String_new(), vvec_Vec_Int32_new()}};\nint32_t *map = (int32_t *)calloc((size_t)(n + 1), sizeof(int32_t));\nif (!map) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nif (c > 0 && c <= n) {{ map[c - 1] = 1; }}\n}}\nint32_t next = 1;\nfor (int64_t k = 0; k < n; ++k) {{\nif (map[k]) {{\nvvec_Vec_String_push(&f.levels, vstr_clone(v->levels.data[k]));\nmap[k] = next;\nnext += 1;\n}}\n}}\nfor (int64_t i = 0; i < v->codes.len; ++i) {{\nint32_t c = v->codes.data[i];\nvvec_Vec_Int32_push(&f.codes, c <= 0 ? 0 : map[c - 1]);\n}}\nfree(map);\nreturn f;\n}}\n"
+        ));
+        let _ = (ct, lct, cct);
+        Ok(())
+    }
+
+    /// M1 dense-matrix runtime: drop/clone plus constructors and the
+    /// LU-backed kernels (transpose, matmul, lu_solve, det, inverse).
+    /// Row-major `double` buffer; empty matrices hold NULL (drop skips it).
+    /// Fallible kernels report `Result<_, ShapeError>`; `from_rows` reports
+    /// `Result<Mat, String>` (ragged rows are data, not shapes).
+    fn emit_mat_fns(&mut self) -> Result<(), Ice> {
+        let mat_ty = Ty::Generic {
+            base: "Mat".to_string(),
+            args: vec![],
+        };
+        let f64_vec = Ty::Generic {
+            base: "Vec".to_string(),
+            args: vec![Ty::Float64],
+        };
+        let shape = Ty::Struct("ShapeError".to_string());
+        let ct = ctype_inst("Mat", &[]);
+        let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Float64));
+        let vvct = ctype_inst("Vec", std::slice::from_ref(&f64_vec));
+        let shape_ct = ctype_name("ShapeError");
+        let rct = ctype_inst("Result", &[mat_ty.clone(), shape.clone()]);
+        let rvct = ctype_inst("Result", &[f64_vec.clone(), shape.clone()]);
+        let rsct = ctype_inst("Result", &[mat_ty.clone(), Ty::Str]);
+        // Drop + clone (C23: no implicit declarations; defined once here).
+        self.out.push_str(&format!(
+            "static void v_drop_Mat_({ct} *v) {{\nif (v->data) {{ free(v->data); v->data = NULL; }}\nv->rows = 0; v->cols = 0;\n}}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {ct} v_clone_Mat_({ct} v) {{\n{ct} c = {{NULL, v.rows, v.cols}};\nint64_t n = v.rows * v.cols;\nif (n > 0) {{\nc.data = (double *)malloc((size_t)n * sizeof(double));\nif (!c.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{ c.data[i] = v.data[i]; }}\n}}\nreturn c;\n}}\n"
+        ));
+        // Constructors (negative dimensions trap like OOB indexing).
+        self.out.push_str(&format!(
+            "static {ct} vmat_zeros(int64_t r, int64_t c) {{\nif (r < 0 || c < 0) {{ fprintf(stderr, \"negative matrix dimension\\n\"); abort(); }}\n{ct} m = {{NULL, r, c}};\nint64_t n = r * c;\nif (n > 0) {{\nm.data = (double *)calloc((size_t)n, sizeof(double));\nif (!m.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\n}}\nreturn m;\n}}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {ct} vmat_identity(int64_t n) {{\nif (n < 0) {{ fprintf(stderr, \"negative matrix dimension\\n\"); abort(); }}\n{ct} m = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ m.data[i * n + i] = 1.0; }}\nreturn m;\n}}\n"
+        ));
+        // `from_rows` only when its `Result<Mat, String>` layout exists
+        // (mirrors the Vec kernel gates: kernels reference layouts).
+        let want_rows = self.has_inst("Result", &[mat_ty.clone(), Ty::Str]);
+        if want_rows {
+            self.out.push_str(&format!(
+            "static {rsct} vmat_from_rows({vvct} *rows) {{\nint64_t r = rows->len;\nint64_t c = r > 0 ? rows->data[0].len : 0;\nfor (int64_t i = 1; i < r; ++i) {{\nif (rows->data[i].len != c) {{\n{rsct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = vstr_from_c(\"ragged rows\") }} }} }};\nreturn o;\n}}\n}}\n{ct} m = vmat_zeros(r, c);\nfor (int64_t i = 0; i < r; ++i) {{\nfor (int64_t j = 0; j < c; ++j) {{ m.data[i * c + j] = rows->data[i].data[j]; }}\n}}\n{rsct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n"
+        ));
+        }
+        // Methods.
+        self.out.push_str(&format!(
+            "static int64_t vmat_rows({ct} *v) {{ return v->rows; }}\nstatic int64_t vmat_cols({ct} *v) {{ return v->cols; }}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {ct} vmat_transpose({ct} *v) {{\n{ct} m = vmat_zeros(v->cols, v->rows);\nfor (int64_t i = 0; i < v->rows; ++i) {{\nfor (int64_t j = 0; j < v->cols; ++j) {{ m.data[j * v->rows + i] = v->data[i * v->cols + j]; }}\n}}\nreturn m;\n}}\n"
+        ));
+        // Outer and Kronecker products (total: dimensions always valid).
+        self.out.push_str(&format!(
+            "static {ct} vmat_outer({vct} *a, {vct} *b) {{\n{ct} m = vmat_zeros(a->len, b->len);\nfor (int64_t i = 0; i < a->len; ++i) {{\nfor (int64_t j = 0; j < b->len; ++j) {{ m.data[i * b->len + j] = a->data[i] * b->data[j]; }}\n}}\nreturn m;\n}}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {ct} vmat_kron({ct} *a, {ct} *b) {{\nint64_t r = a->rows * b->rows;\nint64_t c = a->cols * b->cols;\n{ct} m = vmat_zeros(r, c);\nfor (int64_t i = 0; i < a->rows; ++i) {{\nfor (int64_t j = 0; j < a->cols; ++j) {{\ndouble x = a->data[i * a->cols + j];\nfor (int64_t k = 0; k < b->rows; ++k) {{\nfor (int64_t l = 0; l < b->cols; ++l) {{ m.data[(i * b->rows + k) * c + (j * b->cols + l)] = x * b->data[k * b->cols + l]; }}\n}}\n}}\n}}\nreturn m;\n}}\n"
+        ));
+        let shape_lit = |r: &str, a: &str, b: &str| {
+            format!(
+                "({}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({}){{ .v_expected = {}, .v_found = {} }} }} }} }}",
+                r, shape_ct, a, b
+            )
+        };
+        // matmul/inverse need `Result<Mat, ShapeError>`; lu_solve needs
+        // `Result<Vec<Float64>, ShapeError>` (gated like Vec kernels).
+        let want_mm = self.has_inst("Result", &[mat_ty.clone(), shape.clone()]);
+        let want_sol = self.has_inst("Result", &[f64_vec.clone(), shape.clone()]);
+        if want_mm {
+            self.out.push_str(&format!(
+            "static {rct} vmat_matmul({ct} *a, {ct} *b) {{\nif (a->cols != b->rows) {{ return {shape}; }}\n{ct} m = vmat_zeros(a->rows, b->cols);\nfor (int64_t i = 0; i < a->rows; ++i) {{\nfor (int64_t k = 0; k < a->cols; ++k) {{\ndouble x = a->data[i * a->cols + k];\nfor (int64_t j = 0; j < b->cols; ++j) {{ m.data[i * b->cols + j] += x * b->data[k * b->cols + j]; }}\n}}\n}}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n",
+            shape = shape_lit(&rct, "a->cols", "b->rows")
+        ));
+        }
+        // Partial-pivot LU (in place, row-major). Returns 0 on singular.
+        self.out.push_str(
+            "static int vmat_lu(double *a, int64_t n, int64_t *piv) {\nint sgn = 1;\nfor (int64_t k = 0; k < n; ++k) { piv[k] = k; }\nfor (int64_t k = 0; k < n; ++k) {\nint64_t p = k;\ndouble best = a[piv[k] * n + k] < 0 ? -(a[piv[k] * n + k]) : a[piv[k] * n + k];\nfor (int64_t i = k + 1; i < n; ++i) {\ndouble v = a[piv[i] * n + k];\ndouble av = v < 0 ? -v : v;\nif (av > best) { best = av; p = i; }\n}\nif (best == 0.0) { return 0; }\nif (p != k) { int64_t t = piv[k]; piv[k] = piv[p]; piv[p] = t; sgn = -sgn; }\nfor (int64_t i = k + 1; i < n; ++i) {\ndouble f = a[piv[i] * n + k] / a[piv[k] * n + k];\na[piv[i] * n + k] = f;\nfor (int64_t j = k + 1; j < n; ++j) { a[piv[i] * n + j] -= f * a[piv[k] * n + j]; }\n}\n}\nreturn sgn;\n}\n",
+        );
+        self.out.push_str(&format!(
+            "static double vmat_det({ct} *v) {{\nif (v->rows != v->cols) {{ return 0.0 / 0.0; }}\nint64_t n = v->rows;\nif (n == 0) {{ return 1.0; }}\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nint64_t *piv = (int64_t *)malloc((size_t)(n + 1) * sizeof(int64_t));\nif (!piv) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nint sgn = vmat_lu(a, n, piv);\ndouble d = 0.0;\nif (sgn != 0) {{\nd = (double)sgn;\nfor (int64_t k = 0; k < n; ++k) {{ d *= a[piv[k] * n + k]; }}\n}} else {{ d = 0.0 / 0.0; }}\nfree(a); free(piv);\nreturn d;\n}}\n"
+        ));
+        if want_sol {
+            self.out.push_str(&format!(
+            "static {rvct} vmat_lu_solve({ct} *v, {vct} *b) {{\nif (v->rows != v->cols || b->len != v->rows) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->rows, .v_found = b->len }} }} }} }};\nreturn o;\n}}\nint64_t n = v->rows;\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nint64_t *piv = (int64_t *)malloc((size_t)(n + 1) * sizeof(int64_t));\nif (!piv) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *y = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!y) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nint ok = vmat_lu(a, n, piv);\n{rvct} o;\nif (!ok) {{\no = ({rvct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\n}} else {{\nfor (int64_t i = 0; i < n; ++i) {{\ndouble s = b->data[piv[i]];\nfor (int64_t j = 0; j < i; ++j) {{ s -= a[piv[i] * n + j] * y[j]; }}\ny[i] = s;\n}}\n{vct} x = {{NULL, 0, 0}};\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\n}}\nfor (int64_t i = n - 1; i >= 0; --i) {{\ndouble s = y[i];\nfor (int64_t j = i + 1; j < n; ++j) {{ s -= a[piv[i] * n + j] * x.data[j]; }}\nx.data[i] = s / a[piv[i] * n + i];\nif (i == 0) {{ break; }}\n}}\no = ({rvct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\n}}\nfree(a); free(piv); free(y);\nreturn o;\n}}\n"
+        ));
+            // S1 matrix-vector product (same Vec-result gate as lu_solve).
+            self.out.push_str(&format!(
+            "static {rvct} vmat_vec({ct} *v, {vct} *b) {{\nif (v->cols != b->len) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->cols, .v_found = b->len }} }} }} }};\nreturn o;\n}}\n{vct} x = {{NULL, 0, 0}};\nif (v->rows > 0) {{\nx.data = (double *)malloc((size_t)v->rows * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = v->rows; x.cap = v->rows;\nfor (int64_t i = 0; i < v->rows; ++i) {{\ndouble s = 0.0;\nfor (int64_t j = 0; j < v->cols; ++j) {{ s += v->data[i * v->cols + j] * b->data[j]; }}\nx.data[i] = s;\n}}\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
+        ));
+        }
+        if want_mm && want_sol {
+            self.out.push_str(&format!(
+            "static {rct} vmat_inverse({ct} *v) {{\nif (v->rows != v->cols) {{ return {shape}; }}\nint64_t n = v->rows;\n{ct} m = vmat_zeros(n, n);\nfor (int64_t j = 0; j < n; ++j) {{\n{vct} b = {{NULL, 0, 0}};\nif (n > 0) {{\nb.data = (double *)malloc((size_t)n * sizeof(double));\nif (!b.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nb.len = n; b.cap = n;\nfor (int64_t i = 0; i < n; ++i) {{ b.data[i] = i == j ? 1.0 : 0.0; }}\n}}\n{rvct} s = vmat_lu_solve(v, &b);\nfree(b.data);\nif (s.tag != 0) {{\nfree(m.data);\n{rct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\nreturn o;\n}}\nfor (int64_t i = 0; i < n; ++i) {{ m.data[i * n + j] = s.u.v0.v___0.data[i]; }}\nfree(s.u.v0.v___0.data);\n}}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n",
+            shape = shape_lit(&rct, "v->rows", "v->cols")
+        ));
+        }
+        // Cholesky-Banachiewicz (lower L with A = L L^T). Non-square and
+        // non-SPD inputs are Err (non-positive pivot, never NaN).
+        if want_mm {
+            self.out.push_str(&format!(
+            "static {rct} vmat_cholesky({ct} *v) {{\nif (v->rows != v->cols) {{ return {shape}; }}\nint64_t n = v->rows;\n{ct} m = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{\nfor (int64_t j = 0; j <= i; ++j) {{\ndouble s = v->data[i * n + j];\nfor (int64_t k = 0; k < j; ++k) {{ s -= m.data[i * n + k] * m.data[j * n + k]; }}\nif (i == j) {{\nif (!(s > 0.0)) {{ free(m.data);\n{rct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\nreturn o; }}\nm.data[i * n + i] = sqrt(s);\n}} else {{\nm.data[i * n + j] = s / m.data[j * n + j];\n}}\n}}\n}}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n",
+            shape = shape_lit(&rct, "v->rows", "v->cols")
+        ));
+        }
+        // S1 row scaling (same Mat-result gate as cholesky).
+        if want_mm {
+            self.out.push_str(&format!(
+            "static {rct} vmat_scale_rows({ct} *v, {vct} *w) {{\nif (v->rows != w->len) {{ return {shape}; }}\n{ct} m = vmat_zeros(v->rows, v->cols);\nfor (int64_t i = 0; i < v->rows; ++i) {{\ndouble s = w->data[i];\nfor (int64_t j = 0; j < v->cols; ++j) {{ m.data[i * v->cols + j] = v->data[i * v->cols + j] * s; }}\n}}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n",
+            shape = shape_lit(&rct, "v->rows", "w->len")
+        ));
+        }
+        // S1 diagonal (total; needs only the Vec layout, always recorded
+        // alongside any Mat use through the method checker).
+        self.out.push_str(&format!(
+            "static {vct} vmat_diag({ct} *v) {{\n{vct} x = {{NULL, 0, 0}};\nint64_t n = v->rows < v->cols ? v->rows : v->cols;\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\nfor (int64_t i = 0; i < n; ++i) {{ x.data[i] = v->data[i * v->cols + i]; }}\n}}\nreturn x;\n}}\n"
+        ));
+        self.out.push_str(&format!(
+            "static {vct} vmat_col({ct} *v, int64_t j) {{\nif (j < 0 || j >= v->cols) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n{vct} x = {{NULL, 0, 0}};\nif (v->rows > 0) {{\nx.data = (double *)malloc((size_t)v->rows * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = v->rows; x.cap = v->rows;\nfor (int64_t i = 0; i < v->rows; ++i) {{ x.data[i] = v->data[i * v->cols + j]; }}\n}}\nreturn x;\n}}\n"
+        ));
+        // Symmetric Jacobi eigen decomposition + one-sided Jacobi SVD
+        // (shared helpers below; wrappers gated on their Result layouts).
+        // Fixed 100-sweep cap with exact-zero early exit: total, no tuning
+        // knobs. Eigenpairs sort descending (R convention).
+        if want_sol || want_mm {
+            self.out.push_str(
+            "static void vmat_jacobi(double *a, double *v, int64_t n) {\nfor (int64_t s = 0; s < 100; ++s) {\ndouble off = 0.0;\nfor (int64_t p = 0; p < n; ++p) {\nfor (int64_t q = p + 1; q < n; ++q) { double t = a[p * n + q]; off += t * t; }\n}\nif (off == 0.0) { break; }\nfor (int64_t p = 0; p < n; ++p) {\nfor (int64_t q = p + 1; q < n; ++q) {\ndouble apq = a[p * n + q];\nif (apq == 0.0) { continue; }\ndouble app = a[p * n + p];\ndouble aqq = a[q * n + q];\ndouble tau = (aqq - app) / (2.0 * apq);\ndouble ab = tau < 0 ? -tau : tau;\ndouble t = (tau >= 0 ? 1.0 : -1.0) / (ab + sqrt(tau * tau + 1.0));\ndouble c = 1.0 / sqrt(t * t + 1.0);\ndouble sn = c * t;\ndouble appn = c * c * app - 2.0 * sn * c * apq + sn * sn * aqq;\ndouble aqqn = sn * sn * app + 2.0 * sn * c * apq + c * c * aqq;\nfor (int64_t k = 0; k < n; ++k) {\nif (k == p || k == q) { continue; }\ndouble akp = a[k * n + p];\ndouble akq = a[k * n + q];\na[k * n + p] = c * akp - sn * akq;\na[p * n + k] = a[k * n + p];\na[k * n + q] = sn * akp + c * akq;\na[q * n + k] = a[k * n + q];\n}\na[p * n + p] = appn;\na[q * n + q] = aqqn;\na[p * n + q] = 0.0;\na[q * n + p] = 0.0;\nif (v) {\nfor (int64_t k = 0; k < n; ++k) {\ndouble vkp = v[k * n + p];\ndouble vkq = v[k * n + q];\nv[k * n + p] = c * vkp - sn * vkq;\nv[k * n + q] = sn * vkp + c * vkq;\n}\n}\n}\n}\n}\n}\n",
+        );
+            self.out.push_str(
+            "static int vmat_svd_full(double *w, int64_t m, int64_t n, double *u, double *sg, double *vt) {\nif (m < n) { return 0; }\nfor (int64_t s = 0; s < 30; ++s) {\ndouble off = 0.0;\nfor (int64_t p = 0; p < n; ++p) {\nfor (int64_t q = p + 1; q < n; ++q) {\ndouble g = 0.0;\nfor (int64_t k = 0; k < m; ++k) { g += w[k * n + p] * w[k * n + q]; }\noff += g * g;\n}\n}\nif (off == 0.0) { break; }\nfor (int64_t p = 0; p < n; ++p) {\nfor (int64_t q = p + 1; q < n; ++q) {\ndouble al = 0.0;\ndouble be = 0.0;\ndouble ga = 0.0;\nfor (int64_t k = 0; k < m; ++k) {\ndouble x = w[k * n + p];\ndouble y = w[k * n + q];\nal += x * x;\nbe += y * y;\nga += x * y;\n}\nif (ga == 0.0) { continue; }\ndouble tau = (be - al) / (2.0 * ga);\ndouble ab = tau < 0 ? -tau : tau;\ndouble t = (tau >= 0 ? 1.0 : -1.0) / (ab + sqrt(tau * tau + 1.0));\ndouble c = 1.0 / sqrt(t * t + 1.0);\ndouble sn = c * t;\nfor (int64_t k = 0; k < m; ++k) {\ndouble x = w[k * n + p];\ndouble y = w[k * n + q];\nw[k * n + p] = c * x - sn * y;\nw[k * n + q] = sn * x + c * y;\n}\nfor (int64_t k = 0; k < n; ++k) {\ndouble x = vt[k * n + p];\ndouble y = vt[k * n + q];\nvt[k * n + p] = c * x - sn * y;\nvt[k * n + q] = sn * x + c * y;\n}\n}\n}\n}\nfor (int64_t j = 0; j < n; ++j) {\ndouble s = 0.0;\nfor (int64_t k = 0; k < m; ++k) { double x = w[k * n + j]; s += x * x; }\nsg[j] = sqrt(s);\nfor (int64_t k = 0; k < m; ++k) { u[k * n + j] = 0.0; }\n}\nfor (int64_t i = 0; i < n; ++i) {\nint64_t b = i;\nfor (int64_t j = i + 1; j < n; ++j) { if (sg[j] > sg[b]) { b = j; } }\nif (b != i) {\ndouble t = sg[i]; sg[i] = sg[b]; sg[b] = t;\nfor (int64_t k = 0; k < m; ++k) { double x = w[k * n + i]; w[k * n + i] = w[k * n + b]; w[k * n + b] = x; }\nfor (int64_t k = 0; k < n; ++k) { double x = vt[k * n + i]; vt[k * n + i] = vt[k * n + b]; vt[k * n + b] = x; }\n}\n}\nfor (int64_t j = 0; j < n; ++j) {\nif (sg[j] > 0.0) {\nfor (int64_t k = 0; k < m; ++k) { u[k * n + j] = w[k * n + j] / sg[j]; }\n}\n}\nfor (int64_t i = 0; i < n; ++i) {\nfor (int64_t j = i + 1; j < n; ++j) { double x = vt[i * n + j]; vt[i * n + j] = vt[j * n + i]; vt[j * n + i] = x; }\n}\nreturn 1;\n}\n",
+        );
+        }
+        // Eigen/SVD wrappers (gated on their own Result layouts; the
+        // helpers above gate on either).
+        if want_sol {
+            self.out.push_str(&format!(
+            "static {rvct} vmat_eigen_values({ct} *v) {{\nif (v->rows != v->cols) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->rows, .v_found = v->cols }} }} }} }};\nreturn o;\n}}\nint64_t n = v->rows;\n{vct} x = {{NULL, 0, 0}};\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nvmat_jacobi(a, (double *)0, n);\nfor (int64_t i = 0; i < n; ++i) {{ x.data[i] = a[i * n + i]; }}\nfree(a);\nfor (int64_t i = 0; i < n; ++i) {{\nint64_t b = i;\nfor (int64_t j = i + 1; j < n; ++j) {{ if (x.data[j] > x.data[b]) {{ b = j; }} }}\nif (b != i) {{ double t = x.data[i]; x.data[i] = x.data[b]; x.data[b] = t; }}\n}}\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
+        ));
+            self.out.push_str(&format!(
+            "static {rvct} vmat_svd_s({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\n{vct} x = {{NULL, 0, 0}};\nif (n > 0) {{\nx.data = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\ndouble *w = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!w) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < m * n; ++i) {{ w[i] = v->data[i]; }}\ndouble *u = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!u) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *vt = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!vt) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{\nfor (int64_t j = 0; j < n; ++j) {{ vt[i * n + j] = i == j ? 1.0 : 0.0; }}\n}}\nif (!vmat_svd_full(w, m, n, u, x.data, vt)) {{\nfree(w); free(u); free(vt); free(x.data);\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn o;\n}}\nfree(w); free(u); free(vt);\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
+        ));
+        }
+        if want_mm {
+            self.out.push_str(&format!(
+            "static {rct} vmat_eigen_vectors({ct} *v) {{\nif (v->rows != v->cols) {{ return {shape}; }}\nint64_t n = v->rows;\n{ct} o = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ o.data[i * n + i] = 1.0; }}\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nvmat_jacobi(a, o.data, n);\ndouble *d = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!d) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{ d[i] = a[i * n + i]; }}\nfree(a);\nfor (int64_t i = 0; i < n; ++i) {{\nint64_t b = i;\nfor (int64_t j = i + 1; j < n; ++j) {{ if (d[j] > d[b]) {{ b = j; }} }}\nif (b != i) {{\ndouble t = d[i]; d[i] = d[b]; d[b] = t;\nfor (int64_t k = 0; k < n; ++k) {{ double u = o.data[k * n + i]; o.data[k * n + i] = o.data[k * n + b]; o.data[k * n + b] = u; }}\n}}\n}}\nfree(d);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n",
+            shape = shape_lit(&rct, "v->rows", "v->cols")
+        ));
+            self.out.push_str(&format!(
+            "static {rct} vmat_svd_u({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\n{ct} o = vmat_zeros(m, n);\ndouble *w = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!w) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < m * n; ++i) {{ w[i] = v->data[i]; }}\ndouble *sg = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!sg) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *vt = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!vt) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{\nfor (int64_t j = 0; j < n; ++j) {{ vt[i * n + j] = i == j ? 1.0 : 0.0; }}\n}}\nif (!vmat_svd_full(w, m, n, o.data, sg, vt)) {{\nfree(w); free(sg); free(vt); free(o.data);\n{rct} r = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn r;\n}}\nfree(w); free(sg); free(vt);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n"
+        ));
+            self.out.push_str(&format!(
+            "static {rct} vmat_svd_vt({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\n{ct} o = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ o.data[i * n + i] = 1.0; }}\ndouble *w = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!w) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < m * n; ++i) {{ w[i] = v->data[i]; }}\ndouble *u = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!u) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *sg = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!sg) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nif (!vmat_svd_full(w, m, n, u, sg, o.data)) {{\nfree(w); free(u); free(sg); free(o.data);\n{rct} r = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn r;\n}}\nfree(w); free(u); free(sg);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n"
+        ));
+        }
         Ok(())
     }
 
@@ -1317,6 +3013,278 @@ impl<'a> Gen<'a> {
                 Ok(format!("vvec_{}_dot({}, &{})", iname, rptr, o))
             }
             _ => Err(Ice("unknown Vec method".into())),
+        }
+    }
+
+    /// M1 value-returning `Mat` method call. Receiver borrowed via `rptr`
+    /// (`&slot`); owned arguments transfer (caller nulls via consume).
+    fn emit_mat_method(&mut self, method: &str, r: &str, args: &[Expr]) -> Result<String, Ice> {
+        let rptr = format!("&{}", r);
+        match method {
+            "rows" => Ok(format!("vmat_rows({})", rptr)),
+            "cols" => Ok(format!("vmat_cols({})", rptr)),
+            "transpose" => Ok(format!("vmat_transpose({})", rptr)),
+            "det" => Ok(format!("vmat_det({})", rptr)),
+            "cholesky" => Ok(format!("vmat_cholesky({})", rptr)),
+            "eigen_values" => Ok(format!("vmat_eigen_values({})", rptr)),
+            "eigen_vectors" => Ok(format!("vmat_eigen_vectors({})", rptr)),
+            "svd_u" => Ok(format!("vmat_svd_u({})", rptr)),
+            "svd_s" => Ok(format!("vmat_svd_s({})", rptr)),
+            "svd_vt" => Ok(format!("vmat_svd_vt({})", rptr)),
+            "clone" => Ok(format!("v_clone_Mat_({})", r)),
+            "inverse" => Ok(format!("vmat_inverse({})", rptr)),
+            "matmul" => {
+                let a = args.first().ok_or_else(|| Ice("method arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let o = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vmat_matmul({}, &{})", rptr, o))
+            }
+            "lu_solve" => {
+                let a = args.first().ok_or_else(|| Ice("method arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let o = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vmat_lu_solve({}, &{})", rptr, o))
+            }
+            "mat_vec" => {
+                let a = args.first().ok_or_else(|| Ice("method arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let o = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vmat_vec({}, &{})", rptr, o))
+            }
+            "mat_scale_rows" => {
+                let a = args.first().ok_or_else(|| Ice("method arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let o = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vmat_scale_rows({}, &{})", rptr, o))
+            }
+            "mat_diag" => Ok(format!("vmat_diag({})", rptr)),
+            "mat_col" => {
+                let a = args.first().ok_or_else(|| Ice("mat_col arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let v = self.emit_expr(a)?;
+                self.cur_move = saved;
+                Ok(format!("vmat_col({}, (int64_t)({}))", rptr, v))
+            }
+            _ => Err(Ice("unknown Mat method".into())),
+        }
+    }
+
+    /// F1 value-returning `Factor` method call (receiver borrows via
+    /// `&slot`; the `String` argument to `relevel` borrows like `println`).
+    fn emit_factor_method(&mut self, method: &str, r: &str, args: &[Expr]) -> Result<String, Ice> {
+        let rptr = format!("&{}", r);
+        match method {
+            "levels" => Ok(format!("vfactor_levels({})", rptr)),
+            "codes" => Ok(format!("vfactor_codes({})", rptr)),
+            "as_strings" => Ok(format!("vfactor_as_strings({})", rptr)),
+            "reorder_by_count" => Ok(format!("vfactor_reorder_by_count({})", rptr)),
+            "droplevels" => Ok(format!("vfactor_droplevels({})", rptr)),
+            "clone" => Ok(format!("v_clone_Factor_({})", r)),
+            "relevel" => {
+                let a = args.first().ok_or_else(|| Ice("method arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let t = self.ty_of(a.id);
+                let v = if self.moves(&t) {
+                    self.mat_str(a)?
+                } else {
+                    self.emit_expr(a)?
+                };
+                self.cur_move = saved;
+                Ok(format!("vfactor_relevel({}, {})", rptr, v))
+            }
+            _ => Err(Ice("unknown Factor method".into())),
+        }
+    }
+
+    /// C1 Stage-1 functional kernels: one C loop per (kind, types)
+    /// instantiation, taking the named function as a pointer (sema
+    /// recorded exactly the used ones). Owned elements clone into the
+    /// callee (which frees its params); results transfer fresh.
+    fn emit_fun_kernel(&mut self, kind: &str, tys: &[Ty]) -> Result<(), Ice> {
+        let bad = || Ice(format!("bad functional kernel {}<..>", kind));
+        match kind {
+            "map" => {
+                let (t, u) = match tys {
+                    [t, u] => (t.clone(), u.clone()),
+                    _ => return Err(bad()),
+                };
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let vu = ctype_inst("Vec", std::slice::from_ref(&u));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let uin = vu.strip_prefix('V').unwrap_or(&vu).to_string();
+                let ct = self.cty(&t);
+                let cu = self.cty(&u);
+                let arg = if self.type_needs_drop(&t) {
+                    self.clone_call(&t, "v->data[i]")
+                } else {
+                    "v->data[i]".to_string()
+                };
+                self.out.push_str(&format!(
+                    "static {vu} vmap_{tin}_{uin}({vt} *v, {cu} (*f)({ct})) {{\n{vu} o = vvec_{uin}_new();\nfor (int64_t i = 0; i < v->len; ++i) {{\n{ct} a = {arg};\nvvec_{uin}_push(&o, f(a));\n}}\nreturn o;\n}}\n"
+                ));
+            }
+            "filter" => {
+                let t = match tys {
+                    [t] => t.clone(),
+                    _ => return Err(bad()),
+                };
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let ct = self.cty(&t);
+                let arg = if self.type_needs_drop(&t) {
+                    self.clone_call(&t, "v->data[i]")
+                } else {
+                    "v->data[i]".to_string()
+                };
+                let keep = if self.type_needs_drop(&t) {
+                    self.clone_call(&t, "v->data[i]")
+                } else {
+                    "v->data[i]".to_string()
+                };
+                self.out.push_str(&format!(
+                    "static {vt} vfilter_{tin}({vt} *v, int (*f)({ct})) {{\n{vt} o = vvec_{tin}_new();\nfor (int64_t i = 0; i < v->len; ++i) {{\n{ct} a = {arg};\nif (f(a)) {{ vvec_{tin}_push(&o, {keep}); }}\n}}\nreturn o;\n}}\n"
+                ));
+            }
+            "fold" => {
+                let (a, t) = match tys {
+                    [a, t] => (a.clone(), t.clone()),
+                    _ => return Err(bad()),
+                };
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let va = ctype_inst("Vec", std::slice::from_ref(&a));
+                let ain = va.strip_prefix('V').unwrap_or(&va).to_string();
+                let ct = self.cty(&t);
+                let ca = self.cty(&a);
+                let arg = if self.type_needs_drop(&t) {
+                    self.clone_call(&t, "v->data[i]")
+                } else {
+                    "v->data[i]".to_string()
+                };
+                self.out.push_str(&format!(
+                    "static {ca} vfold_{ain}_{tin}({vt} *v, {ca} init, {ca} (*f)({ca}, {ct})) {{\n{ca} acc = init;\nfor (int64_t i = 0; i < v->len; ++i) {{\n{ct} x = {arg};\nacc = f(acc, x);\n}}\nreturn acc;\n}}\n"
+                ));
+            }
+            "split_apply" => {
+                self.out.push_str(
+                    "static VVec_Float64 vsplit_apply(VFactor_ *f, VVec_Float64 *v, double (*c)(VVec_Float64)) {\nVVec_Float64 o = vvec_Vec_Float64_new();\nfor (int64_t li = 0; li < f->levels.len; ++li) {\nVVec_Float64 g = vvec_Vec_Float64_new();\nfor (int64_t i = 0; i < f->codes.len && i < v->len; ++i) {\nif (f->codes.data[i] == li + 1) { vvec_Vec_Float64_push(&g, v->data[i]); }\n}\nvvec_Vec_Float64_push(&o, c(g));\n}\nreturn o;\n}\n",
+                );
+            }
+            _ => return Err(bad()),
+        }
+        Ok(())
+    }
+
+    /// C symbol for a Stage-1 function operand (bare `fun` item only).
+    fn functional_sym(&self, arg: &Expr, arity: usize) -> Result<String, Ice> {
+        let fname = match &arg.kind {
+            ExprKind::Var(n) => n.clone(),
+            _ => return Err(Ice("functional without named function".into())),
+        };
+        let (m, f) = self
+            .resolve_fun(&fname, arity)
+            .ok_or_else(|| Ice(format!("unknown function {}", fname)))?;
+        Ok(format!("{}_fn", cfun(&m, &f, arity)))
+    }
+
+    /// Element type of a checked `Vec` argument.
+    fn functional_vec_elem(&self, id: NodeId) -> Result<Ty, Ice> {
+        match self.ty_of(id) {
+            Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => Ok(args[0].clone()),
+            _ => Err(Ice("functional without Vec argument".into())),
+        }
+    }
+
+    /// C1 call-site lowering for `map`/`filter`/`fold`/`split_apply`:
+    /// data borrows (kernels clone what they keep); the function operand
+    /// lowers to its C symbol (prototyped with all other funs).
+    fn emit_functional(&mut self, name: &str, e: &Expr, args: &[Expr]) -> Result<String, Ice> {
+        match name {
+            "map" => {
+                let a = args.first().ok_or_else(|| Ice("map arity".into()))?;
+                let f = args.get(1).ok_or_else(|| Ice("map arity".into()))?;
+                let t = self.functional_vec_elem(a.id)?;
+                let u = match self.ty_of(e.id) {
+                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                        args[0].clone()
+                    }
+                    _ => return Err(Ice("map without Vec result".into())),
+                };
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let v = self.mat_str(a)?;
+                self.cur_move = saved;
+                let fsym = self.functional_sym(f, 1)?;
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let vu = ctype_inst("Vec", std::slice::from_ref(&u));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let uin = vu.strip_prefix('V').unwrap_or(&vu).to_string();
+                Ok(format!("vmap_{}_{}(&{}, {})", tin, uin, v, fsym))
+            }
+            "filter" => {
+                let a = args.first().ok_or_else(|| Ice("filter arity".into()))?;
+                let f = args.get(1).ok_or_else(|| Ice("filter arity".into()))?;
+                let t = self.functional_vec_elem(a.id)?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let v = self.mat_str(a)?;
+                self.cur_move = saved;
+                let fsym = self.functional_sym(f, 1)?;
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                Ok(format!("vfilter_{}(&{}, {})", tin, v, fsym))
+            }
+            "fold" => {
+                let a = args.first().ok_or_else(|| Ice("fold arity".into()))?;
+                let b = args.get(1).ok_or_else(|| Ice("fold arity".into()))?;
+                let f = args.get(2).ok_or_else(|| Ice("fold arity".into()))?;
+                let t = self.functional_vec_elem(a.id)?;
+                let at = self.ty_of(e.id);
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let v = self.mat_str(a)?;
+                // Init transfers into the kernel (which frees through the
+                // fold fn): clone owned inits so the caller keeps its slot.
+                let bt = self.ty_of(b.id);
+                let init = if self.moves(&bt) {
+                    let m = self.mat_str(b)?;
+                    self.clone_call(&bt, &m)
+                } else {
+                    self.emit_expr(b)?
+                };
+                self.cur_move = saved;
+                let fsym = self.functional_sym(f, 2)?;
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let va = ctype_inst("Vec", std::slice::from_ref(&at));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let ain = va.strip_prefix('V').unwrap_or(&va).to_string();
+                Ok(format!("vfold_{}_{}(&{}, {}, {})", ain, tin, v, init, fsym))
+            }
+            "split_apply" => {
+                let a = args
+                    .first()
+                    .ok_or_else(|| Ice("split_apply arity".into()))?;
+                let b = args.get(1).ok_or_else(|| Ice("split_apply arity".into()))?;
+                let f = args.get(2).ok_or_else(|| Ice("split_apply arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let fv = self.mat_str(a)?;
+                let vv = self.mat_str(b)?;
+                self.cur_move = saved;
+                let fsym = self.functional_sym(f, 1)?;
+                Ok(format!("vsplit_apply(&{}, &{}, {})", fv, vv, fsym))
+            }
+            _ => Err(Ice("unknown functional".into())),
         }
     }
 
@@ -1403,12 +3371,34 @@ impl<'a> Gen<'a> {
                 body.push_str(&format!("{};\n}}\n", el));
                 body.push_str("printf(\"]\");\n");
             }
+            ("Mat", []) => {
+                body.push_str("printf(\"[\");\n");
+                body.push_str("for (int64_t i = 0; i < v.rows; ++i) { if (i) printf(\", \"); printf(\"[\");\n");
+                body.push_str("for (int64_t j = 0; j < v.cols; ++j) { if (j) printf(\", \"); vfmt_f64(v.data[i * v.cols + j]); }\n");
+                body.push_str("printf(\"]\"); }\n");
+                body.push_str("printf(\"]\");\n");
+            }
+            ("Factor", []) => {
+                body.push_str("printf(\"Factor(\");\n");
+                body.push_str("vfmt_Vec_String(v.levels);\n");
+                body.push_str("printf(\", \");\n");
+                body.push_str("vfmt_Vec_Int32(v.codes);\n");
+                body.push_str("printf(\")\");\n");
+            }
             ("Option", [t]) => {
                 let some = self.fmt_call(t, &format!("v.u.{}.{}", cmember(0), cfield("_0")))?;
                 body.push_str("if (v.tag == 1) { printf(\"None\"); }\n");
                 body.push_str(&format!(
                     "else {{ printf(\"Some(\"); {}; printf(\")\"); }}\n",
                     some
+                ));
+            }
+            ("Missing", [t]) => {
+                let present = self.fmt_call(t, &format!("v.u.{}.{}", cmember(0), cfield("_0")))?;
+                body.push_str("if (v.tag == 1) { printf(\"NA\"); }\n");
+                body.push_str(&format!(
+                    "else {{ printf(\"Present(\"); {}; printf(\")\"); }}\n",
+                    present
                 ));
             }
             ("Result", [t, e]) => {
@@ -1445,7 +3435,7 @@ impl<'a> Gen<'a> {
             Ty::Bool => Ok(format!("vfmt_bool({})", path)),
             Ty::Str => Ok(format!("vfmt_str({})", path)),
             Ty::Generic { base, args }
-                if (base == "Vec" || base == "Option") && args.len() == 1 =>
+                if (base == "Vec" || base == "Option" || base == "Missing") && args.len() == 1 =>
             {
                 Ok(format!(
                     "vfmt_{}({})",
@@ -1454,6 +3444,16 @@ impl<'a> Gen<'a> {
                 ))
             }
             Ty::Generic { base, args } if base == "Result" && args.len() == 2 => Ok(format!(
+                "vfmt_{}({})",
+                iname_of(&ctype_inst(base, args)),
+                path
+            )),
+            Ty::Generic { base, args } if base == "Mat" && args.is_empty() => Ok(format!(
+                "vfmt_{}({})",
+                iname_of(&ctype_inst(base, args)),
+                path
+            )),
+            Ty::Generic { base, args } if base == "Factor" && args.is_empty() => Ok(format!(
                 "vfmt_{}({})",
                 iname_of(&ctype_inst(base, args)),
                 path
@@ -1508,6 +3508,10 @@ impl<'a> Gen<'a> {
                 ("Some".to_string(), vec![t.clone()]),
                 ("None".to_string(), vec![]),
             ],
+            ("Missing", [t]) => vec![
+                ("Present".to_string(), vec![t.clone()]),
+                ("Missing".to_string(), vec![]),
+            ],
             ("Result", [t, e]) => vec![
                 ("Ok".to_string(), vec![t.clone()]),
                 ("Err".to_string(), vec![e.clone()]),
@@ -1524,9 +3528,10 @@ impl<'a> Gen<'a> {
         variant: &str,
         scrut_ty: &Ty,
     ) -> Result<(String, usize, Vec<Ty>), Ice> {
-        // Qualified `Option::Some` / `Result::Ok` (base name only).
+        // Qualified `Option::Some` / `Result::Ok` / `Missing::Present`
+        // (base name only).
         if let Some(t) = ty_opt {
-            if t == "Option" || t == "Result" {
+            if t == "Option" || t == "Result" || t == "Missing" {
                 match scrut_ty {
                     Ty::Generic { base, args } if base == t => {
                         let vs = self.generic_variants(base, args);
@@ -1569,7 +3574,9 @@ impl<'a> Gen<'a> {
                     .map(|(i, (_, p))| (ctype_name(n), i, p.clone()))
                     .ok_or_else(|| Ice("unknown variant".into()))
             }
-            Ty::Generic { base, args } if base == "Option" || base == "Result" => {
+            Ty::Generic { base, args }
+                if base == "Option" || base == "Result" || base == "Missing" =>
+            {
                 let vs = self.generic_variants(base, args);
                 vs.iter()
                     .enumerate()
@@ -1699,6 +3706,7 @@ impl<'a> Gen<'a> {
         self.owned.clear();
         self.vartypes.clear();
         self.cur_module = f.module.clone();
+        self.fn_ret_dim = self.dim_of(f.id);
         let is_main = f.name == "main";
         // `main` returning `Result<Int32, E>` / `Option<Int32>` compiles the
         // body as an inner function; a small wrapper maps to exit codes.
@@ -1723,24 +3731,26 @@ impl<'a> Gen<'a> {
             self.cty(&f.ret).to_string()
         };
         if main_result.is_some() {
+            // Result/Option mains (incl. script `?`): argv threads through
+            // so top-level `args` works here too.
             self.out.push_str(&format!(
-                "static {} {}_fn(void) {{\n",
+                "static {} {}_fn(int argc, char **argv) {{\n",
                 ret,
                 mangle("valvet_main")
             ));
         } else if is_main {
-            self.out.push_str("int main(void) {\n");
+            self.out.push_str("int main(int argc, char **argv) {\n");
         } else if f.params.is_empty() {
             self.out.push_str(&format!(
                 "static {} {}_fn(void) {{\n",
                 ret,
-                cfun(&f.module, &f.name)
+                cfun(&f.module, &f.name, f.params.len())
             ));
         } else {
             self.out.push_str(&format!(
                 "static {} {}_fn({}) {{\n",
                 ret,
-                cfun(&f.module, &f.name),
+                cfun(&f.module, &f.name, f.params.len()),
                 f.params
                     .iter()
                     .map(|p| format!("{} {}", self.cty(&p.ty), mangle(&p.name)))
@@ -1774,18 +3784,30 @@ impl<'a> Gen<'a> {
         self.emit_scope_frees(self.scopes.len() - 1);
         if main_result.is_some() {
             self.out.push_str("}\n\n");
-            self.scopes.pop();
+            self.pop_scope();
             // Exit-code wrapper: Ok(n)/Some(n) -> n; Err(e) -> drop + 1.
             let rct = self.cty(&f.ret);
-            self.out.push_str("int main(void) {\n");
-            self.out
-                .push_str(&format!("{} _vr = {}_fn();\n", rct, mangle("valvet_main")));
+            self.out.push_str("int main(int argc, char **argv) {\n");
+            self.out.push_str(&format!(
+                "{} _vr = {}_fn(argc, argv);\n",
+                rct,
+                mangle("valvet_main")
+            ));
             self.out.push_str("if (_vr.tag == 0) {\n");
             self.out.push_str("return _vr.u.v0.v___0;\n");
             self.out.push_str("} else {\n");
             // Err payload (if any) must be destroyed before exiting — but only
             // when it needs dropping (all-Copy instantiations emit no helper).
+            // String payloads also print to stderr first, so `?`-to-exit in
+            // scripts (and `main` generally) shows the message instead of
+            // failing silently.
             if self.type_needs_drop(&f.ret) {
+                if matches!(&f.ret, Ty::Generic { base, args } if base == "Result" && args.len() == 2 && args[1] == Ty::Str)
+                {
+                    self.out.push_str(
+                        "if (_vr.u.v1.v___0.s && _vr.u.v1.v___0.len > 0) { fprintf(stderr, \"%.*s\\n\", (int)_vr.u.v1.v___0.len, _vr.u.v1.v___0.s); }\n",
+                    );
+                }
                 self.out.push_str(&format!(
                     "v_drop_{}(&_vr); return 1; }}\n}}\n",
                     rct.strip_prefix('V').unwrap_or(&rct)
@@ -1802,7 +3824,7 @@ impl<'a> Gen<'a> {
                 .push_str("{ fprintf(stderr, \"missing return\\n\"); abort(); }\n");
         }
         self.out.push_str("}\n\n");
-        self.scopes.pop();
+        self.pop_scope();
         Ok(())
     }
 
@@ -1812,7 +3834,7 @@ impl<'a> Gen<'a> {
         let depth = self.scopes.len() - 1;
         self.emit_block_body_only(b, ret_ty, is_fn_body)?;
         self.emit_scope_frees(depth);
-        self.scopes.pop();
+        self.pop_scope();
         Ok(())
     }
 
@@ -1859,9 +3881,12 @@ impl<'a> Gen<'a> {
         } else if self.moves(tt) {
             self.cur_move = true;
             let v = self.mat_str(t)?;
+            // Units: convert the tail to the declared return dimension.
+            let rd = self.fn_ret_dim.clone();
+            let vc = self.coerce(v.clone(), &self.dim_of(t.id), &rd);
             let ret = self.fresh_tmp();
             self.out
-                .push_str(&format!("{} {} = {};\n", self.cty_val(tt), ret, v));
+                .push_str(&format!("{} {} = {};\n", self.cty_val(tt), ret, vc));
             self.consume(&v);
             self.flush_nulls();
             self.pop_frame();
@@ -1872,6 +3897,9 @@ impl<'a> Gen<'a> {
             let e = self.emit_expr(t)?;
             // Materialize before frees: the expression may read owned locals
             // (e.g. `v.len()`), which frees would zero first (silent wrong answer).
+            // Units: convert to the declared return dimension.
+            let rd = self.fn_ret_dim.clone();
+            let e = self.coerce(e, &self.dim_of(t.id), &rd);
             let ret = self.fresh_tmp();
             self.out
                 .push_str(&format!("{} {} = {};\n", self.cty_val(tt), ret, e));
@@ -1931,15 +3959,20 @@ impl<'a> Gen<'a> {
                     .unwrap_or_else(|| ty.clone().unwrap_or(it));
                 let cname = mangle(name);
                 let saved = self.cur_move;
+                // Units: convert the initializer to the declared dimension.
+                let tdim = self.dim_of(*id);
+                let idim = self.dim_of(init.id);
                 if self.moves(&decl_ty) {
                     self.cur_move = true;
                     let v = self.mat_str(init)?;
+                    let vc = self.coerce(v.clone(), &idim, &tdim);
                     self.out
-                        .push_str(&format!("{} {} = {};\n", self.cty_val(&decl_ty), cname, v));
+                        .push_str(&format!("{} {} = {};\n", self.cty_val(&decl_ty), cname, vc));
                     self.consume(&v);
                 } else {
                     self.cur_move = false;
                     let rhs = self.emit_expr(init)?;
+                    let rhs = self.coerce(rhs, &idim, &tdim);
                     self.out.push_str(&format!(
                         "{} {} = {};\n",
                         self.cty_val(&decl_ty),
@@ -1967,8 +4000,30 @@ impl<'a> Gen<'a> {
                     target, op, value, ..
                 } = &expr.kind
                 {
-                    let cname = place_lvalue(target, self);
                     let vt = self.ty_of(value.id);
+                    // J1 indexed store: check bounds first (index evaluates
+                    // before the value), then reuse the plain-slot logic
+                    // with the element slot as the target.
+                    let cname = match target {
+                        Place::Index { base, idx, .. } => {
+                            if place_has_index(base) {
+                                return Err(Ice("nested index store".into()));
+                            }
+                            let bv = place_lvalue(base, self);
+                            let sv = self.cur_move;
+                            self.cur_move = false;
+                            let iw = self.emit_expr(idx)?;
+                            self.cur_move = sv;
+                            let i64_ = format!("(int64_t)({})", iw);
+                            self.out.push_str(&format!(
+                                "if ({i} < 0 || {i} >= {bv}.len) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n",
+                                i = i64_,
+                                bv = bv
+                            ));
+                            format!("{}.data[{}]", bv, i64_)
+                        }
+                        _ => place_lvalue(target, self),
+                    };
                     match op {
                         AssignOp::Set => {
                             if self.moves(&vt) {
@@ -1976,12 +4031,15 @@ impl<'a> Gen<'a> {
                                 // then destroy old, install new.
                                 self.cur_move = true;
                                 let v = self.mat_str(value)?;
+                                let td = self.dim_of(expr.id);
+                                let vd = self.dim_of(value.id);
+                                let vc = self.coerce(v.clone(), &vd, &td);
                                 let hold = self.fresh_tmp();
                                 self.out.push_str(&format!(
                                     "{} {} = {};\n",
                                     self.cty_val(&vt),
                                     hold,
-                                    v
+                                    vc
                                 ));
                                 self.consume(&v);
                                 self.flush_nulls();
@@ -1991,24 +4049,49 @@ impl<'a> Gen<'a> {
                             } else {
                                 self.cur_move = false;
                                 let rhs = self.emit_expr(value)?;
+                                let td = self.dim_of(expr.id);
+                                let vd = self.dim_of(value.id);
+                                let rhs = self.coerce(rhs, &vd, &td);
                                 self.out.push_str(&format!("{} = {};\n", cname, rhs));
                                 self.flush_nulls();
                                 self.pop_frame();
                             }
                         }
                         _ => {
-                            self.cur_move = false;
-                            let rhs = self.emit_expr(value)?;
-                            let cop = match op {
-                                AssignOp::Add => "+=",
-                                AssignOp::Sub => "-=",
-                                AssignOp::Mul => "*=",
-                                AssignOp::Div => "/=",
-                                _ => "%=",
-                            };
-                            self.out.push_str(&format!("{} {} {};\n", cname, cop, rhs));
-                            self.flush_nulls();
-                            self.pop_frame();
+                            if *op == AssignOp::Add && vt == Ty::Str {
+                                // `s += e` on strings desugars to `s = s + e`:
+                                // concat copies both sides, so hold the fresh
+                                // value, destroy the old, then install.
+                                self.cur_move = false;
+                                let r = self.mat_str(value)?;
+                                let hold = self.fresh_tmp();
+                                self.out.push_str(&format!(
+                                    "VStr {} = vstr_concat({}, {});\n",
+                                    hold, cname, r
+                                ));
+                                self.flush_nulls();
+                                self.pop_frame();
+                                self.emit_destroy(&cname, &vt);
+                                self.out.push_str(&format!("{} = {};\n", cname, hold));
+                            } else {
+                                self.cur_move = false;
+                                let rhs = self.emit_expr(value)?;
+                                // Units: scale the RHS to the place (identity
+                                // for `*=`/`/=` — factors are dimensionless).
+                                let td = self.dim_of(expr.id);
+                                let vd = self.dim_of(value.id);
+                                let rhs = self.coerce(rhs, &vd, &td);
+                                let cop = match op {
+                                    AssignOp::Add => "+=",
+                                    AssignOp::Sub => "-=",
+                                    AssignOp::Mul => "*=",
+                                    AssignOp::Div => "/=",
+                                    _ => "%=",
+                                };
+                                self.out.push_str(&format!("{} {} {};\n", cname, cop, rhs));
+                                self.flush_nulls();
+                                self.pop_frame();
+                            }
                         }
                     }
                     self.cur_move = saved;
@@ -2036,6 +4119,14 @@ impl<'a> Gen<'a> {
                 // Header first: cond temps stay alive through the branches
                 // and are freed after (freeing before would be use-after-free).
                 self.out.push_str(&format!("if ({}) {{\n", c));
+                // Shield: nulls queued while emitting the condition (e.g. a
+                // temp moved into a call) belong after the WHOLE statement —
+                // the condition runs on every path. Branch bodies flush
+                // after each of their statements and would otherwise write
+                // these poisons into the taken branch only, while the frame
+                // pop frees the (already callee-freed) temp on all paths
+                // (double free on the untaken path).
+                self.push_null_shield();
                 self.emit_block(then_b, ret_ty, false)?;
                 self.out.push('}');
                 if let Some(e) = else_b {
@@ -2044,6 +4135,9 @@ impl<'a> Gen<'a> {
                     self.out.push('}');
                 }
                 self.out.push('\n');
+                // Condition poisons first (queued earliest), then any
+                // leftovers from the branches.
+                self.pop_null_shield();
                 self.flush_nulls();
                 self.pop_frame();
                 Ok(())
@@ -2132,13 +4226,15 @@ impl<'a> Gen<'a> {
                             .push_str(&format!("int64_t {}_len = {}.len;\n", idx, snap));
                         self.out
                             .push_str(&format!("for (; {} < {}_len; ++{}) {{\n", idx, idx, idx));
-                        // Per-iteration owned binding (clone out of snapshot).
-                        self.out.push_str(&format!(
-                            "{} {} = {};\n",
-                            elem_ct,
-                            cvar,
+                        // Per-iteration owned binding (clone out of snapshot;
+                        // `Copy` elements copy plainly — no helper exists).
+                        let elem_init = if self.type_needs_drop(&elem_ty) {
                             self.clone_call(&elem_ty, &format!("{}.data[{}]", snap, idx))
-                        ));
+                        } else {
+                            format!("{}.data[{}]", snap, idx)
+                        };
+                        self.out
+                            .push_str(&format!("{} {} = {};\n", elem_ct, cvar, elem_init));
                         self.loop_stack.push(LoopInfo {
                             body_depth: self.scopes.len(),
                             tmp_depth: self.tmp_frames.len(),
@@ -2155,7 +4251,7 @@ impl<'a> Gen<'a> {
                         }
                         self.emit_block_body_only(body, ret_ty, false)?;
                         self.emit_scope_frees(self.scopes.len() - 1);
-                        self.scopes.pop();
+                        self.pop_scope();
                         self.loop_stack.pop();
                         self.out.push_str("}\n");
                         self.out.push_str("}\n");
@@ -2184,6 +4280,46 @@ impl<'a> Gen<'a> {
                 self.pop_frame();
                 Ok(())
             }
+            Stmt::LetElse {
+                scrutinee,
+                pat,
+                else_b,
+                ..
+            } => {
+                // `let PAT = expr else DIVERGING` (B3): materialize the
+                // scrutinee once, pre-declare bindings in the current scope
+                // (C block scoping: the branch cannot declare what the rest
+                // uses), assign payloads on the taken branch, and emit the
+                // diverging `else` block otherwise (sema-enforced via `Flow`).
+                let st = self.ty_of(scrutinee.id);
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let slot = match &scrutinee.kind {
+                    ExprKind::Var(name) => mangle(name),
+                    _ => {
+                        let inline = self.emit_expr(scrutinee)?;
+                        self.new_tmp_ty(&self.cty_val(&st), &inline)
+                    }
+                };
+                self.cur_move = saved;
+                self.flush_nulls();
+                self.pat_declare(pat, &st)?;
+                let test = self.pat_test(pat, &st, &slot)?;
+                self.out.push_str(&format!("if ({}) {{\n", test));
+                self.pat_assign(pat, &st, &slot)?;
+                self.flush_nulls();
+                self.out.push_str("} else {\n");
+                self.scopes.push(vec![]);
+                let depth = self.scopes.len() - 1;
+                self.push_frame();
+                self.emit_block(else_b, ret_ty, false)?;
+                self.emit_scope_frees(depth);
+                self.flush_nulls();
+                self.pop_frame();
+                self.pop_scope();
+                self.out.push_str("}\n");
+                Ok(())
+            }
             Stmt::Break { value, .. } => {
                 let info = self
                     .loop_stack
@@ -2196,12 +4332,13 @@ impl<'a> Gen<'a> {
                     .map(|v| (v.res.clone(), v.label.clone()));
                 match (value, target) {
                     (None, _) => {
-                        // Plain break: abandon statement temps, run intervening
-                        // Drops, then leave the loop.
+                        // Plain break: flush queued move-poisons first (moved
+                        // temps must read NULL here), destroy live temps
+                        // WITHOUT popping (enclosing constructs still pop on
+                        // fallthrough), run intervening drops, leave the loop.
                         let tmp_depth = self.loop_stack.last().map(|i| i.tmp_depth).unwrap_or(0);
-                        while self.tmp_frames.len() > tmp_depth {
-                            self.pop_frame();
-                        }
+                        self.flush_all_nulls();
+                        self.destroy_frames_above(tmp_depth);
                         self.emit_scope_frees_from(depth);
                         self.out.push_str("break;\n");
                     }
@@ -2231,19 +4368,24 @@ impl<'a> Gen<'a> {
                     .last()
                     .ok_or_else(|| Ice("continue outside loop".into()))?;
                 let (depth, tmp_depth) = (info.body_depth, info.tmp_depth);
-                while self.tmp_frames.len() > tmp_depth {
-                    self.pop_frame();
-                }
+                // Same pairing rule as plain break: flush, destroy without
+                // popping; enclosing pops still run on fallthrough paths.
+                self.flush_all_nulls();
+                self.destroy_frames_above(tmp_depth);
                 self.emit_scope_frees_from(depth);
                 self.out.push_str("continue;\n");
                 Ok(())
             }
             Stmt::Return { value, .. } => {
-                // Abandon every live statement temp (transferred values were
-                // already nulled, so freeing the rest is safe).
-                while !self.tmp_frames.is_empty() {
-                    self.pop_frame();
-                }
+                // Write queued move-poisons FIRST so the destroys below
+                // skip transferred slots; then free every live statement
+                // temp on the return path, keeping frames registered (see
+                // `destroy_all_temps`): enclosing owners still pop (and
+                // destroy) on fallthrough paths. Flush through shields: a
+                // return inside a branch must also poison temps moved by an
+                // enclosing condition (their moves dominate the jump).
+                self.flush_all_nulls();
+                self.destroy_all_temps();
                 self.push_frame();
                 let saved = self.cur_move;
                 match value {
@@ -2255,12 +4397,20 @@ impl<'a> Gen<'a> {
                     }
                     Some(v) => {
                         let vt = self.ty_of(v.id);
+                        // Units: convert to the declared return dimension.
+                        let rd = self.fn_ret_dim.clone();
+                        let vd = self.dim_of(v.id);
                         if self.moves(&vt) {
                             self.cur_move = true;
                             let w = self.mat_str(v)?;
+                            let wc = self.coerce(w.clone(), &vd, &rd);
                             let ret = self.fresh_tmp();
-                            self.out
-                                .push_str(&format!("{} {} = {};\n", self.cty_val(&vt), ret, w));
+                            self.out.push_str(&format!(
+                                "{} {} = {};\n",
+                                self.cty_val(&vt),
+                                ret,
+                                wc
+                            ));
                             self.consume(&w);
                             self.flush_nulls();
                             self.pop_frame();
@@ -2277,10 +4427,20 @@ impl<'a> Gen<'a> {
                         } else {
                             self.cur_move = false;
                             let e = self.emit_expr(v)?;
+                            // Materialize before frees: the expression may
+                            // read owned locals (index, field, call), which
+                            // frees would destroy first (use-after-free).
+                            // Units: convert to the declared return dimension.
+                            let rd = self.fn_ret_dim.clone();
+                            let vd = self.dim_of(v.id);
+                            let e = self.coerce(e, &vd, &rd);
+                            let ret = self.fresh_tmp();
+                            self.out
+                                .push_str(&format!("{} {} = {};\n", self.cty_val(&vt), ret, e));
                             self.flush_nulls();
                             self.pop_frame();
                             self.emit_all_frees();
-                            self.out.push_str(&format!("return {};\n", e));
+                            self.out.push_str(&format!("return {};\n", ret));
                         }
                     }
                 }
@@ -2311,11 +4471,11 @@ impl<'a> Gen<'a> {
             ExprKind::Str(s) => format!("vstr_from_c(\"{}\")", c_escape(s)),
             ExprKind::Var(name) => {
                 let cname = mangle(name);
-                // Bare `None` (unshadowed — sema guarantees) is a constructor,
-                // not a variable reference.
-                if name == "None" && !self.owned.contains_key(&cname) {
+                // Bare `None`/`Missing` (unshadowed — sema guarantees) is a
+                // constructor, not a variable reference.
+                if (name == "None" || name == "Missing") && !self.owned.contains_key(&cname) {
                     if let Ty::Generic { base, args } = self.ty_of(e.id) {
-                        if base == "Option" {
+                        if base == "Option" || base == "Missing" {
                             return Ok(format!("({}){{ .tag = 1 }}", ctype_inst(&base, &args)));
                         }
                     }
@@ -2336,10 +4496,13 @@ impl<'a> Gen<'a> {
                 // Lvalue path; the base must be a plain variable in 0.1.0
                 // (field-of-temporary has no stable slot to poison).
                 // Field access through a reference uses `->` (sema auto-derefs).
+                // Materialize (not just emit) the base: a call/index rvalue
+                // base must land in a frame temp, or the rest of the
+                // temporary leaks after the field is read out of it.
                 let arrow = matches!(self.ty_of(base.id), Ty::Reference { .. });
                 let saved = self.cur_move;
                 self.cur_move = false;
-                let b = self.emit_expr(base)?;
+                let b = self.mat_str(base)?;
                 self.cur_move = saved;
                 let path = if arrow {
                     format!("{}->{}", b, cfield(field))
@@ -2358,10 +4521,42 @@ impl<'a> Gen<'a> {
                 }
                 path
             }
+            ExprKind::Index { base, idx } => {
+                // Element copy out (owned elements clone, exactly like
+                // `get`: the buffer is never aliased). Out-of-bounds is a
+                // defined trap, mirroring integer division by zero.
+                let et = match self.ty_of(base.id) {
+                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                        args[0].clone()
+                    }
+                    _ => return Err(Ice("index on non-Vec".into())),
+                };
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let b = self.mat_str(base)?;
+                let iw = self.emit_expr(idx)?;
+                self.cur_move = saved;
+                let i64_ = format!("(int64_t)({})", iw);
+                let slot = format!("{}.data[{}]", b, i64_);
+                let val = if self.type_needs_drop(&et) {
+                    self.clone_call(&et, &slot)
+                } else {
+                    slot
+                };
+                let zero = format!("({}){{0}}", self.cty(&et));
+                format!(
+                    "({i} < 0 || {i} >= {b}.len ? (fprintf(stderr, \"index out of bounds\\n\"), abort(), {zero}) : ({val}))",
+                    i = i64_,
+                    b = b,
+                    zero = zero,
+                    val = val
+                )
+            }
             ExprKind::Call { name, args } => {
                 if name == "println" || name == "print" {
                     let a = args.first().ok_or_else(|| Ice("print arity".into()))?;
                     let t = self.ty_of(a.id);
+
                     let saved = self.cur_move;
                     self.cur_move = false; // print borrows
                                            // Materialize so owned rvalues (literals, concats, call results)
@@ -2382,8 +4577,15 @@ impl<'a> Gen<'a> {
                         // Composites (sema validated printability + recorded
                         // the instantiation for helper generation).
                         Ty::Generic { base, args }
-                            if (base == "Vec" || base == "Option") && args.len() == 1 =>
+                            if (base == "Vec" || base == "Option" || base == "Missing")
+                                && args.len() == 1 =>
                         {
+                            format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
+                        }
+                        Ty::Generic { base, args } if base == "Mat" && args.is_empty() => {
+                            format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
+                        }
+                        Ty::Generic { base, args } if base == "Factor" && args.is_empty() => {
                             format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
                         }
                         Ty::Generic { base, args } if base == "Result" && args.len() == 2 => {
@@ -2392,6 +4594,225 @@ impl<'a> Gen<'a> {
                         // Anything else is rejected by sema (structs, enums,
                         // references, Unit); reaching here is a compiler bug.
                         _ => return Err(Ice("print of non-printable type".into())),
+                    }
+                } else if name == "to_string" {
+                    // J1 total scalar conversions (sema checked the type).
+                    let a = args.first().ok_or_else(|| Ice("to_string arity".into()))?;
+                    let t = self.ty_of(a.id);
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.emit_expr(a)?;
+                    self.cur_move = saved;
+                    match t {
+                        Ty::Int32 => format!("vstr_from_i32({})", inner),
+                        Ty::Int64 => format!("vstr_from_i64({})", inner),
+                        Ty::Float64 => format!("vstr_from_f64({})", inner),
+                        Ty::Bool => format!("vstr_from_bool({})", inner),
+                        // Identity clone (D1 interpolation of `String`
+                        // values): concat consumes its inputs, so borrow
+                        // position must clone (like materialization).
+                        Ty::Str => format!("vstr_clone({})", inner),
+                        _ => return Err(Ice("to_string of non-scalar".into())),
+                    }
+                } else if name == "sin" || name == "cos" {
+                    // Libm trig over borrowed Float64 (sema checked).
+                    let a = args.first().ok_or_else(|| Ice("sin/cos arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.emit_expr(a)?;
+                    self.cur_move = saved;
+                    if name == "sin" {
+                        format!("sin({})", inner)
+                    } else {
+                        format!("cos({})", inner)
+                    }
+                } else if name == "atan2" {
+                    if args.len() != 2 {
+                        return Err(Ice("atan2 arity".into()));
+                    }
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let y = self.emit_expr(&args[0])?;
+                    let x = self.emit_expr(&args[1])?;
+                    self.cur_move = saved;
+                    format!("atan2({}, {})", y, x)
+                } else if name == "sys_run" || name == "sys_capture" {
+                    // std::sys subprocess spawns (sema gated exp out).
+                    let a = args.first().ok_or_else(|| Ice("sys_run arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.mat_str(a)?;
+                    self.cur_move = saved;
+                    if name == "sys_run" {
+                        format!("vsys_run({})", inner)
+                    } else {
+                        format!("vsys_capture({})", inner)
+                    }
+                } else if name == "sys_getenv" {
+                    let a = args.first().ok_or_else(|| Ice("sys_getenv arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.mat_str(a)?;
+                    self.cur_move = saved;
+                    format!("vsys_getenv({})", inner)
+                } else if name == "sys_cwd" {
+                    if !args.is_empty() {
+                        return Err(Ice("sys_cwd arity".into()));
+                    }
+                    "vsys_cwd()".to_string()
+                } else if name == "rng_seeded" {
+                    // J5 seeded xoshiro256++ (seed bits feed splitmix64).
+                    let a = args.first().ok_or_else(|| Ice("rng_seeded arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.emit_expr(a)?;
+                    self.cur_move = saved;
+                    format!("vrng_seeded((uint64_t)({}))", inner)
+                } else if name == "par_sum" {
+                    // K4: vector borrows (never moves); thread count is Copy.
+                    let a = args.first().ok_or_else(|| Ice("par_sum arity".into()))?;
+                    let b = args.get(1).ok_or_else(|| Ice("par_sum arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let v = self.mat_str(a)?;
+                    let t = self.ty_of(b.id);
+                    let n = if self.moves(&t) {
+                        self.mat_str(b)?
+                    } else {
+                        self.emit_expr(b)?
+                    };
+                    self.cur_move = saved;
+                    format!("v_par_sum_wrap(&{}, {})", v, n)
+                } else if name == "par_map" {
+                    // F1: vector and function borrow; thread count is Copy.
+                    let a = args.first().ok_or_else(|| Ice("par_map arity".into()))?;
+                    let f = args.get(1).ok_or_else(|| Ice("par_map arity".into()))?;
+                    let b = args.get(2).ok_or_else(|| Ice("par_map arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let v = self.mat_str(a)?;
+                    let sym = self.functional_sym(f, 1)?;
+                    let t = self.ty_of(b.id);
+                    let n = if self.moves(&t) {
+                        self.mat_str(b)?
+                    } else {
+                        self.emit_expr(b)?
+                    };
+                    self.cur_move = saved;
+                    format!("v_par_map_wrap(&{}, {}, {})", v, sym, n)
+                } else if name == "seq" {
+                    // Stepped sequence: Int args are Copy (borrow to coerce).
+                    if args.len() != 3 {
+                        return Err(Ice("seq arity".into()));
+                    }
+                    let mut parts = vec![];
+                    for a in args {
+                        let saved = self.cur_move;
+                        self.cur_move = false;
+                        let v = self.emit_expr(a)?;
+                        self.cur_move = saved;
+                        parts.push(format!("(int64_t)({})", v));
+                    }
+                    format!("v_seq_wrap({}, {}, {})", parts[0], parts[1], parts[2])
+                } else if name == "is_in" {
+                    // Membership: both sides borrow; result is a fresh vec.
+                    if args.len() != 2 {
+                        return Err(Ice("is_in arity".into()));
+                    }
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let a = self.mat_str(&args[0])?;
+                    let b = self.mat_str(&args[1])?;
+                    self.cur_move = saved;
+                    let vct = match self.ty_of(args[0].id) {
+                        Ty::Generic { base, args: ta } if base == "Vec" && ta.len() == 1 => {
+                            ctype_inst("Vec", std::slice::from_ref(&ta[0]))
+                        }
+                        _ => return Err(Ice("is_in of non-Vec".into())),
+                    };
+                    let iname = vct.strip_prefix('V').unwrap_or(&vct).to_string();
+                    format!("vvec_{}_is_in(&{}, &{})", iname, a, b)
+                } else if name == "mat_outer" || name == "mat_kron" {
+                    if args.len() != 2 {
+                        return Err(Ice("mat_outer/mat_kron arity".into()));
+                    }
+                    let mut parts = vec![];
+                    for a in args {
+                        let saved = self.cur_move;
+                        self.cur_move = false;
+                        let v = self.mat_str(a)?;
+                        self.cur_move = saved;
+                        parts.push(v);
+                    }
+                    if name == "mat_outer" {
+                        format!("vmat_outer(&{}, &{})", parts[0], parts[1])
+                    } else {
+                        format!("vmat_kron(&{}, &{})", parts[0], parts[1])
+                    }
+                } else if name == "mat_zeros" || name == "mat_identity" || name == "mat_from_rows" {
+                    // M1 matrix constructors (sema checked arity/types).
+                    // Int dims are Copy; the row vector borrows (mat_str).
+                    let mut parts = vec![];
+                    for a in args {
+                        let saved = self.cur_move;
+                        self.cur_move = false;
+                        let t = self.ty_of(a.id);
+                        let v = if self.moves(&t) {
+                            self.mat_str(a)?
+                        } else {
+                            self.emit_expr(a)?
+                        };
+                        self.cur_move = saved;
+                        parts.push(v);
+                    }
+                    match name.as_str() {
+                        "mat_zeros" => format!(
+                            "vmat_zeros((int64_t)({}), (int64_t)({}))",
+                            parts[0], parts[1]
+                        ),
+                        "mat_identity" => {
+                            format!("vmat_identity((int64_t)({}))", parts[0])
+                        }
+                        _ => format!("vmat_from_rows(&{})", parts[0]),
+                    }
+                } else if name == "factor_from_strings" {
+                    // F1: string vector borrows (mat_str materializes rvalues).
+                    let a = args.first().ok_or_else(|| Ice("factor arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let v = self.mat_str(a)?;
+                    self.cur_move = saved;
+                    format!("vfactor_from_strings(&{})", v)
+                } else if name == "read_file"
+                    || name == "csv_rows"
+                    || name == "csv_bad_rows"
+                    || name == "json_rows"
+                    || name == "write_file"
+                    || name == "hash_str"
+                {
+                    // J2/J6 file/CSV/JSON kernels (sema checked arity/types).
+                    // Arguments borrow; owned rvalues materialize into
+                    // statement-lived temps like `println`.
+                    let mut parts = vec![];
+                    for a in args {
+                        let saved = self.cur_move;
+                        self.cur_move = false;
+                        let t = self.ty_of(a.id);
+                        let v = if self.moves(&t) {
+                            self.mat_str(a)?
+                        } else {
+                            self.emit_expr(a)?
+                        };
+                        self.cur_move = saved;
+                        parts.push(v);
+                    }
+                    match name.as_str() {
+                        "read_file" => format!("v_read_file_wrap({})", parts.join(", ")),
+                        "csv_rows" => format!("v_csv_rows_wrap({})", parts.join(", ")),
+                        "csv_bad_rows" => format!("v_csv_bad_rows_wrap({})", parts.join(", ")),
+                        "write_file" => format!("v_write_file_wrap({})", parts.join(", ")),
+                        "hash_str" => format!("v_hash_str({})", parts.join(", ")),
+                        _ => format!("v_json_rows_wrap({})", parts.join(", ")),
                     }
                 } else if name == "Some" || name == "Ok" || name == "Err" {
                     // Option/Result constructors (sema typed the result).
@@ -2446,7 +4867,12 @@ impl<'a> Gen<'a> {
                     let saved = self.cur_move;
                     let mut parts = vec![];
                     let mut moved_tmps = vec![];
+                    // Shield: same hazard as calls/struct literals (an
+                    // argument flushing internally must not write earlier
+                    // arguments' queued poisons before assembly).
+                    let mut shielded: Vec<(String, Ty)> = vec![];
                     for (j, a) in args.iter().enumerate() {
+                        shielded.extend(std::mem::take(&mut self.nulls));
                         let t = self.ty_of(a.id);
                         self.cur_move = self.moves(&t);
                         let before = self.frame_len();
@@ -2460,33 +4886,40 @@ impl<'a> Gen<'a> {
                     for t in moved_tmps {
                         self.null_slot(&t);
                     }
+                    self.nulls.extend(shielded);
                     format!("({}){{ {} }}", ctype_name(&q), parts.join(", "))
-                } else {
-                    // Arguments: move owned values into the callee (callee frees params).
-                    let saved = self.cur_move;
-                    let mut parts = vec![];
-                    let mut moved_tmps = vec![];
-                    for a in args {
-                        let t = self.ty_of(a.id);
-                        self.cur_move = self.moves(&t);
-                        let before = self.frame_len();
-                        let v = self.mat_str(a)?;
-                        if self.cur_move && self.is_tmp_since(before, &v) {
-                            moved_tmps.push(v.clone());
+                } else if name == "map"
+                    || name == "filter"
+                    || name == "fold"
+                    || name == "split_apply"
+                {
+                    // C1 Stage-1 functionals (sema checked shapes and recorded
+                    // the kernel; the function operand lowers to its C symbol).
+                    self.emit_functional(name, e, args)?
+                } else if name == "__argv" {
+                    // Script argv collector: Vec<String> from argc/argv
+                    // (sema recorded the instantiation; `main` takes args).
+                    if !args.is_empty() {
+                        return Err(Ice("__argv arity".into()));
+                    }
+                    let vt = self.ty_of(e.id);
+                    let (elem_ty, vct) = match &vt {
+                        Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                            (args[0].clone(), ctype_inst(base, args))
                         }
-                        parts.push(v);
-                    }
-                    self.cur_move = saved;
-                    let (cmod, cname) = self
-                        .resolve_fun(name)
-                        .ok_or_else(|| Ice(format!("unknown function {}", name)))?;
-                    let call = format!("{}_fn({})", cfun(&cmod, &cname), parts.join(", "));
-                    for t in moved_tmps {
-                        self.null_slot(&t);
-                    }
-                    // NOTE: no flush here — nulls are statement-level effects and must
-                    // be written after the enclosing statement text (else use-after-NULL).
-                    call
+                        _ => return Err(Ice("__argv with non-Vec type".into())),
+                    };
+                    let iname = vct.strip_prefix('V').unwrap_or(&vct).to_string();
+                    let tmp = self.new_tmp_ty(&vct, &format!("vvec_{}_new()", iname));
+                    let _ = elem_ty;
+                    self.out.push_str(&format!(
+                        "for (int _ai = 1; _ai < argc; _ai++) {{ VStr _av = vstr_from_c(argv[_ai]); vvec_{}_push(&{}, _av); }}\n",
+                        iname, tmp
+                    ));
+                    self.flush_nulls();
+                    tmp
+                } else {
+                    self.emit_user_call(name, args)?
                 }
             }
             ExprKind::Binary { op, lhs, rhs } => {
@@ -2505,10 +4938,86 @@ impl<'a> Gen<'a> {
                         BinOp::Ne => format!("(!vstr_eq({}, {}))", l, r),
                         _ => return Err(Ice("invalid string operator".into())),
                     }
+                } else if matches!(op, BinOp::Eq | BinOp::Ne)
+                    && matches!(&lt, Ty::Generic { base, args } if base == "Missing" && args.len() == 1)
+                {
+                    // `Missing == Missing` is true (unlike NaN); two
+                    // `Present` values compare payloads with `==`, so NaN
+                    // payloads stay unequal. Tags decide first.
+                    self.cur_move = false;
+                    let l = self.mat_str(lhs)?;
+                    let r = self.mat_str(rhs)?;
+                    self.cur_move = saved;
+                    let t = match &lt {
+                        Ty::Generic { args, .. } => args[0].clone(),
+                        _ => return Err(Ice("missing payload".into())),
+                    };
+                    let lp = format!("{}.u.v0.v___0", l);
+                    let rp = format!("{}.u.v0.v___0", r);
+                    let cmp = match t {
+                        Ty::Str => format!("vstr_eq({}, {})", lp, rp),
+                        _ => format!("({} == {})", lp, rp),
+                    };
+                    let eq = format!(
+                        "({}.tag != {}.tag ? 0 : (({}.tag == 1) ? 1 : ({})))",
+                        l, r, l, cmp
+                    );
+                    if matches!(op, BinOp::Ne) {
+                        format!("(!({}))", eq)
+                    } else {
+                        eq
+                    }
+                } else if matches!(op, BinOp::And | BinOp::Or) {
+                    // Short-circuit is semantic: `a && b` must not evaluate
+                    // `b` (or its argument temps) when `a` decides the
+                    // result. Hoisting rhs temps before a C `&&` would run
+                    // them unconditionally (wrong side effects + leaks), so
+                    // lower to a guarded if instead (like value-`if`):
+                    //   l = lhs; r = neutral; if (l == take) { r = rhs; }; r
+                    // Bool operands are Copy, so no move/poison bookkeeping
+                    // applies to l/r themselves; rhs temps live in a pushed
+                    // frame destroyed inside the guarded block (taken path
+                    // only — creation never runs otherwise).
+                    let l = self.emit_expr(lhs)?;
+                    let res = self.fresh_tmp();
+                    self.out.push_str(&format!(
+                        "int {} = {};\n",
+                        res,
+                        if *op == BinOp::And { 0 } else { 1 }
+                    ));
+                    if let Some(f) = self.tmp_frames.last_mut() {
+                        f.push((res.clone(), "int".to_string()));
+                    }
+                    let take = if *op == BinOp::And { 1 } else { 0 };
+                    self.out.push_str(&format!("if (({}) == {}) {{\n", l, take));
+                    // Shield: nulls queued by lhs (or earlier) must not be
+                    // flushed by statement ends inside rhs.
+                    let shielded = std::mem::take(&mut self.nulls);
+                    self.push_frame();
+                    let r = self.emit_expr(rhs)?;
+                    self.out.push_str(&format!("{} = ({});\n", res, r));
+                    self.flush_nulls();
+                    self.pop_frame();
+                    self.out.push_str("}\n");
+                    self.nulls.extend(shielded);
+                    self.cur_move = saved;
+                    res
                 } else {
                     let l = self.emit_expr(lhs)?;
                     let r = self.emit_expr(rhs)?;
                     self.cur_move = saved;
+                    // Units: scale arithmetic/comparison operands to the
+                    // result dimension (identity unless sema recorded a
+                    // scale conversion; `*`/`/` compose instead).
+                    let (l, r) = if matches!(op, BinOp::Mul | BinOp::Div) {
+                        (l, r)
+                    } else {
+                        let res = self.dim_of(e.id);
+                        (
+                            self.coerce(l, &self.dim_of(lhs.id), &res),
+                            self.coerce(r, &self.dim_of(rhs.id), &res),
+                        )
+                    };
                     let sop = match op {
                         BinOp::Add => "+",
                         BinOp::Sub => "-",
@@ -2575,15 +5084,32 @@ impl<'a> Gen<'a> {
                     let res = self
                         .new_tmp_ty(&self.cty_val(&tt), &format!("({}){{0}}", self.cty_val(&tt)));
                     self.out.push_str(&format!("if ({}) {{\n", c));
-                    self.emit_arm(then_b, &res, &tt, mv)?;
+                    let tdim = self.dim_of(e.id);
+                    self.emit_arm(then_b, &res, &tt, &tdim, mv)?;
                     self.out.push_str("} else {\n");
                     match else_b {
-                        Some(b) => self.emit_arm(b, &res, &tt, mv)?,
+                        Some(b) => self.emit_arm(b, &res, &tt, &tdim, mv)?,
                         None => self.out.push_str("{}"),
                     }
                     self.out.push_str("}\n");
                     self.cur_move = saved;
                     res
+                } else if tt == Ty::Unit {
+                    // Statement-position `if`: no result slot (a `void`
+                    // tail has no value to store). Emit both branches as
+                    // plain blocks and yield a dummy inline value.
+                    self.out.push_str(&format!("if ({}) {{\n", c));
+                    let fn_ret = self.fn_ret.clone();
+                    self.emit_block(then_b, &fn_ret, false)?;
+                    self.out.push('}');
+                    if let Some(b) = else_b {
+                        self.out.push_str(" else {\n");
+                        self.emit_block(b, &fn_ret, false)?;
+                        self.out.push('}');
+                    }
+                    self.out.push('\n');
+                    self.cur_move = saved;
+                    "0".to_string()
                 } else {
                     // Non-string value-if: lower via a temp variable,
                     // registered so pops/transfers track it.
@@ -2594,10 +5120,11 @@ impl<'a> Gen<'a> {
                         f.push((res.clone(), res_ct));
                     }
                     self.out.push_str(&format!("if ({}) {{\n", c));
-                    self.emit_arm_copy(then_b, &res)?;
+                    let tdim = self.dim_of(e.id);
+                    self.emit_arm_copy(then_b, &res, &tdim)?;
                     self.out.push_str("} else {\n");
                     match else_b {
-                        Some(b) => self.emit_arm_copy(b, &res)?,
+                        Some(b) => self.emit_arm_copy(b, &res, &tdim)?,
                         None => self.out.push_str("{}"),
                     }
                     self.out.push_str("}\n");
@@ -2608,10 +5135,14 @@ impl<'a> Gen<'a> {
             ExprKind::Match { scrutinee, arms } => {
                 let tt = self.ty_of(e.id);
                 let mv = self.cur_move;
+                // Unit-typed matches (statement tails) take no result slot:
+                // a `void` tail has no value to store. Emit arms as plain
+                // blocks, exactly like a statement match.
+                let res_ty = if tt == Ty::Unit { None } else { Some(&tt) };
                 // A borrowed owned result is cloned into res by the arm
                 // logic; the res temp itself lives in our frame and is
                 // freed/transferred by the caller, exactly like value-`if`.
-                self.emit_match(scrutinee, arms, Some(&tt), mv, &self.fn_ret.clone())?
+                self.emit_match(scrutinee, arms, res_ty, mv, &self.fn_ret.clone())?
             }
             ExprKind::Loop { body } => {
                 let tt = self.ty_of(e.id);
@@ -2652,6 +5183,18 @@ impl<'a> Gen<'a> {
                     _ => "0".to_string(),
                 }
             }
+            ExprKind::Block(b) => {
+                // Desugared statement sequence: emit statements inline;
+                // our desugars never carry a tail.
+                let fn_ret = self.fn_ret.clone();
+                for s in &b.stmts {
+                    self.emit_stmt(s, &fn_ret)?;
+                }
+                match &b.tail {
+                    Some(t) => self.emit_expr(t)?,
+                    None => "0".to_string(),
+                }
+            }
             ExprKind::StructLit { name, fields, .. } => {
                 // Compound literal; field values inherit the ambient move
                 // context (construction consumes owned fields).
@@ -2669,7 +5212,15 @@ impl<'a> Gen<'a> {
                 let saved = self.cur_move;
                 let mut parts = vec![];
                 let mut moved_tmps = vec![];
+                // Shield: poisons queued by earlier fields must not be
+                // written by flushes inside later fields (e.g. a nested
+                // `vec![..]` flushes after each push) — the literal has
+                // not been assembled yet, so early writes would blank live
+                // sources. Each field sees only its own poisons; earlier
+                // ones re-queue after the literal text is built.
+                let mut shielded: Vec<(String, Ty)> = vec![];
                 for (fname, _, fexpr) in fields {
+                    shielded.extend(std::mem::take(&mut self.nulls));
                     let t = self.ty_of(fexpr.id);
                     self.cur_move = self.moves(&t);
                     let before = self.frame_len();
@@ -2683,6 +5234,7 @@ impl<'a> Gen<'a> {
                 for t in moved_tmps {
                     self.null_slot(&t);
                 }
+                self.nulls.extend(shielded);
                 // Missing fields are rejected by sema; fill nothing here.
                 // Unit structs: empty initializer list.
                 format!("({}){{ {} }}", ctype_name(&q), parts.join(", "))
@@ -2742,11 +5294,12 @@ impl<'a> Gen<'a> {
             ExprKind::Variant {
                 ty, variant, args, ..
             } => {
-                // Qualified declared enums and builtin `Option::`/`Result::`
-                // both resolve here (sema validated the spelling). User-written
-                // enum names resolve through the current module + imports.
+                // Qualified declared enums and builtin
+                // `Option::`/`Result::`/`Missing::` both resolve here (sema
+                // validated the spelling). User-written enum names resolve
+                // through the current module + imports.
                 let scrut = self.ty_of(e.id);
-                let qty = if ty == "Option" || ty == "Result" {
+                let qty = if ty == "Option" || ty == "Result" || ty == "Missing" {
                     ty.clone()
                 } else {
                     self.resolve_type(ty)
@@ -2849,10 +5402,16 @@ impl<'a> Gen<'a> {
                     ));
                     self.nulls
                         .push((ok_path.replace(".u.v0.", ".u.v1."), ety.clone()));
-                    self.flush_nulls();
-                    while !self.tmp_frames.is_empty() {
-                        self.pop_frame();
-                    }
+                    // Flush through shields: on the failure path this `return`
+                    // diverges, so enclosing-condition poisons must be visible
+                    // before the destroys below skip them.
+                    self.flush_all_nulls();
+                    // Free without popping: popping here would orphan the
+                    // success path's statement-end cleanup (same bug class
+                    // as `return` before `destroy_all_temps` existed —
+                    // a `?` call with materialized arg temps leaked them
+                    // on success). Exactly one runtime path runs.
+                    self.destroy_all_temps();
                     self.emit_all_frees();
                     let frct = self.cty(&fret);
                     let emember = cmember(1);
@@ -2863,9 +5422,10 @@ impl<'a> Gen<'a> {
                     ));
                 } else {
                     // Option: no payload to move; return None of fn type.
-                    while !self.tmp_frames.is_empty() {
-                        self.pop_frame();
-                    }
+                    // (Free without popping, as above; flush through shields
+                    // first for the same diverging-path reason.)
+                    self.flush_all_nulls();
+                    self.destroy_all_temps();
                     self.emit_all_frees();
                     let frct = self.cty(&fret);
                     self.out
@@ -2908,13 +5468,69 @@ impl<'a> Gen<'a> {
                 ..
             } => {
                 let rt = self.ty_of(receiver.id);
+                // J5 `Rng` methods (receiver borrows like `Vec`, but the C
+                // kernel advances the caller's state through the pointer).
+                if matches!(&rt, Ty::Generic { base, args } if base == "Rng" && args.is_empty()) {
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let r = self.mat_str(receiver)?;
+                    self.cur_move = saved;
+                    let rptr = format!("&{}", r);
+                    match method.as_str() {
+                        "next_f64" => return Ok(format!("vrng_next_f64({})", rptr)),
+                        "next_int" => {
+                            let a = args.first().ok_or_else(|| Ice("next_int arity".into()))?;
+                            let sv = self.cur_move;
+                            self.cur_move = false;
+                            let v = self.emit_expr(a)?;
+                            self.cur_move = sv;
+                            return Ok(format!("vrng_next_int({}, (int64_t)({}))", rptr, v));
+                        }
+                        _ => return Err(Ice("unknown Rng method".into())),
+                    }
+                }
+                // J1 `String` methods (receiver borrows like `Vec`).
+                if rt == Ty::Str {
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let r = self.mat_str(receiver)?;
+                    self.cur_move = saved;
+                    return self.emit_str_method(method, &r, args);
+                }
+                // M1 `Mat` methods (receiver borrows through the pointer
+                // model like `Vec`; fallible kernels return by value).
+                if matches!(&rt, Ty::Generic { base, args } if base == "Mat" && args.is_empty()) {
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let r = self.mat_str(receiver)?;
+                    self.cur_move = saved;
+                    return self.emit_mat_method(method, &r, args);
+                }
+                // F1 `Factor` methods (same borrow discipline as `Mat`).
+                if matches!(&rt, Ty::Generic { base, args } if base == "Factor" && args.is_empty())
+                {
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let r = self.mat_str(receiver)?;
+                    self.cur_move = saved;
+                    return self.emit_factor_method(method, &r, args);
+                }
                 let (elem_ty, iname) = match &rt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
                         let t = args[0].clone();
                         let vct = ctype_inst(base, args);
                         (t, vct.strip_prefix('V').unwrap_or(&vct).to_string())
                     }
-                    _ => return Err(Ice("method on non-Vec".into())),
+                    // UFCS (C2): sema routes method-less receivers to a free
+                    // function; lower as that call (sema guaranteed it).
+                    _ => {
+                        if self.resolve_fun(method, args.len() + 1).is_some() {
+                            let mut uargs = vec![(**receiver).clone()];
+                            uargs.extend(args.iter().cloned());
+                            return self.emit_user_call(method, &uargs);
+                        }
+                        return Err(Ice("method on non-Vec".into()));
+                    }
                 };
                 // Receiver borrows (pointer model — never moves).
                 let saved = self.cur_move;
@@ -2938,6 +5554,28 @@ impl<'a> Gen<'a> {
                         let rt = self.ty_of(e.id);
                         self.emit_vec_method(method, &elem_ty, &iname, &r, args, &rt)?
                     }
+                    "shuffle" => {
+                        let a = args.first().ok_or_else(|| Ice("shuffle arity".into()))?;
+                        let sv = self.cur_move;
+                        self.cur_move = false;
+                        let o = self.mat_str(a)?;
+                        self.cur_move = sv;
+                        format!("vvec_{}_shuffle({}, &{})", iname, rptr, o)
+                    }
+                    "sample" => {
+                        let n = args.first().ok_or_else(|| Ice("sample arity".into()))?;
+                        let g = args.get(1).ok_or_else(|| Ice("sample arity".into()))?;
+                        let sv = self.cur_move;
+                        self.cur_move = false;
+                        let nv = self.emit_expr(n)?;
+                        let o = self.mat_str(g)?;
+                        self.cur_move = sv;
+                        format!("vvec_{}_sample({}, (int64_t)({}), &{})", iname, rptr, nv, o)
+                    }
+                    // M2: in-place stable sort; ordered index permutation.
+                    // Receiver borrows through the pointer model like push.
+                    "sort" => format!("vvec_{}_sort({})", iname, rptr),
+                    "order" => format!("vvec_{}_order({})", iname, rptr),
                     _ => return Err(Ice("unknown Vec method".into())),
                 }
             }
@@ -2948,6 +5586,17 @@ impl<'a> Gen<'a> {
                 self.cur_move = saved;
                 let st = self.ty_of(expr.id);
                 cast_expr(&st, target, &inner)
+            }
+            ExprKind::AsUnit { expr, .. } => {
+                // Dimension assertion/conversion: numerics are `Copy`, so
+                // borrow and wrap with the scale factor (identity elided).
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let inner = self.emit_expr(expr)?;
+                self.cur_move = saved;
+                let from = self.dim_of(expr.id);
+                let to = self.dim_of(e.id);
+                self.coerce(inner, &from, &to)
             }
         })
     }
@@ -2966,7 +5615,14 @@ impl<'a> Gen<'a> {
     /// String-valued arm: tail assigns into `target`; ownership follows `mv`.
     /// Owned-valued arm: tail transfers into `target` of type `target_ty`.
     /// Moves NULL the source; borrows deep-clone (the arm scope dies).
-    fn emit_arm(&mut self, b: &Block, target: &str, target_ty: &Ty, mv: bool) -> Result<(), Ice> {
+    fn emit_arm(
+        &mut self,
+        b: &Block,
+        target: &str,
+        target_ty: &Ty,
+        target_dim: &Dim,
+        mv: bool,
+    ) -> Result<(), Ice> {
         self.scopes.push(vec![]);
         let depth = self.scopes.len() - 1;
         self.push_frame();
@@ -2977,17 +5633,23 @@ impl<'a> Gen<'a> {
             let saved = self.cur_move;
             self.cur_move = mv;
             let v = self.mat_str(t)?;
+            let vc = self.coerce(v.clone(), &self.dim_of(t.id), target_dim);
             if mv {
                 // Move into the result slot; poison the source.
-                self.out.push_str(&format!("{} = {};\n", target, v));
+                self.out.push_str(&format!("{} = {};\n", target, vc));
                 self.consume(&v);
             } else if *target_ty == Ty::Str {
                 // Borrow position: the result slot needs its own copy.
                 self.out
-                    .push_str(&format!("{} = vstr_clone({});\n", target, v));
+                    .push_str(&format!("{} = vstr_clone({});\n", target, vc));
             } else if let Ty::Struct(n) | Ty::Enum(n) = target_ty {
                 self.out
-                    .push_str(&format!("{} = v_clone_{}({});\n", target, dname(n), v));
+                    .push_str(&format!("{} = v_clone_{}({});\n", target, dname(n), vc));
+            } else if let Ty::Generic { base, args } = target_ty {
+                let ct = ctype_inst(base, args);
+                let iname = ct.strip_prefix('V').unwrap_or(&ct);
+                self.out
+                    .push_str(&format!("{} = v_clone_{}({});\n", target, iname, vc));
             } else {
                 return Err(Ice("owned arm with unexpected type".into()));
             }
@@ -2996,7 +5658,7 @@ impl<'a> Gen<'a> {
         }
         self.pop_frame();
         self.emit_scope_frees(depth);
-        self.scopes.pop();
+        self.pop_scope();
         Ok(())
     }
 
@@ -3192,11 +5854,146 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Pre-declare `let-else` bindings zero-initialized in the current scope.
+    /// (C block scoping: the taken branch cannot declare what the rest of the
+    /// function uses, so declaration happens up front and the branch assigns.)
+    fn pat_declare(&mut self, pat: &Pat, ty: &Ty) -> Result<(), Ice> {
+        match pat {
+            Pat::Wild => Ok(()),
+            Pat::Bind(name, _) => {
+                let cname = mangle(name);
+                let ct = self.cty_val(ty);
+                self.out
+                    .push_str(&format!("{} {} = ({}){{0}};\n", ct, cname, ct));
+                self.declare(cname.clone(), ty.clone());
+                if self.moves(ty) {
+                    self.owned.insert(cname, ty.clone());
+                }
+                Ok(())
+            }
+            Pat::LitInt(_) | Pat::LitFloat(_) | Pat::LitBool(_) | Pat::LitStr(_) => Ok(()),
+            Pat::Variant {
+                ty: q,
+                variant,
+                sub,
+                ..
+            } => {
+                let rq = self.resolve_pat_ty(q)?;
+                let (_, _, pts) = self.resolve_variant(&rq, variant, ty)?;
+                for (j, sp) in sub.iter().enumerate() {
+                    let pty = pts.get(j).cloned().unwrap_or(Ty::Unit);
+                    self.pat_declare(sp, &pty)?;
+                }
+                Ok(())
+            }
+            Pat::Struct { name, fields } => {
+                let def = self
+                    .structs
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| Ice(format!("unknown struct {}", name)))?;
+                for (fname, sub) in fields {
+                    let fty = def
+                        .fields
+                        .iter()
+                        .find(|(f, _)| f == fname)
+                        .map(|(_, t)| t.clone())
+                        .ok_or_else(|| Ice("unknown field".into()))?;
+                    match sub {
+                        None => {
+                            let cname = mangle(fname);
+                            let ct = self.cty_val(&fty);
+                            self.out
+                                .push_str(&format!("{} {} = ({}){{0}};\n", ct, cname, ct));
+                            self.declare(cname.clone(), fty.clone());
+                            if self.moves(&fty) {
+                                self.owned.insert(cname, fty);
+                            }
+                        }
+                        Some(p) => self.pat_declare(p, &fty)?,
+                    }
+                }
+                Ok(())
+            }
+            Pat::Or(alts) => match alts.first() {
+                Some(a) => self.pat_declare(a, ty),
+                None => Ok(()),
+            },
+        }
+    }
+
+    /// Assign `let-else` payloads into pre-declared bindings on the taken
+    /// branch (move-poisoning mirrors `pat_binds`; no redeclaration).
+    fn pat_assign(&mut self, pat: &Pat, ty: &Ty, slot: &str) -> Result<(), Ice> {
+        match pat {
+            Pat::Wild => Ok(()),
+            Pat::Bind(name, _) => {
+                let cname = mangle(name);
+                self.out.push_str(&format!("{} = {};\n", cname, slot));
+                if self.moves(ty) {
+                    // Move-out: poison the source path.
+                    self.nulls.push((slot.to_string(), ty.clone()));
+                    self.flush_nulls();
+                }
+                Ok(())
+            }
+            Pat::LitInt(_) | Pat::LitFloat(_) | Pat::LitBool(_) | Pat::LitStr(_) => Ok(()),
+            Pat::Variant {
+                ty: q,
+                variant,
+                sub,
+                ..
+            } => {
+                let rq = self.resolve_pat_ty(q)?;
+                let (_, idx, pts) = self.resolve_variant(&rq, variant, ty)?;
+                for (j, sp) in sub.iter().enumerate() {
+                    let ppath =
+                        format!("{}.u.{}.{}", slot, cmember(idx), cfield(&format!("_{}", j)));
+                    let pty = pts.get(j).cloned().unwrap_or(Ty::Unit);
+                    self.pat_assign(sp, &pty, &ppath)?;
+                }
+                Ok(())
+            }
+            Pat::Struct { name, fields } => {
+                let def = self
+                    .structs
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| Ice(format!("unknown struct {}", name)))?;
+                for (fname, sub) in fields {
+                    let fty = def
+                        .fields
+                        .iter()
+                        .find(|(f, _)| f == fname)
+                        .map(|(_, t)| t.clone())
+                        .ok_or_else(|| Ice("unknown field".into()))?;
+                    let fpath = format!("{}.{}", slot, cfield(fname));
+                    match sub {
+                        None => {
+                            let cname = mangle(fname);
+                            self.out.push_str(&format!("{} = {};\n", cname, fpath));
+                            if self.moves(&fty) {
+                                self.nulls.push((fpath, fty));
+                                self.flush_nulls();
+                            }
+                        }
+                        Some(p) => self.pat_assign(p, &fty, &fpath)?,
+                    }
+                }
+                Ok(())
+            }
+            Pat::Or(alts) => match alts.first() {
+                Some(a) => self.pat_assign(a, ty, slot),
+                None => Ok(()),
+            },
+        }
+    }
+
     /// Arm body for matches: statement arms emit bare; value arms assign res.
     fn emit_match_body(
         &mut self,
         b: &Block,
-        res: Option<(&str, &Ty, bool)>,
+        res: Option<(&str, &Ty, &Dim, bool)>,
         ret_ty: &Ty,
     ) -> Result<(), Ice> {
         for s in &b.stmts {
@@ -3212,19 +6009,21 @@ impl<'a> Gen<'a> {
                     self.out.push_str(&format!("{};\n", e));
                     self.flush_nulls();
                 }
-                Some((target, ty, mv)) => {
+                Some((target, ty, rdim, mv)) => {
                     let saved = self.cur_move;
                     self.cur_move = mv;
+                    let tdim = self.dim_of(t.id);
                     if self.moves(ty) {
                         let v = self.mat_str(t)?;
+                        let vc = self.coerce(v.clone(), &tdim, rdim);
                         if mv {
                             // Move into res; poison the source.
-                            self.out.push_str(&format!("{} = {};\n", target, v));
+                            self.out.push_str(&format!("{} = {};\n", target, vc));
                             self.consume(&v);
                         } else if *ty == Ty::Str {
                             // Borrow: res outlives the arm temps, so clone.
                             self.out
-                                .push_str(&format!("{} = vstr_clone({});\n", target, v));
+                                .push_str(&format!("{} = vstr_clone({});\n", target, vc));
                         } else if let Ty::Struct(n) | Ty::Enum(n) = ty {
                             self.out.push_str(&format!(
                                 "{} = v_clone_{}({});\n",
@@ -3232,6 +6031,11 @@ impl<'a> Gen<'a> {
                                 dname(n),
                                 v
                             ));
+                        } else if let Ty::Generic { base, args } = ty {
+                            let ct = ctype_inst(base, args);
+                            let iname = ct.strip_prefix('V').unwrap_or(&ct);
+                            self.out
+                                .push_str(&format!("{} = v_clone_{}({});\n", target, iname, v));
                         } else {
                             return Err(Ice("owned arm with unexpected type".into()));
                         }
@@ -3245,6 +6049,57 @@ impl<'a> Gen<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Lower a user-function call (shared by `Call` and the UFCS
+    /// `Method` fallback): move owned args in, coerce unit scales.
+    fn emit_user_call(&mut self, name: &str, args: &[Expr]) -> Result<String, Ice> {
+        // Arguments: move owned values into the callee (callee frees params).
+        let saved = self.cur_move;
+        let mut parts = vec![];
+        let mut moved_tmps = vec![];
+        // Declared parameter dimensions (for scale conversion).
+        let pdims = match self.resolve_fun(name, args.len()) {
+            Some((m, n)) => self.callee_param_dims(&m, &n, args.len()),
+            None => vec![],
+        };
+        // Shield (as in struct literals): an argument that
+        // flushes internally (e.g. a nested `vec![..]`) must
+        // not write poisons queued by earlier arguments — the
+        // call text has not been emitted yet.
+        let mut shielded: Vec<(String, Ty)> = vec![];
+        for (i, a) in args.iter().enumerate() {
+            shielded.extend(std::mem::take(&mut self.nulls));
+            let t = self.ty_of(a.id);
+            self.cur_move = self.moves(&t);
+            let before = self.frame_len();
+            let v = self.mat_str(a)?;
+            if self.cur_move && self.is_tmp_since(before, &v) {
+                moved_tmps.push(v.clone());
+            }
+            // Units: convert to the parameter's scale.
+            let v = match pdims.get(i) {
+                Some(pd) => self.coerce(v, &self.dim_of(a.id), pd),
+                None => v,
+            };
+            parts.push(v);
+        }
+        self.cur_move = saved;
+        let (cmod, cname) = self
+            .resolve_fun(name, args.len())
+            .ok_or_else(|| Ice(format!("unknown function {}", name)))?;
+        let call = format!(
+            "{}_fn({})",
+            cfun(&cmod, &cname, args.len()),
+            parts.join(", ")
+        );
+        for t in moved_tmps {
+            self.null_slot(&t);
+        }
+        self.nulls.extend(shielded);
+        // NOTE: no flush here — nulls are statement-level effects and must
+        // be written after the enclosing statement text (else use-after-NULL).
+        Ok(call)
     }
 
     /// Emit a whole match. `res_ty`: value-match result type, if any.
@@ -3283,6 +6138,11 @@ impl<'a> Gen<'a> {
             }
         }
         let arms = &arms[..cutoff.min(arms.len())];
+        // Result dimension: first arm's scale wins (later arms convert).
+        let res_dim: Dim = arms
+            .first()
+            .map(|a| self.dim_of(a.body.id))
+            .unwrap_or_else(Dim::dimensionless);
         // Result slot for value matches.
         let res = match res_ty {
             Some(t) => {
@@ -3313,15 +6173,21 @@ impl<'a> Gen<'a> {
             // res context: value matches move tails into res.
             let res_ctx = res.as_ref().map(|r| {
                 let tt: &Ty = res_ty.unwrap_or(&Ty::Unit);
-                (r.as_str(), tt, mv)
+                (r.as_str(), tt, &res_dim, mv)
             });
             if let Some(g) = &arm.guard {
                 let gs = self.cur_move;
                 self.cur_move = false;
                 let gc = self.emit_expr(g)?;
                 self.cur_move = gs;
+                // Evaluate the guard into a temp first: argument poisons
+                // queued while emitting the call are statement-level
+                // effects and must land AFTER the call text (flushing
+                // inline would poison the arguments before the call
+                // reads them, silently falsifying the guard).
+                let gtmp = self.new_tmp_ty("int", &format!("({})", gc));
                 self.flush_nulls();
-                self.out.push_str(&format!("if ({}) {{\n", gc));
+                self.out.push_str(&format!("if ({}) {{\n", gtmp));
                 self.emit_match_body(&arm.body, res_ctx, ret_ty)?;
                 self.emit_scope_frees(depth);
                 self.flush_nulls();
@@ -3340,7 +6206,7 @@ impl<'a> Gen<'a> {
                 }
             }
             self.out.push_str("}\n");
-            self.scopes.pop();
+            self.pop_scope();
         }
         if res_ty.is_some() && !self.ends_with_catch_all(arms) {
             // Guards may all fail at runtime: abort (sema proved coverage modulo guards).
@@ -3360,7 +6226,7 @@ impl<'a> Gen<'a> {
     }
 
     /// Copy-valued arm: tail assigns into `target`.
-    fn emit_arm_copy(&mut self, b: &Block, target: &str) -> Result<(), Ice> {
+    fn emit_arm_copy(&mut self, b: &Block, target: &str, target_dim: &Dim) -> Result<(), Ice> {
         self.scopes.push(vec![]);
         let depth = self.scopes.len() - 1;
         self.push_frame();
@@ -3371,13 +6237,14 @@ impl<'a> Gen<'a> {
             let saved = self.cur_move;
             self.cur_move = false;
             let v = self.emit_expr(t)?;
+            let v = self.coerce(v, &self.dim_of(t.id), target_dim);
             self.cur_move = saved;
             self.out.push_str(&format!("{} = {};\n", target, v));
             self.flush_nulls();
         }
         self.pop_frame();
         self.emit_scope_frees(depth);
-        self.scopes.pop();
+        self.pop_scope();
         Ok(())
     }
 
@@ -3388,6 +6255,29 @@ impl<'a> Gen<'a> {
             let vars = scope.clone();
             for (v, t) in vars.iter().rev() {
                 self.emit_destroy(v, t);
+            }
+        }
+    }
+
+    /// Pop one scope, forgetting its declarations in `owned`/`vartypes`.
+    /// Entries leak otherwise: a later same-named binding with a different
+    /// type would resolve moves/poisons against the dead entry (wrong
+    /// poison shape — e.g. Vec poison on a Float64 slot). Shadowed outer
+    /// bindings are restored when they are owned.
+    fn pop_scope(&mut self) {
+        if let Some(scope) = self.scopes.pop() {
+            for (name, _) in &scope {
+                self.owned.remove(name);
+                self.vartypes.remove(name);
+                for sc in self.scopes.iter().rev() {
+                    if let Some((_, ty)) = sc.iter().rev().find(|(n, _)| n == name) {
+                        self.vartypes.insert(name.clone(), ty.clone());
+                        if self.moves(ty) {
+                            self.owned.insert(name.clone(), ty.clone());
+                        }
+                        break;
+                    }
+                }
             }
         }
     }
@@ -3436,18 +6326,22 @@ fn mangle(name: &str) -> String {
 }
 
 /// C name for a function in a module: entry keeps `v_name`; others get
-/// `v_<mod>___<name>` (dots in the module path become `_`). The triple
-/// underscore cannot arise from `mangle` (which only ever doubles), so the
-/// split is unambiguous in practice; user idents are `__`-escaped first.
-fn cfun(module: &str, name: &str) -> String {
-    if module.is_empty() {
-        return mangle(name);
-    }
-    format!(
-        "v_{}___{}",
-        module.replace('_', "__").replace('.', "_"),
-        name.replace('_', "__")
-    )
+/// `v_<mod>___<name>` (dots in the module path become `_`). Arity always
+/// suffixes (`_a2`; J1 overloads would otherwise collide in C). The triple
+/// underscore cannot arise from `mangle` (which only ever doubles), and the
+/// `_aN` suffix cannot collide with escaping (user `__` always doubles), so
+/// the split is unambiguous in practice.
+fn cfun(module: &str, name: &str, arity: usize) -> String {
+    let base = if module.is_empty() {
+        mangle(name)
+    } else {
+        format!(
+            "v_{}___{}",
+            module.replace('_', "__").replace('.', "_"),
+            name.replace('_', "__")
+        )
+    };
+    format!("{}_a{}", base, arity)
 }
 
 /// Mirror of the parser's place conversion, for emitting nested place
@@ -3497,6 +6391,21 @@ fn place_lvalue(place: &Place, gen: &Gen) -> String {
             }
         }
         Place::Deref { inner, .. } => format!("(*{})", place_lvalue(inner, gen)),
+        // Index is always the outermost layer (parser nests outside-in)
+        // and assignment lowering intercepts it above, so this is dead.
+        // Nested index stores are rejected in sema.
+        Place::Index { .. } => unreachable!("nested index store reached codegen"),
+    }
+}
+
+/// Whether a place contains an index layer (defense in depth: nested
+/// index stores are rejected in sema before lowering).
+fn place_has_index(p: &Place) -> bool {
+    match p {
+        Place::Index { .. } => true,
+        Place::Field { base, .. } => place_has_index(base),
+        Place::Deref { inner, .. } => place_has_index(inner),
+        Place::Var(_, _) => false,
     }
 }
 
@@ -3552,6 +6461,8 @@ fn ctype_arg(ty: &Ty) -> String {
             .to_string(),
         // No nested references in 0.1.0; total fallback.
         Ty::Reference { .. } => "ref".to_string(),
+        // Unreachable (see `cty`); kept total for exhaustiveness.
+        Ty::Error => "Error".to_string(),
     }
 }
 
@@ -3630,9 +6541,14 @@ pub fn cc_build(c_file: &Path, exe: &Path) -> Result<(), String> {
     let mut cmd = Command::new(&cc);
     cmd.arg("-std=c11")
         .arg("-O2")
+        .arg("-fwrapv")
+        .arg("-pthread")
         .arg("-o")
         .arg(exe)
-        .arg(c_file);
+        .arg(c_file)
+        // Jacobi kernels (eigen/SVD) and Cholesky call sqrt: link libm
+        // explicitly (some drivers resolve it implicitly, others do not).
+        .arg("-lm");
     // libisl lives in vgcc/usr/lib; the driver needs it for cc1.
     let mut ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
     if let Ok(home) = std::env::var("HOME") {

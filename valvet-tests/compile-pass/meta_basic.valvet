@@ -1,0 +1,25 @@
+import std::meta::cohens_d;
+import std::meta::eta_sq;
+import std::meta::odds_ratio;
+import std::meta::meta_fixed;
+import std::meta::meta_random;
+import std::meta::power_t;
+import std::meta::p_adjust_holm;
+import std::meta::p_adjust_bh;
+fun go(): Int32 {
+println(cohens_d(1.0, 0.0, 1.0, 30.0, 1.0, 30.0));
+println(eta_sq(54.0, 60.0));
+println(odds_ratio(20.0, 10.0, 10.0, 20.0));
+val mf = meta_fixed(vec![0.5, 0.7], vec![0.1, 0.2]);
+println(mf.est);
+println(mf.se);
+val mr = meta_random(vec![0.5, 0.7], vec![0.1, 0.2]);
+println(mr.est);
+println(power_t(0.5, 64.0, 0.05));
+println(p_adjust_holm(vec![0.01, 0.04, 0.03]));
+println(p_adjust_bh(vec![0.01, 0.04, 0.03]));
+return 0;
+}
+fun main() {
+println(go())
+}

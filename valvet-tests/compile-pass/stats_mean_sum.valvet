@@ -1,0 +1,20 @@
+import std::stats::mean;
+import std::stats::sum_v;
+import std::stats::n_missing;
+import std::stats::na;
+import std::stats::MissingPolicy;
+
+fun col(): Vec<Missing<Float64>> {
+    vec![Missing::Present(2.0), Missing::Present(4.0), Missing, Missing::Present(4.0), Missing::Present(8.0)]
+}
+
+fun main() {
+    println(n_missing(col()));
+    println(mean(col(), MissingPolicy::Skip));
+    println(mean(col(), MissingPolicy::Propagate));
+    println(sum_v(col(), MissingPolicy::Skip));
+    println(sum_v(col(), MissingPolicy::Propagate));
+    val e: Vec<Missing<Float64>> = vec![];
+    println(mean(e, MissingPolicy::Skip));
+    println(na());
+}

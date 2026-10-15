@@ -1,0 +1,288 @@
+// F3 dates: UTC-only civil dates over Howard Hinnant's algorithms
+// (public domain), in pure Valvet. `Date` counts days since 1970-01-01;
+// `Datetime` counts nanoseconds since 1970-01-01T00:00:00Z (Int64 range
+// covers roughly 1678..2262, documented). Years are restricted to
+// 1..9999 (four-digit formats only). Constructors validate and yield
+// `Option` (None on any out-of-range input, like `parse_int`); all
+// arithmetic on valid values is total. Division below is floored so
+// pre-1970 dates work (C `/` truncates; `fdiv` corrects it).
+
+module std.date;
+
+pub struct Date { days: Int64 }
+pub struct Datetime { nanos: Int64 }
+
+fun fdiv(a: Int64, b: Int64): Int64 {
+    val q = a / b;
+    val r = a - q * b;
+    if (r != (0 as Int64) && ((r < (0 as Int64)) != (b < (0 as Int64)))) {
+        return q - (1 as Int64);
+    }
+    return q;
+}
+
+fun is_leap(y: Int64): Bool {
+    if (y - (y / (4 as Int64)) * (4 as Int64) != (0 as Int64)) {
+        return false;
+    }
+    if (y - (y / (100 as Int64)) * (100 as Int64) != (0 as Int64)) {
+        return true;
+    }
+    return y - (y / (400 as Int64)) * (400 as Int64) == (0 as Int64);
+}
+
+fun dim(y: Int64, m: Int64): Int64 {
+    if (m == (2 as Int64)) {
+        if (is_leap(y)) {
+            return 29 as Int64;
+        }
+        return 28 as Int64;
+    }
+    if (m == (4 as Int64) || m == (6 as Int64) || m == (9 as Int64) || m == (11 as Int64)) {
+        return 30 as Int64;
+    }
+    return 31 as Int64;
+}
+
+fun days_from_civil(y: Int64, m: Int64, d: Int64): Int64 {
+    var yy = y;
+    if (m <= (2 as Int64)) {
+        yy = yy - (1 as Int64);
+    }
+    val era = fdiv(yy, 400 as Int64);
+    val yoe = yy - era * (400 as Int64);
+    var mp = m + (9 as Int64);
+    if (m > (2 as Int64)) {
+        mp = m - (3 as Int64);
+    }
+    val doy = ((153 as Int64) * mp + (2 as Int64)) / (5 as Int64) + d - (1 as Int64);
+    val doe = yoe * (365 as Int64) + yoe / (4 as Int64) - yoe / (100 as Int64) + doy;
+    return era * (146097 as Int64) + doe - (719468 as Int64);
+}
+
+pub fun date_from_ymd(y: Int64, m: Int64, d: Int64): Option<Date> {
+    if (y < (1 as Int64) || y > (9999 as Int64)) {
+        return None;
+    }
+    if (m < (1 as Int64) || m > (12 as Int64)) {
+        return None;
+    }
+    if (d < (1 as Int64) || d > dim(y, m)) {
+        return None;
+    }
+    return Some(Date { days: days_from_civil(y, m, d) });
+}
+
+fun civil_year(z: Int64): Int64 {
+    val era = fdiv(z, 146097 as Int64);
+    val doe = z - era * (146097 as Int64);
+    val yoe = (doe - doe / (1460 as Int64) + doe / (36524 as Int64) - doe / (146096 as Int64)) / (365 as Int64);
+    return yoe + era * (400 as Int64);
+}
+
+fun civil_doy(z: Int64): Int64 {
+    val era = fdiv(z, 146097 as Int64);
+    val doe = z - era * (146097 as Int64);
+    val yoe = (doe - doe / (1460 as Int64) + doe / (36524 as Int64) - doe / (146096 as Int64)) / (365 as Int64);
+    return doe - ((365 as Int64) * yoe + yoe / (4 as Int64) - yoe / (100 as Int64));
+}
+
+pub fun date_year(dt: Date): Int64 {
+    val z = dt.days + (719468 as Int64);
+    val y = civil_year(z);
+    val doy = civil_doy(z);
+    var mp = ((5 as Int64) * doy + (2 as Int64)) / (153 as Int64);
+    var m = mp + (3 as Int64);
+    if (mp >= (10 as Int64)) {
+        m = mp - (9 as Int64);
+    }
+    if (m <= (2 as Int64)) {
+        return y + (1 as Int64);
+    }
+    return y;
+}
+
+pub fun date_month(dt: Date): Int64 {
+    val z = dt.days + (719468 as Int64);
+    val doy = civil_doy(z);
+    val mp = ((5 as Int64) * doy + (2 as Int64)) / (153 as Int64);
+    if (mp >= (10 as Int64)) {
+        return mp - (9 as Int64);
+    }
+    return mp + (3 as Int64);
+}
+
+pub fun date_day(dt: Date): Int64 {
+    val z = dt.days + (719468 as Int64);
+    val doy = civil_doy(z);
+    val mp = ((5 as Int64) * doy + (2 as Int64)) / (153 as Int64);
+    return doy - (((153 as Int64) * mp + (2 as Int64)) / (5 as Int64)) + (1 as Int64);
+}
+
+fun pad_left(s: String, width: Int64): String {
+    var o = s;
+    while (o.len() < width) {
+        o = "0" + o;
+    }
+    return o;
+}
+
+pub fun date_to_string(dt: Date): String {
+    return pad_left(to_string(date_year(dt)), 4 as Int64) + "-" + pad_left(to_string(date_month(dt)), 2 as Int64) + "-" + pad_left(to_string(date_day(dt)), 2 as Int64);
+}
+
+fun digits(s: String, start: Int64, stop: Int64): Option<Int64> {
+    var v = 0 as Int64;
+    var i = start;
+    while (i < stop) {
+        val b = s.byte_at(i);
+        if (b < (48 as Int64) || b > (57 as Int64)) {
+            return None;
+        }
+        v = v * (10 as Int64) + (b - (48 as Int64));
+        i = i + (1 as Int64);
+    }
+    return Some(v);
+}
+
+pub fun date_parse(s: String): Option<Date> {
+    if (s.len() != (10 as Int64)) {
+        return None;
+    }
+    if (s.byte_at(4 as Int64) != (45 as Int64) || s.byte_at(7 as Int64) != (45 as Int64)) {
+        return None;
+    }
+    val y = match (digits(s.clone(), 0 as Int64, 4 as Int64)) {
+        Some(v) -> v,
+        None -> (0 as Int64) - (1 as Int64),
+    };
+    val m = match (digits(s.clone(), 5 as Int64, 7 as Int64)) {
+        Some(v) -> v,
+        None -> (0 as Int64) - (1 as Int64),
+    };
+    val d = match (digits(s.clone(), 8 as Int64, 10 as Int64)) {
+        Some(v) -> v,
+        None -> (0 as Int64) - (1 as Int64),
+    };
+    return date_from_ymd(y, m, d);
+}
+
+pub fun date_add_days(dt: Date, n: Int64): Date {
+    return Date { days: dt.days + n };
+}
+
+pub fun date_diff_days(a: Date, b: Date): Int64 {
+    return a.days - b.days;
+}
+
+pub fun date_compare(a: Date, b: Date): Int64 {
+    if (a.days < b.days) {
+        return (0 as Int64) - (1 as Int64);
+    }
+    if (a.days > b.days) {
+        return 1 as Int64;
+    }
+    return 0 as Int64;
+}
+
+pub fun datetime_from_ymdhms(y: Int64, mo: Int64, d: Int64, h: Int64, mi: Int64, s: Int64): Option<Datetime> {
+    val ok = match (date_from_ymd(y, mo, d)) {
+        Some(_) -> true,
+        None -> false,
+    };
+    if (!ok) {
+        return None;
+    }
+    val dt = match (date_from_ymd(y, mo, d)) {
+        Some(v) -> v,
+        None -> Date { days: 0 as Int64 },
+    };
+    if (h < (0 as Int64) || h > (23 as Int64)) {
+        return None;
+    }
+    if (mi < (0 as Int64) || mi > (59 as Int64)) {
+        return None;
+    }
+    if (s < (0 as Int64) || s > (59 as Int64)) {
+        return None;
+    }
+    val nanos = dt.days * (86400 as Int64) * (1000000000 as Int64) + (h * (3600 as Int64) + mi * (60 as Int64) + s) * (1000000000 as Int64);
+    return Some(Datetime { nanos: nanos });
+}
+
+pub fun datetime_to_string(t: Datetime): String {
+    val day_nanos = (86400 as Int64) * (1000000000 as Int64);
+    val days = fdiv(t.nanos, day_nanos);
+    var rem = (t.nanos - days * day_nanos) / (1000000000 as Int64);
+    val h = rem / (3600 as Int64);
+    rem = rem - h * (3600 as Int64);
+    val mi = rem / (60 as Int64);
+    val s = rem - mi * (60 as Int64);
+    return date_to_string(Date { days: days }) + "T" + pad_left(to_string(h), 2 as Int64) + ":" + pad_left(to_string(mi), 2 as Int64) + ":" + pad_left(to_string(s), 2 as Int64) + "Z";
+}
+
+pub fun datetime_parse(s: String): Option<Datetime> {
+    if (s.len() != (20 as Int64)) {
+        return None;
+    }
+    val dok = match (date_parse(s.slice(0 as Int64, 10 as Int64))) {
+        Some(_) -> true,
+        None -> false,
+    };
+    if (!dok) {
+        return None;
+    }
+    val d = match (date_parse(s.slice(0 as Int64, 10 as Int64))) {
+        Some(v) -> v,
+        None -> Date { days: 0 as Int64 },
+    };
+    if (s.byte_at(10 as Int64) != (84 as Int64)) {
+        return None;
+    }
+    if (s.byte_at(13 as Int64) != (58 as Int64) || s.byte_at(16 as Int64) != (58 as Int64)) {
+        return None;
+    }
+    if (s.byte_at(19 as Int64) != (90 as Int64)) {
+        return None;
+    }
+    val h = match (digits(s.clone(), 11 as Int64, 13 as Int64)) {
+        Some(v) -> v,
+        None -> (0 as Int64) - (1 as Int64),
+    };
+    val mi = match (digits(s.clone(), 14 as Int64, 16 as Int64)) {
+        Some(v) -> v,
+        None -> (0 as Int64) - (1 as Int64),
+    };
+    val sec = match (digits(s.clone(), 17 as Int64, 19 as Int64)) {
+        Some(v) -> v,
+        None -> (0 as Int64) - (1 as Int64),
+    };
+    return datetime_from_ymdhms(date_year(d), date_month(d), date_day(d), h, mi, sec);
+}
+
+pub fun datetime_add_seconds(t: Datetime, n: Int64): Datetime {
+    return Datetime { nanos: t.nanos + n * (1000000000 as Int64) };
+}
+
+pub fun datetime_diff_seconds(a: Datetime, b: Datetime): Int64 {
+    return (a.nanos - b.nanos) / (1000000000 as Int64);
+}
+
+pub fun datetime_compare(a: Datetime, b: Datetime): Int64 {
+    if (a.nanos < b.nanos) {
+        return (0 as Int64) - (1 as Int64);
+    }
+    if (a.nanos > b.nanos) {
+        return 1 as Int64;
+    }
+    return 0 as Int64;
+}
+
+pub fun date_to_datetime(dt: Date): Datetime {
+    return Datetime { nanos: dt.days * (86400 as Int64) * (1000000000 as Int64) };
+}
+
+pub fun datetime_to_date(t: Datetime): Date {
+    val day_nanos = (86400 as Int64) * (1000000000 as Int64);
+    return Date { days: fdiv(t.nanos, day_nanos) };
+}

@@ -1,0 +1,6 @@
+matched=2 left_only=1 right_only=1 out=2
+Some([b, c])
+Some([x, y])
+matched=2 left_only=1 right_only=1 out=3
+Some([, x, y])
+join: left frame has no column nope

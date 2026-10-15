@@ -1,0 +1,5 @@
+fun main() {
+    val a: Missing<Float64> = Missing::Present(1.0);
+    val o: Option<Float64> = Some(1.0);
+    println(a == o);
+}

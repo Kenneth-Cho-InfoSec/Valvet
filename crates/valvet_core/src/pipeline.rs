@@ -17,12 +17,43 @@ pub fn parse_unit(source: &Source) -> Result<Program, Vec<Diagnostic>> {
     Ok(prog.expect("parser returned no program and no errors"))
 }
 
+/// True when `text` parses as exactly one complete expression (REPL
+/// echo rule: such snippets run as `println(<entry>);`, with a silent
+/// retry as a plain snippet when the echo form does not compile, e.g.
+/// Unit-valued calls).
+pub fn is_bare_expr(text: &str) -> bool {
+    let probe = Source::new("<repl>".to_string(), text.to_string());
+    let (toks, errs) = crate::lexer::lex(&probe);
+    if !errs.is_empty() {
+        return false;
+    }
+    let mut p = crate::parser::Parser::new(toks);
+    // Same-shape check as `parse_expr` + trailing-only separators.
+    p.parse_bare_expr().is_some()
+}
+
 /// Full front-end pipeline: lex -> parse -> typecheck -> ownership.
 /// Returns checked HIR or the diagnostic list. Never panics on user input.
 /// Single-source mode: `import` declarations are rejected (E0701 — imports
 /// need file-based compilation via `front_end_file`).
 pub fn front_end(source: &Source) -> Result<Checked, Vec<Diagnostic>> {
-    let prog = parse_unit(source)?;
+    let mut prog = parse_unit(source)?;
+    // Single-source mode cannot import, so neither can the prelude.
+    if prog.prelude {
+        return Err(vec![Diagnostic::error(
+            "E0604",
+            prog.span,
+            "prelude needs file-based compilation (`valvet check path/to/main.valvet`)",
+        )]);
+    }
+    // Single-source is always the entry: same script-mode synthesis as
+    // the file pipeline, then the same id renumbering (synthesis uses
+    // placeholder ids).
+    let mut derrs = vec![];
+    if !crate::resolver::apply_entry_script(&mut prog, &source.name, &mut derrs) {
+        return Err(derrs);
+    }
+    crate::resolver::renumber(&mut prog);
     if !prog.imports.is_empty() {
         let imp = &prog.imports[0];
         return Err(vec![Diagnostic::error(
@@ -50,6 +81,15 @@ fn check_unit(prog: &Program, files: Vec<Source>) -> Result<Checked, Vec<Diagnos
         return Err(diags);
     }
     checked.files = files;
+    // `mode exp` denies warnings: the same codes surface as errors
+    // (fixture-safe: the harness matches codes only).
+    if checked.program.mode == crate::ast::Mode::Exp && !checked.warnings.is_empty() {
+        for w in &mut checked.warnings {
+            w.warning = false;
+        }
+        diags.extend(std::mem::take(&mut checked.warnings));
+        return Err(diags);
+    }
     Ok(checked)
 }
 
@@ -128,6 +168,17 @@ pub fn front_end_file(entry: &std::path::Path) -> Result<Checked, FileDiags> {
         });
     }
     checked.files = files;
+    // `mode exp` denies warnings (same as the single-source tail above).
+    if checked.program.mode == crate::ast::Mode::Exp && !checked.warnings.is_empty() {
+        for w in &mut checked.warnings {
+            w.warning = false;
+        }
+        derrs.extend(std::mem::take(&mut checked.warnings));
+        return Err(FileDiags {
+            files: std::mem::take(&mut checked.files),
+            diags: derrs,
+        });
+    }
     Ok(checked)
 }
 

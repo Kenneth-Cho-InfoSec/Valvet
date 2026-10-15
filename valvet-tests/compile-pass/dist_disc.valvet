@@ -1,0 +1,29 @@
+import std::dist::binom_pmf;
+import std::dist::binom_cdf;
+import std::dist::binom_quantile;
+import std::dist::binom_sample;
+import std::dist::poisson_pmf;
+import std::dist::poisson_cdf;
+import std::dist::poisson_quantile;
+import std::dist::poisson_sample;
+import std::dist::normal_sample;
+
+fun main() {
+    // Discrete pmf/cdf/quantile pinned vs exact rational arithmetic.
+    println(binom_pmf(5 as Int64, 10 as Int64, 0.5));
+    println(binom_cdf(5 as Int64, 10 as Int64, 0.5));
+    println(binom_quantile(0.5, 10 as Int64, 0.5));
+    println(poisson_pmf(3 as Int64, 2.0));
+    println(poisson_cdf(3 as Int64, 2.0));
+    println(poisson_quantile(0.5, 2.0));
+    // Degenerate parameters collapse honestly (p=1 concentrates at n).
+    println(binom_pmf(10 as Int64, 10 as Int64, 1.0));
+    println(binom_pmf(9 as Int64, 10 as Int64, 1.0));
+    println(poisson_pmf(0 as Int64, 0.0));
+    // Seeded batches are deterministic (fork semantics: same seed, same batch).
+    val r = rng_seeded(7);
+    println(normal_sample(r, 0.0, 1.0, 4 as Int64));
+    println(binom_sample(r, 10 as Int64, 0.5, 3 as Int64));
+    println(poisson_sample(r, 2.0, 3 as Int64));
+    println(normal_sample(rng_seeded(7), 0.0, 1.0, 4 as Int64));
+}

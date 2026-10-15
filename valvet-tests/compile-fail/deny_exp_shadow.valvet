@@ -1,0 +1,9 @@
+mode exp;
+fun main() {
+val x = 1
+if (true) {
+val x = 2
+println(x)
+}
+println(x)
+}

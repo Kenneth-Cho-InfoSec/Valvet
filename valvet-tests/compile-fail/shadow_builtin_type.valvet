@@ -1,0 +1,5 @@
+struct Rng { st: Int64 }
+
+fun main() {
+    println(1);
+}

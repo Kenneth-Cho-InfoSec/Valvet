@@ -1,0 +1,19 @@
+val o = Some(5 as Int64)
+if let Some(x) = o && x > (3 as Int64) {
+println(x)
+} else {
+println(0)
+}
+val n: Option<Int64> = None
+if let Some(z) = n && true {
+println(z)
+} else {
+println(2)
+}
+val a = Some(1 as Int64)
+val b = Some(2 as Int64)
+if let Some(p) = a && let Some(q) = b {
+println(p + q)
+} else {
+println(4)
+}

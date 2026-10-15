@@ -1,0 +1,17 @@
+fun get(v: Int64): Option<Int64> {
+if (v > (0 as Int64)) {
+return Some(v)
+}
+return None
+}
+fun show(v: Int64) {
+let Some(x) = get(v) else {
+println(0)
+return
+};
+println(x)
+}
+fun main() {
+show(5 as Int64)
+show(-1 as Int64)
+}

@@ -1,0 +1,8 @@
+fun long_enough(s: String): Bool {
+return s.len() > (2 as Int64);
+}
+fun main() {
+println(long_enough("abc"))
+println(match ("abc") { s if long_enough(s) -> "yes", _ -> "no", })
+println(match ("a") { s if long_enough(s) -> "yes", _ -> "no", })
+}

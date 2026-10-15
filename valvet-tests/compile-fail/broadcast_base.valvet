@@ -1,0 +1,7 @@
+fun double(x: Float64): Float64 {
+x * 2.0
+}
+fun main() {
+val v = vec![1.0]
+println(v.clone().(v))
+}

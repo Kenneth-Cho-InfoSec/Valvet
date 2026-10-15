@@ -1,0 +1,23 @@
+import std::time::time_from_hms;
+import std::time::time_to_string;
+import std::time::time_parse;
+import std::time::time_plus;
+import std::time::duration_from_hms;
+import std::time::duration_as_secs;
+fun go(): Int32 {
+let Some(t) = time_from_hms(23 as Int64, 59 as Int64, 30 as Int64) else {
+return 1
+};
+println(time_to_string(t))
+println(time_to_string(time_plus(t, duration_from_hms(0 as Int64, 1 as Int64, 0 as Int64))))
+println(duration_as_secs(duration_from_hms(1 as Int64, 30 as Int64, 0 as Int64)))
+let Some(u) = time_parse("08:05:09") else {
+return 1
+};
+println(time_to_string(u))
+println(match (time_parse("25:00:00")) { Some(_) -> "bad", None -> "none", })
+return 0
+}
+fun main() {
+println(go())
+}

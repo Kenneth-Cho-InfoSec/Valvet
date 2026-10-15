@@ -1,0 +1,125 @@
+module std.math;
+
+pub fun sqrt(x: Float64): Float64 {
+    if (x < 0.0) {
+        return 0.0 / 0.0;
+    }
+    if (x == 0.0) {
+        return 0.0;
+    }
+    // Non-finite inputs skip Newton (which would spin or drift):
+    // NaN propagates, +inf is its own root.
+    if (x != x) {
+        return x;
+    }
+    if (x >= 1.0 / 0.0) {
+        return x;
+    }
+    var guess = x
+    var i = 0
+    while (i < 1000) {
+        val next = (guess + x / guess) / 2.0
+        if (next == guess) {
+            return next;
+        }
+        val diff = next - guess
+        val adiff = if (diff < 0.0) { 0.0 - diff } else { diff }
+        if (adiff < 0.000000000001) {
+            return next;
+        }
+        guess = next
+        i += 1
+    }
+    guess
+}
+
+pub fun exp(x: Float64): Float64 {
+    // Non-finite inputs skip range reduction (which would spin on inf).
+    if (x != x) {
+        return x;
+    }
+    if (x >= 1.0 / 0.0) {
+        return x;
+    }
+    if (x <= 0.0 - 1.0 / 0.0) {
+        return 0.0;
+    }
+    if (x < 0.0) {
+        return 1.0 / exp(0.0 - x);
+    }
+    val ln2 = 0.6931471805599453
+    var k = 0
+    var r = x
+    while (r >= ln2) {
+        r = r - ln2
+        k += 1
+    }
+    var p = r
+    var fact = 1.0
+    var sum = 1.0
+    var n = 1
+    var i = 0
+    while (i < 60) {
+        fact = fact * (n as Float64)
+        sum = sum + p / fact
+        p = p * r
+        n += 1
+        i += 1
+    }
+    var e2k = 1.0
+    var j = 0
+    while (j < k) {
+        e2k = e2k * 2.0
+        j += 1
+    }
+    sum * e2k
+}
+
+pub fun log(x: Float64): Float64 {
+    if (x == 0.0) {
+        return 0.0 - 1.0 / 0.0;
+    }
+    if (x < 0.0) {
+        return 0.0 / 0.0;
+    }
+    // Non-finite inputs skip range reduction (which would spin on inf).
+    if (x != x) {
+        return x;
+    }
+    if (x >= 1.0 / 0.0) {
+        return x;
+    }
+    var k = 0
+    var y = x
+    while (y >= 2.0) {
+        y = y / 2.0
+        k += 1
+    }
+    while (y < 1.0) {
+        y = y * 2.0
+        k = k - 1
+    }
+    val t = (y - 1.0) / (y + 1.0)
+    val t2 = t * t
+    var term = t
+    var sum = t
+    var n = 3
+    var i = 0
+    while (i < 100) {
+        term = term * t2
+        sum = sum + term / (n as Float64)
+        n += 2
+        i += 1
+    }
+    sum * 2.0 + (k as Float64) * 0.6931471805599453
+}
+
+pub fun pow(x: Float64, y: Float64): Float64 {
+    if (y == 0.0) {
+        return 1.0;
+    }
+    if (x == 0.0) {
+        return 0.0;
+    }
+    exp(y * log(x))
+}

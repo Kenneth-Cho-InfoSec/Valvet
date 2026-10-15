@@ -1,0 +1,9 @@
+fun dup(x: Int64): Int64 {
+x
+}
+fun dup(x: Int64): Int64 {
+x
+}
+fun main() {
+println(1)
+}

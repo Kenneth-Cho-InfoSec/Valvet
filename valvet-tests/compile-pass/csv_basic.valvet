@@ -1,0 +1,9 @@
+fun main() {
+    val csv = "name,age,note\nada,36,\"likes, commas\"\ngrace,85,\"line one\nline two\"\n";
+    val t = match (csv_rows(csv, true)) { Ok(v) -> v, Err(e) -> vec![vec!["e"]], };
+    println(t.len());
+    println(t[0]);
+    println(t[1][2]);
+    println(t[2][2]);
+    println(t[2][1]);
+}

@@ -1,0 +1,5 @@
+val x = 5 as Int64
+println((0 as Int64) < x)
+println((0 as Int64) < x < (10 as Int64))
+println((0 as Int64) < x < (4 as Int64))
+println(1 < 2 < 3 < 4)

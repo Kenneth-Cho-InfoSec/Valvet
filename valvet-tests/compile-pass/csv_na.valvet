@@ -1,0 +1,13 @@
+import std::csv::infer_schema;
+import std::csv::CsvTable;
+
+fun main() {
+    val h = vec!["a", "b", "c"];
+    val r0 = vec!["1", "", "NA"];
+    val r1 = vec!["2", "2.5", "null"];
+    val r2 = vec!["3", "3.5", "z"];
+    val r = vec![r0, r1, r2];
+    val t = CsvTable { header: h, rows: r };
+    println(infer_schema(&t));
+    println(t.rows.len());
+}

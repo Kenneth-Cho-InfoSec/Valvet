@@ -1,0 +1,16 @@
+fun main() {
+    val r = rng_seeded(99);
+    var v = vec![1, 2, 3, 4, 5];
+    v.shuffle(r);
+    println(v.len());
+    var total = 0
+    for (x in v) {
+        total += x
+    }
+    println(total);
+    println(v);
+    val w = vec![10, 20, 30, 40];
+    println(w.sample(2 as Int64, r).len());
+    println(w.sample(99 as Int64, r).len());
+    println(w.sample(0 as Int64, r).len());
+}

@@ -1,0 +1,85 @@
+// std::complex: complex arithmetic over Float64 pairs (pure Valvet).
+// Functions borrow (`&Complex`); results are fresh values. No operator
+// overloading exists, so these are named functions. Division by a zero
+// modulus yields NaN components. Follow-up (not this file): a builtin
+// `Complex` scalar over C99 `_Complex` when spectral kernels land.
+
+module std.complex;
+
+import std::math::sqrt;
+import std::math::exp;
+
+pub struct Complex { re: Float64, im: Float64 }
+
+pub fun cnew(re: Float64, im: Float64): Complex {
+    return Complex { re: re, im: im };
+}
+
+pub fun cadd(a: &Complex, b: &Complex): Complex {
+    return Complex { re: a.re + b.re, im: a.im + b.im };
+}
+
+pub fun csub(a: &Complex, b: &Complex): Complex {
+    return Complex { re: a.re - b.re, im: a.im - b.im };
+}
+
+pub fun cmul(a: &Complex, b: &Complex): Complex {
+    return Complex { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re };
+}
+
+pub fun cdiv(a: &Complex, b: &Complex): Complex {
+    val denom = b.re * b.re + b.im * b.im;
+    return Complex {
+        re: (a.re * b.re + a.im * b.im) / denom,
+        im: (a.im * b.re - a.re * b.im) / denom,
+    };
+}
+
+pub fun cneg(a: &Complex): Complex {
+    return Complex { re: 0.0 - a.re, im: 0.0 - a.im };
+}
+
+pub fun conj(a: &Complex): Complex {
+    return Complex { re: a.re, im: 0.0 - a.im };
+}
+
+pub fun cscale(a: &Complex, s: Float64): Complex {
+    return Complex { re: a.re * s, im: a.im * s };
+}
+
+pub fun cabs(a: &Complex): Float64 {
+    return sqrt(a.re * a.re + a.im * a.im);
+}
+
+pub fun carg(a: &Complex): Float64 {
+    return atan2(a.im, a.re);
+}
+
+pub fun cexp(a: &Complex): Complex {
+    val m = exp(a.re);
+    return Complex { re: m * cos(a.im), im: m * sin(a.im) };
+}
+
+fun cpow_pos(a: &Complex, n: Int64): Complex {
+    if (n == (0 as Int64)) {
+        return Complex { re: 1.0, im: 0.0 };
+    }
+    if (n == (1 as Int64)) {
+        return Complex { re: a.re, im: a.im };
+    }
+    val half = cpow_pos(a, n / (2 as Int64));
+    val sq = cmul(&half, &half);
+    if (n % (2 as Int64) == (0 as Int64)) {
+        return sq;
+    }
+    return cmul(&sq, a);
+}
+
+pub fun cpow_int(a: &Complex, n: Int64): Complex {
+    if (n < (0 as Int64)) {
+        val one = cnew(1.0, 0.0);
+        val p = cpow_pos(a, (0 as Int64) - n);
+        return cdiv(&one, &p);
+    }
+    return cpow_pos(a, n);
+}

@@ -23,59 +23,18 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn run(&mut self) {
-        // UTF-8 validity is guaranteed by Rust String; validate scalars below.
+        // Script shebang: a leading `#!...` line is skipped so Valvet
+        // files can be direct executables (`chmod +x`).
         let mut i = 0;
-        while i < self.text.len() {
-            let c = self.text[i];
-            match c {
-                b' ' | b'\t' | b'\r' => {
-                    // CRLF normalised: lone \r skipped; \r\n handled by \n arm.
-                    i += 1;
-                }
-                b'\n' => {
-                    self.push(Tok::Nl, i, i + 1);
-                    i += 1;
-                }
-                b'/' if self.peek(i + 1) == Some(b'/') => {
-                    i += 2;
-                    while i < self.text.len() && self.text[i] != b'\n' {
-                        i += 1;
-                    }
-                }
-                b'/' if self.peek(i + 1) == Some(b'*') => {
-                    let start = i;
-                    i += 2;
-                    let mut depth = 1usize;
-                    while i < self.text.len() && depth > 0 {
-                        if self.text[i] == b'/' && self.peek(i + 1) == Some(b'*') {
-                            depth += 1;
-                            i += 2;
-                        } else if self.text[i] == b'*' && self.peek(i + 1) == Some(b'/') {
-                            depth -= 1;
-                            i += 2;
-                        } else {
-                            i += 1;
-                        }
-                    }
-                    if depth > 0 {
-                        self.errs.push(
-                            Diagnostic::error(
-                                "E0003",
-                                Span::new(start, self.text.len()),
-                                "unterminated block comment",
-                            )
-                            .with_help("close the comment with */"),
-                        );
-                    }
-                }
-                b'"' => i = self.string(i),
-                b'\'' => i = self.char_lit(i),
-                b'0'..=b'9' => i = self.number(i),
-                b'a'..=b'z' | b'A'..=b'Z' | b'_' => i = self.word(i),
-                _ => {
-                    i = self.symbol(i);
-                }
+        if self.text.len() >= 2 && self.text[0] == b'#' && self.text[1] == b'!' {
+            i = 2;
+            while i < self.text.len() && self.text[i] != b'\n' {
+                i += 1;
             }
+        }
+        // UTF-8 validity is guaranteed by Rust String; validate scalars below.
+        while i < self.text.len() {
+            i = self.step(i);
         }
         let e = self.text.len();
         self.out.push(Token {
@@ -83,6 +42,62 @@ impl<'a> Lexer<'a> {
             span: Span::new(e, e),
         });
         self.pos = i;
+    }
+
+    /// Lex one token (or trivia) at `i`; returns the next position.
+    /// Extracted verbatim from `run` so `{...}` interpolation can reuse it.
+    fn step(&mut self, mut i: usize) -> usize {
+        let c = self.text[i];
+        match c {
+            b' ' | b'\t' | b'\r' => {
+                // CRLF normalised: lone \r skipped; \r\n handled by \n arm.
+                i += 1;
+            }
+            b'\n' => {
+                self.push(Tok::Nl, i, i + 1);
+                i += 1;
+            }
+            b'/' if self.peek(i + 1) == Some(b'/') => {
+                i += 2;
+                while i < self.text.len() && self.text[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if self.peek(i + 1) == Some(b'*') => {
+                let start = i;
+                i += 2;
+                let mut depth = 1usize;
+                while i < self.text.len() && depth > 0 {
+                    if self.text[i] == b'/' && self.peek(i + 1) == Some(b'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if self.text[i] == b'*' && self.peek(i + 1) == Some(b'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                if depth > 0 {
+                    self.errs.push(
+                        Diagnostic::error(
+                            "E0003",
+                            Span::new(start, self.text.len()),
+                            "unterminated block comment",
+                        )
+                        .with_help("close the comment with */"),
+                    );
+                }
+            }
+            b'"' => i = self.string(i),
+            b'\'' => i = self.char_lit(i),
+            b'0'..=b'9' => i = self.number(i),
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => i = self.word(i),
+            _ => {
+                i = self.symbol(i);
+            }
+        }
+        i
     }
 
     fn peek(&self, i: usize) -> Option<u8> {
@@ -218,33 +233,26 @@ impl<'a> Lexer<'a> {
             i += 1;
         }
         let suffix = String::from_utf8_lossy(&self.text[suf_s..i]).into_owned();
-        if !suffix.is_empty()
-            && !matches!(
-                suffix.as_str(),
-                "i8" | "i16"
-                    | "i32"
-                    | "i64"
-                    | "u8"
-                    | "u16"
-                    | "u32"
-                    | "u64"
-                    | "isize"
-                    | "usize"
-                    | "f32"
-                    | "f64"
-            )
-        {
-            // Could be `42foo` typo or `3 +x`? No space means part of literal; reject.
-            self.errs.push(Diagnostic::error(
-                "E0010",
-                Span::new(s, i),
-                format!("invalid numeric suffix `{}`", suffix),
-            ));
-            return i;
-        }
+        // Numeric suffixes (C1): only Valvet's own types survive the lexer;
+        // anything else is E0010. `f64` needs a float literal, `i32`/`i64`
+        // need an integer literal.
+        let suffix_tok = match suffix.as_str() {
+            "" => None,
+            "i32" if !is_float => Some(crate::token::NumSuffix::I32),
+            "i64" if !is_float => Some(crate::token::NumSuffix::I64),
+            "f64" if is_float => Some(crate::token::NumSuffix::F64),
+            _ => {
+                self.errs.push(Diagnostic::error(
+                    "E0010",
+                    Span::new(s, i),
+                    format!("invalid numeric suffix `{}`", suffix),
+                ));
+                return i;
+            }
+        };
         if is_float {
             match digits.parse::<f64>() {
-                Ok(v) => self.push(Tok::FloatLit(v), s, i),
+                Ok(v) => self.push(Tok::FloatLit(v), s, suf_s),
                 Err(_) => self.errs.push(Diagnostic::error(
                     "E0010",
                     Span::new(s, i),
@@ -253,7 +261,7 @@ impl<'a> Lexer<'a> {
             }
         } else {
             match i64::from_str_radix(digits.as_str().max("0"), base) {
-                Ok(v) => self.push(Tok::IntLit(v), s, i),
+                Ok(v) => self.push(Tok::IntLit(v), s, suf_s),
                 Err(_) => self.errs.push(Diagnostic::error(
                     "E0010",
                     Span::new(s, i),
@@ -261,7 +269,9 @@ impl<'a> Lexer<'a> {
                 )),
             }
         }
-        let _ = suffix;
+        if let Some(k) = suffix_tok {
+            self.push(Tok::IntSuffix(k), suf_s, i);
+        }
         i
     }
 
@@ -301,6 +311,21 @@ impl<'a> Lexer<'a> {
         }
         i += 1;
         let mut out = String::new();
+        // `true` once `{...}` interpolation appeared: later literal chunks
+        // arrive as `StrCont` so adjacent plain literals stay an error.
+        let mut interpolated = false;
+        macro_rules! flush_lit {
+            () => {{
+                if !out.is_empty() {
+                    let text = std::mem::take(&mut out);
+                    if interpolated {
+                        self.push(Tok::StrCont(text), s, i);
+                    } else {
+                        self.push(Tok::StrLit(text), s, i);
+                    }
+                }
+            }};
+        }
         loop {
             if i >= self.text.len() {
                 self.errs.push(Diagnostic::error(
@@ -314,6 +339,63 @@ impl<'a> Lexer<'a> {
             if c == b'"' {
                 i += 1;
                 break;
+            }
+            // Interpolation (D1, Kotlin-style `$ident` / `${expr}`):
+            // `{`/`}` stay ordinary (JSON-in-strings keeps working).
+            // Triple-quoted strings opt out.
+            if c == b'$' {
+                let n = self.peek(i + 1);
+                let is_ident_start = matches!(n, Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'));
+                if n == Some(b'{') || is_ident_start {
+                    flush_lit!();
+                    interpolated = true;
+                    self.push(Tok::InterpBegin, i, i + 1);
+                    if n == Some(b'{') {
+                        // `${expr}`: skip both opener chars, then track
+                        // nested braces via `step` (depth 0 = our closer).
+                        i += 2;
+                        let mut depth = 0usize;
+                        loop {
+                            if i >= self.text.len() {
+                                self.errs.push(Diagnostic::error(
+                                    "E0003",
+                                    Span::new(s, i),
+                                    "unterminated interpolation (missing `}`)",
+                                ));
+                                return i;
+                            }
+                            match self.text[i] {
+                                b'{' => {
+                                    depth += 1;
+                                    i = self.step(i);
+                                }
+                                b'}' => {
+                                    if depth == 0 {
+                                        self.push(Tok::InterpEnd, i, i + 1);
+                                        i += 1;
+                                        break;
+                                    }
+                                    depth -= 1;
+                                    i = self.step(i);
+                                }
+                                _ => {
+                                    i = self.step(i);
+                                }
+                            }
+                        }
+                    } else {
+                        // `$ident`: skip `$`, lex one word token, then a
+                        // synthetic close.
+                        i += 1;
+                        i = self.step(i);
+                        self.push(Tok::InterpEnd, i, i);
+                    }
+                    continue;
+                }
+                // Lone `$` (prices, shell): literal.
+                out.push('$');
+                i += 1;
+                continue;
             }
             if c == b'\n' {
                 self.errs.push(Diagnostic::error(
@@ -335,6 +417,7 @@ impl<'a> Lexer<'a> {
                     b'\\' => out.push('\\'),
                     b'"' => out.push('"'),
                     b'\'' => out.push('\''),
+                    b'$' => out.push('$'),
                     b'0' => out.push('\0'),
                     b'u' => {
                         // \u{HEX}
@@ -385,7 +468,17 @@ impl<'a> Lexer<'a> {
             out.push(c as char);
             i += 1;
         }
-        self.push(Tok::StrLit(out), s, i);
+        if !out.is_empty() {
+            let text = std::mem::take(&mut out);
+            if interpolated {
+                self.push(Tok::StrCont(text), s, i);
+            } else {
+                self.push(Tok::StrLit(text), s, i);
+            }
+        } else if !interpolated {
+            // Preserve today's empty-string token (`""`).
+            self.push(Tok::StrLit(String::new()), s, i);
+        }
         i
     }
 
@@ -496,6 +589,7 @@ impl<'a> Lexer<'a> {
             Some((b'>', b'=')) => tok2!(Tok::GtEq),
             Some((b'&', b'&')) => tok2!(Tok::AndAnd),
             Some((b'|', b'|')) => tok2!(Tok::OrOr),
+            Some((b'|', b'>')) => tok2!(Tok::Pipe),
             Some((b'-', b'>')) => tok2!(Tok::Arrow),
             Some((b'+', b'=')) => tok2!(Tok::PlusEq),
             Some((b'-', b'=')) => tok2!(Tok::MinusEq),
@@ -544,6 +638,8 @@ impl<'a> Lexer<'a> {
             b'?' => Tok::Question,
             b'&' => Tok::Amp,
             b'|' => Tok::BitOr,
+            b'@' => Tok::At,
+            b'^' => Tok::Caret,
             _ => {
                 let ch = self.text[s] as char;
                 self.errs.push(

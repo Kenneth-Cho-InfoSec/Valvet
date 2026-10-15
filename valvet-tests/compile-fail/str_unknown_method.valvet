@@ -1,0 +1,4 @@
+fun main() {
+    val h = "hello";
+    println(h.byt_at(0 as Int64));
+}

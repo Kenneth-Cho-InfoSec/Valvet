@@ -1,0 +1,4 @@
+val o = Some(7 as Int64)
+println(o ?? 5 as Int64)
+val n: Option<Int64> = None
+println(n ?? 5 as Int64)

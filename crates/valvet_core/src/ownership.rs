@@ -50,6 +50,7 @@ pub fn analyze_with_files(
             errs: vec![],
             scopes: vec![HashMap::new()],
             loans: vec![],
+            cur_module: f.module.clone(),
             last_use,
             seq_of,
             tail_of,
@@ -169,6 +170,18 @@ fn number_uses(
                         self.walk_block(&a.body);
                     }
                 }
+                Stmt::LetElse {
+                    scrutinee,
+                    pat,
+                    else_b,
+                    ..
+                } => {
+                    // Bindings join the current scope (like `Val` without
+                    // shadowing limits); the body continues after.
+                    self.walk_expr(scrutinee);
+                    self.walk_pat(pat);
+                    self.walk_block(else_b);
+                }
             }
             self.next += 1;
         }
@@ -219,9 +232,11 @@ fn number_uses(
                 }
                 ExprKind::Unary { expr, .. } => self.walk_expr(expr),
                 ExprKind::Cast { expr, .. } => self.walk_expr(expr),
+                ExprKind::AsUnit { expr, .. } => self.walk_expr(expr),
                 ExprKind::AddrOf { expr, .. } => self.walk_expr(expr),
                 ExprKind::Assign { target, value, .. } => {
                     Self::walk_place_static(target, &mut self.last_use, self.next);
+                    Self::walk_place_idx(target, self);
                     self.walk_expr(value);
                 }
                 ExprKind::If {
@@ -236,6 +251,7 @@ fn number_uses(
                     }
                 }
                 ExprKind::Loop { body } => self.walk_block(body),
+                ExprKind::Block(b) => self.walk_block(b),
                 ExprKind::Match { scrutinee, arms } => {
                     self.walk_expr(scrutinee);
                     for a in arms {
@@ -254,6 +270,10 @@ fn number_uses(
                 }
                 ExprKind::Field { base, .. } => self.walk_expr(base),
                 ExprKind::OptField { base, .. } => self.walk_expr(base),
+                ExprKind::Index { base, idx } => {
+                    self.walk_expr(base);
+                    self.walk_expr(idx);
+                }
                 ExprKind::Variant { args, .. } => {
                     for a in args {
                         self.walk_expr(a);
@@ -274,6 +294,19 @@ fn number_uses(
                 }
                 Place::Field { base, .. } => Self::walk_place_static(base, last_use, cur),
                 Place::Deref { inner, .. } => Self::walk_place_static(inner, last_use, cur),
+                Place::Index { base, .. } => Self::walk_place_static(base, last_use, cur),
+            }
+        }
+        /// Index expressions inside places read like ordinary expressions.
+        fn walk_place_idx(target: &Place, w: &mut W) {
+            match target {
+                Place::Var(_, _) => {}
+                Place::Field { base, .. } => Self::walk_place_idx(base, w),
+                Place::Deref { inner, .. } => Self::walk_place_idx(inner, w),
+                Place::Index { base, idx, .. } => {
+                    Self::walk_place_idx(base, w);
+                    w.walk_expr(idx);
+                }
             }
         }
     }
@@ -289,7 +322,8 @@ fn number_uses(
             | Stmt::Break { id, .. }
             | Stmt::Continue { id, .. }
             | Stmt::Return { id, .. }
-            | Stmt::Match { id, .. } => *id,
+            | Stmt::Match { id, .. }
+            | Stmt::LetElse { id, .. } => *id,
         }
     }
     let mut w = W {
@@ -306,9 +340,25 @@ fn number_uses(
 struct VarState {
     ty: Ty,
     moved: bool,
+    /// Byte span of the move, for the "value moved here" note on E0301.
+    moved_span: Option<crate::source::Span>,
     /// Struct fields moved out individually (conservative: any field move
     /// forbids whole-value use; see `use_var`).
     moved_fields: HashSet<String>,
+    /// Per-field move spans, parallel to `moved_fields`.
+    moved_field_spans: HashMap<String, crate::source::Span>,
+}
+
+/// Move state snapshot for branch joins (if/else, match arms, loop bodies):
+/// whole-moved vars plus per-var moved fields, so exclusive branches roll
+/// back partial moves exactly like whole moves.
+struct MoveSnap {
+    vars: HashSet<String>,
+    fields: HashMap<String, HashSet<String>>,
+    /// Move spans parallel to `vars` (first-found wins at joins).
+    spans: HashMap<String, crate::source::Span>,
+    /// Move spans parallel to `fields`.
+    field_spans: HashMap<String, HashMap<String, crate::source::Span>>,
 }
 
 /// A live borrow region.
@@ -329,6 +379,8 @@ struct Cx<'a> {
     errs: Vec<Diagnostic>,
     scopes: Vec<HashMap<String, VarState>>,
     loans: Vec<Loan>,
+    /// Module of the function under analysis (for UFCS resolution).
+    cur_module: String,
     /// Precomputed: variable -> last-use statement seq (per function).
     last_use: HashMap<String, usize>,
     /// Precomputed: statement/block-tail node id -> sequence number.
@@ -351,6 +403,21 @@ fn describe_place(root: &str, path: &[String]) -> String {
     }
 }
 
+/// Field type through a borrow (`&S` -> field type of `S`); `None` when
+/// the root is not a borrowed struct with a known field.
+fn borrowed_field_ty(ty: &Ty, field: &str, checked: &Checked) -> Option<Ty> {
+    if let Ty::Reference { inner, .. } = ty {
+        if let Ty::Struct(n) = inner.as_ref() {
+            return checked
+                .structs
+                .get(n)
+                .and_then(|d| d.fields.iter().find(|(f, _)| f == field))
+                .map(|(_, t)| t.clone());
+        }
+    }
+    None
+}
+
 /// Statement node id (mirrors the pre-pass helper).
 fn stmt_id(s: &Stmt) -> NodeId {
     match s {
@@ -364,7 +431,8 @@ fn stmt_id(s: &Stmt) -> NodeId {
         | Stmt::Break { id, .. }
         | Stmt::Continue { id, .. }
         | Stmt::Return { id, .. }
-        | Stmt::Match { id, .. } => *id,
+        | Stmt::Match { id, .. }
+        | Stmt::LetElse { id, .. } => *id,
     }
 }
 
@@ -373,13 +441,53 @@ impl<'a> Cx<'a> {
         self.checked.types.get(&id).cloned().unwrap_or(Ty::Unit)
     }
 
+    /// Mirror of sema's `resolve_fun` (own module, then import aliases).
+    fn resolve_fun(&self, name: &str, arity: usize) -> Option<NodeId> {
+        let own = crate::resolver::qname(&self.cur_module, name);
+        if let Some(id) = self.checked.fun_names.get(&(own, arity)) {
+            return Some(*id);
+        }
+        if let Some((tm, tn)) = self
+            .checked
+            .aliases
+            .get(&(self.cur_module.clone(), name.to_string()))
+        {
+            let tq = crate::resolver::qname(tm, tn);
+            return self.checked.fun_names.get(&(tq, arity)).copied();
+        }
+        None
+    }
+
+    /// True exactly when sema's method-miss arm routes through UFCS: the
+    /// receiver type has no methods and a free function takes it first
+    /// (arity = explicit args + receiver).
+    fn ufcs_hit(&self, method: &str, rt: &Ty, nargs: usize) -> bool {
+        match rt {
+            Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => false,
+            Ty::Generic { base, args } if base == "Mat" && args.is_empty() => false,
+            Ty::Generic { base, args } if base == "Factor" && args.is_empty() => false,
+            Ty::Str => false,
+            Ty::Generic { base, args } if base == "Rng" && args.is_empty() => false,
+            Ty::Error => false,
+            _ => match self
+                .resolve_fun(method, nargs + 1)
+                .and_then(|fid| self.checked.sigs.get(&fid))
+            {
+                Some((pt, _)) => pt.first().is_some_and(|p| p == rt),
+                None => false,
+            },
+        }
+    }
+
     fn declare(&mut self, name: String, ty: Ty) {
         self.scopes.last_mut().unwrap().insert(
             name,
             VarState {
                 ty,
                 moved: false,
+                moved_span: None,
                 moved_fields: HashSet::new(),
+                moved_field_spans: HashMap::new(),
             },
         );
     }
@@ -440,6 +548,10 @@ impl<'a> Cx<'a> {
                 p.push(field.clone());
                 (r, p)
             }
+            // Indices are runtime values: an element place overlaps the
+            // whole vector (conservative; disjoint indices are not
+            // distinguished).
+            Place::Index { base, .. } => self.resolve_place(base),
             Place::Deref { inner, .. } => {
                 // Reborrow through the holder's loan. The holder is the RAW
                 // root variable (no auto-deref: `*mb` looks up loans held by
@@ -463,12 +575,26 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// Index expressions inside a place (read in borrow position).
+    fn place_indices<'p>(target: &'p Place, out: &mut Vec<&'p Expr>) {
+        match target {
+            Place::Index { base, idx, .. } => {
+                Self::place_indices(base, out);
+                out.push(idx);
+            }
+            Place::Field { base, .. } => Self::place_indices(base, out),
+            Place::Deref { inner, .. } => Self::place_indices(inner, out),
+            Place::Var(_, _) => {}
+        }
+    }
+
     /// Raw root variable of a place (no loan-region resolution).
     fn raw_root(target: &Place) -> Option<String> {
         match target {
             Place::Var(n, _) => Some(n.clone()),
             Place::Field { base, .. } => Self::raw_root(base),
             Place::Deref { inner, .. } => Self::raw_root(inner),
+            Place::Index { base, .. } => Self::raw_root(base),
         }
     }
 
@@ -569,6 +695,7 @@ impl<'a> Cx<'a> {
             }
             Place::Field { base, .. } => Self::collect_target_holders(base, out),
             Place::Deref { inner, .. } => Self::collect_target_holders(inner, out),
+            Place::Index { base, .. } => Self::collect_target_holders(base, out),
         }
     }
 
@@ -580,6 +707,7 @@ impl<'a> Cx<'a> {
                 format!("{}.{}", Self::describe_target(base), field)
             }
             Place::Deref { inner, .. } => format!("*{}", Self::describe_target(inner)),
+            Place::Index { base, .. } => format!("{}[_]", Self::describe_target(base)),
         }
     }
 
@@ -612,9 +740,14 @@ impl<'a> Cx<'a> {
                         }
                         Place::Field { base: b, .. } => root = b,
                         Place::Deref { .. } => break,
+                        // Element writes keep base move state: the vector
+                        // itself is neither moved nor restored.
+                        Place::Index { .. } => break,
                     }
                 }
             }
+            // Element writes keep base move state (see above).
+            Place::Index { .. } => {}
             Place::Deref { .. } => {}
         }
     }
@@ -665,13 +798,25 @@ impl<'a> Cx<'a> {
             return;
         }
         if st.moved || !st.moved_fields.is_empty() {
-            self.errs.push(
-                Diagnostic::error("E0301", span, format!("use of moved value `{}`", name))
-                    .with_help(format!(
-                        "clone before move, or stop using `{}` after it was moved",
-                        name
-                    )),
-            );
+            let mut d = Diagnostic::error("E0301", span, format!("use of moved value `{}`", name))
+                .with_help(format!(
+                    "clone before move, or stop using `{}` after it was moved",
+                    name
+                ));
+            if let Some(ms) = st.moved_span {
+                d = d.with_label(ms, "value moved here");
+            } else {
+                // Whole flag unset (join-merged field moves): label each
+                // moved field, sorted for deterministic output.
+                let mut fields: Vec<&String> = st.moved_fields.iter().collect();
+                fields.sort();
+                for f in fields {
+                    if let Some(fs) = st.moved_field_spans.get(f) {
+                        d = d.with_label(*fs, format!("field `{}` moved here", f));
+                    }
+                }
+            }
+            self.errs.push(d);
             return;
         }
         if move_ctx {
@@ -688,6 +833,7 @@ impl<'a> Cx<'a> {
             }
             if let Some(v) = self.find_mut(name) {
                 v.moved = true;
+                v.moved_span = Some(span);
             }
         }
     }
@@ -721,22 +867,48 @@ impl<'a> Cx<'a> {
             None => return, // sema already reported
         };
         if st.moved {
-            self.errs.push(
-                Diagnostic::error("E0301", span, format!("use of moved value `{}`", var))
-                    .with_help("the whole value was moved earlier".to_string()),
-            );
+            let mut d = Diagnostic::error("E0301", span, format!("use of moved value `{}`", var))
+                .with_help("the whole value was moved earlier".to_string());
+            if let Some(ms) = st.moved_span {
+                d = d.with_label(ms, "value moved here");
+            }
+            self.errs.push(d);
             return;
         }
         if st.moved_fields.contains(field) {
-            self.errs.push(
-                Diagnostic::error(
-                    "E0301",
-                    span,
-                    format!("use of moved field `{}.{}`", var, field),
-                )
-                .with_help("the field was moved out earlier".to_string()),
-            );
+            let mut d = Diagnostic::error(
+                "E0301",
+                span,
+                format!("use of moved field `{}.{}`", var, field),
+            )
+            .with_help("the field was moved out earlier".to_string());
+            if let Some(fs) = st.moved_field_spans.get(field) {
+                d = d.with_label(*fs, "field moved here");
+            }
+            self.errs.push(d);
             return;
+        }
+        // Moving a non-Copy field out of a shared borrow is corruption
+        // (shallow copy plus free); Copy fields (e.g. `f.nrows`) stay
+        // legal, and reads stay legal — moves must clone first.
+        if move_ctx {
+            if let Ty::Reference { mutable: false, .. } = st.ty {
+                let moves = match borrowed_field_ty(&st.ty, field, self.checked) {
+                    Some(t) => !is_copy_ty(&t, &self.checked.structs, &self.checked.enums),
+                    None => false,
+                };
+                if moves {
+                    self.errs.push(
+                        Diagnostic::error(
+                            "E0301",
+                            span,
+                            format!("cannot move `{}.{}` out of borrowed content", var, field),
+                        )
+                        .with_help("clone the value out instead".to_string()),
+                    );
+                    return;
+                }
+            }
         }
         if !move_ctx {
             return;
@@ -767,32 +939,60 @@ impl<'a> Cx<'a> {
             Some(t) if !is_copy_ty(&t, &self.checked.structs, &self.checked.enums) => {
                 if let Some(v) = self.find_mut(var) {
                     v.moved_fields.insert(field.to_string());
+                    v.moved_field_spans.insert(field.to_string(), span);
                 }
             }
             _ => {}
         }
     }
 
-    fn moved_snapshot(&self) -> HashSet<String> {
-        let mut set = HashSet::new();
+    fn moved_snapshot(&self) -> MoveSnap {
+        let mut vars = HashSet::new();
+        let mut fields: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut spans: HashMap<String, crate::source::Span> = HashMap::new();
+        let mut field_spans: HashMap<String, HashMap<String, crate::source::Span>> = HashMap::new();
         for s in &self.scopes {
             for (n, v) in s {
                 // Disjoint field borrows keep this legal under the borrow checker.
                 if (v.moved || !v.moved_fields.is_empty())
                     && !is_copy_ty(&v.ty, &self.checked.structs, &self.checked.enums)
                 {
-                    set.insert(n.clone());
+                    vars.insert(n.clone());
+                    if let Some(sp) = v.moved_span {
+                        spans.entry(n.clone()).or_insert(sp);
+                    }
+                }
+                if !v.moved_fields.is_empty() {
+                    fields
+                        .entry(n.clone())
+                        .or_default()
+                        .extend(v.moved_fields.iter().cloned());
+                    for (f, sp) in &v.moved_field_spans {
+                        field_spans
+                            .entry(n.clone())
+                            .or_default()
+                            .entry(f.clone())
+                            .or_insert(*sp);
+                    }
                 }
             }
         }
-        set
+        MoveSnap {
+            vars,
+            fields,
+            spans,
+            field_spans,
+        }
     }
 
-    fn apply_moved(&mut self, set: &HashSet<String>) {
+    fn apply_moved(&mut self, set: &HashSet<String>, spans: &HashMap<String, crate::source::Span>) {
         for s in self.scopes.iter_mut() {
             for (n, v) in s.iter_mut() {
                 if set.contains(n) {
                     v.moved = true;
+                    if let Some(sp) = spans.get(n) {
+                        v.moved_span = Some(*sp);
+                    }
                 }
             }
         }
@@ -1033,6 +1233,7 @@ impl<'a> Cx<'a> {
             }
             ExprKind::Unary { expr, .. } => Self::collect_ref_vars(expr, cx, out),
             ExprKind::Cast { expr, .. } => Self::collect_ref_vars(expr, cx, out),
+            ExprKind::AsUnit { expr, .. } => Self::collect_ref_vars(expr, cx, out),
             ExprKind::AddrOf { expr, .. } => Self::collect_ref_vars(expr, cx, out),
             ExprKind::Assign { target, value, .. } => {
                 Self::collect_place_refs(target, cx, out);
@@ -1050,6 +1251,7 @@ impl<'a> Cx<'a> {
                 }
             }
             ExprKind::Loop { body } => Self::collect_block_refs(body, cx, out),
+            ExprKind::Block(b) => Self::collect_block_refs(b, cx, out),
             ExprKind::Match { scrutinee, arms } => {
                 Self::collect_ref_vars(scrutinee, cx, out);
                 for a in arms {
@@ -1066,6 +1268,10 @@ impl<'a> Cx<'a> {
                 }
             }
             ExprKind::Field { base, .. } => Self::collect_ref_vars(base, cx, out),
+            ExprKind::Index { base, idx } => {
+                Self::collect_ref_vars(base, cx, out);
+                Self::collect_ref_vars(idx, cx, out);
+            }
             ExprKind::OptField { base, .. } => Self::collect_ref_vars(base, cx, out),
             ExprKind::Variant { args, .. } => {
                 for a in args {
@@ -1142,6 +1348,12 @@ impl<'a> Cx<'a> {
                     Self::collect_block_refs(&a.body, cx, out);
                 }
             }
+            Stmt::LetElse {
+                scrutinee, else_b, ..
+            } => {
+                Self::collect_ref_vars(scrutinee, cx, out);
+                Self::collect_block_refs(else_b, cx, out);
+            }
         }
     }
 
@@ -1168,7 +1380,19 @@ impl<'a> Cx<'a> {
     /// Check one match arm: bindings are fresh slots; owned payload bindings
     /// out of a variable scrutinee conservatively move the whole scrutinee.
     /// `move_ctx` propagates to arm tails (value position) like `if` tails.
-    fn check_match_arm(&mut self, arm: &MatchArm, scrut: &Expr, move_ctx: bool) {
+    /// Check one arm from the pre-match move state, adding its moves to
+    /// `union_out`. Arms are exclusive (like if/else branches), so each arm
+    /// starts from `before`; the caller unions all arms and applies once
+    /// after the match. Applying per-arm would poison later arms with
+    /// earlier arms' moves (spurious E0301).
+    fn check_match_arm(
+        &mut self,
+        arm: &MatchArm,
+        scrut: &Expr,
+        move_ctx: bool,
+        union_out: &mut HashSet<String>,
+        uspans_out: &mut HashMap<String, crate::source::Span>,
+    ) {
         let before = self.moved_snapshot();
         let st = self.ty_of(scrut.id);
         let bindings = self.arm_bindings(&arm.pat, &st);
@@ -1184,7 +1408,9 @@ impl<'a> Cx<'a> {
                 VarState {
                     ty: ty.clone(),
                     moved: false,
+                    moved_span: None,
                     moved_fields: HashSet::new(),
+                    moved_field_spans: HashMap::new(),
                 },
             );
         }
@@ -1195,6 +1421,7 @@ impl<'a> Cx<'a> {
             {
                 if let Some(v) = self.find_mut(&vn) {
                     v.moved = true;
+                    v.moved_span = Some(scrut.span);
                 }
             }
         }
@@ -1213,7 +1440,10 @@ impl<'a> Cx<'a> {
         self.scopes.pop();
         let moved_arm = self.moved_snapshot();
         self.restore_snapshot(&before);
-        self.apply_moved(&moved_arm);
+        union_out.extend(moved_arm.vars);
+        for (n, sp) in moved_arm.spans {
+            uspans_out.entry(n).or_insert(sp);
+        }
     }
 
     /// Binding slots introduced by a pattern: (name, type). Mirrors the sema
@@ -1228,12 +1458,48 @@ impl<'a> Cx<'a> {
                 ty, variant, sub, ..
             } => {
                 let ename = match ty {
+                    Some(t) if t == "Option" || t == "Result" || t == "Missing" => t.clone(),
                     Some(t) => t.clone(),
                     None => match scrut_ty {
                         Ty::Enum(n) => n.clone(),
+                        Ty::Generic { base, .. }
+                            if base == "Option" || base == "Result" || base == "Missing" =>
+                        {
+                            base.clone()
+                        }
                         _ => return vec![],
                     },
                 };
+                // Builtin generic payloads resolve structurally (mirrors
+                // sema's check_pat; silent fallbacks: sema already errored).
+                if ename == "Option" || ename == "Result" || ename == "Missing" {
+                    let payload: Vec<Ty> = match (ename.as_str(), variant.as_str(), scrut_ty) {
+                        ("Option", "Some", Ty::Generic { args, .. }) if args.len() == 1 => {
+                            vec![args[0].clone()]
+                        }
+                        ("Option", "None", Ty::Generic { args, .. }) if args.len() == 1 => {
+                            vec![]
+                        }
+                        ("Missing", "Present", Ty::Generic { args, .. }) if args.len() == 1 => {
+                            vec![args[0].clone()]
+                        }
+                        ("Missing", "Missing", Ty::Generic { args, .. }) if args.len() == 1 => {
+                            vec![]
+                        }
+                        ("Result", "Ok", Ty::Generic { args, .. }) if args.len() == 2 => {
+                            vec![args[0].clone()]
+                        }
+                        ("Result", "Err", Ty::Generic { args, .. }) if args.len() == 2 => {
+                            vec![args[1].clone()]
+                        }
+                        _ => return vec![],
+                    };
+                    let mut out = vec![];
+                    for (sp, pt) in sub.iter().zip(payload.iter()) {
+                        out.extend(self.arm_bindings(sp, pt));
+                    }
+                    return out;
+                }
                 let def = match self.checked.enums.get(&ename) {
                     Some(d) => d,
                     None => return vec![],
@@ -1304,7 +1570,9 @@ impl<'a> Cx<'a> {
                     VarState {
                         ty: decl_ty,
                         moved: false,
+                        moved_span: None,
                         moved_fields: HashSet::new(),
+                        moved_field_spans: HashMap::new(),
                     },
                 );
             }
@@ -1328,11 +1596,15 @@ impl<'a> Cx<'a> {
                     self.check_block_scoped(e);
                 }
                 let moved_else = self.moved_snapshot();
-                // union
-                let mut union = moved_then;
-                union.extend(moved_else);
+                // union (spans: first-found wins, matching bool behavior)
+                let mut union = moved_then.vars;
+                union.extend(moved_else.vars);
+                let mut uspans = moved_then.spans;
+                for (n, sp) in moved_else.spans {
+                    uspans.entry(n).or_insert(sp);
+                }
                 self.restore_snapshot(&before);
-                self.apply_moved(&union);
+                self.apply_moved(&union, &uspans);
             }
             Stmt::While { cond, body, .. } => {
                 self.check_expr(cond, false);
@@ -1343,7 +1615,7 @@ impl<'a> Cx<'a> {
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
                 // Conservative: body moves persist after loop.
-                self.apply_moved(&moved_body);
+                self.apply_moved(&moved_body.vars, &moved_body.spans);
             }
             Stmt::For {
                 var, iter, body, ..
@@ -1371,7 +1643,9 @@ impl<'a> Cx<'a> {
                     VarState {
                         ty: vt,
                         moved: false,
+                        moved_span: None,
                         moved_fields: HashSet::new(),
+                        moved_field_spans: HashMap::new(),
                     },
                 );
                 self.loop_depth += 1;
@@ -1381,7 +1655,7 @@ impl<'a> Cx<'a> {
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
                 // Conservative like `while`: body moves persist after loop.
-                self.apply_moved(&moved_body);
+                self.apply_moved(&moved_body.vars, &moved_body.spans);
             }
             Stmt::Loop { body, .. } => {
                 let before = self.moved_snapshot();
@@ -1390,14 +1664,55 @@ impl<'a> Cx<'a> {
                 self.loop_depth -= 1;
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
-                self.apply_moved(&moved_body);
+                self.apply_moved(&moved_body.vars, &moved_body.spans);
             }
             Stmt::Match {
                 scrutinee, arms, ..
             } => {
                 self.check_expr(scrutinee, false);
+                let mut union = HashSet::new();
+                let mut uspans: HashMap<String, crate::source::Span> = HashMap::new();
                 for arm in arms {
-                    self.check_match_arm(arm, scrutinee, false);
+                    self.check_match_arm(arm, scrutinee, false, &mut union, &mut uspans);
+                }
+                self.apply_moved(&union, &uspans);
+            }
+            Stmt::LetElse {
+                scrutinee,
+                pat,
+                else_b,
+                ..
+            } => {
+                // Success path continues inline (no arm join): check the
+                // scrutinee first (it cannot be "after" its own move),
+                // then declare bindings in the current scope; an owned
+                // capture moves a variable scrutinee (mirrors
+                // `check_match_arm`).
+                self.check_expr(scrutinee, false);
+                let st = self.ty_of(scrutinee.id);
+                let bindings = self.arm_bindings(pat, &st);
+                if let ExprKind::Var(n) = &scrutinee.kind {
+                    if bindings
+                        .iter()
+                        .any(|(_, t)| !is_copy_ty(t, &self.checked.structs, &self.checked.enums))
+                    {
+                        if let Some(v) = self.find_mut(n) {
+                            v.moved = true;
+                            v.moved_span = Some(scrutinee.span);
+                        }
+                    }
+                }
+                for (name, ty) in &bindings {
+                    self.declare(name.clone(), ty.clone());
+                }
+                for s in &else_b.stmts {
+                    self.check_stmt(s);
+                }
+                if let Some(t) = &else_b.tail {
+                    if let Some(seq) = self.tail_of.get(&else_b.id).copied() {
+                        self.cur = seq;
+                    }
+                    self.check_expr(t, false);
                 }
             }
             Stmt::Break { value, .. } => {
@@ -1426,10 +1741,16 @@ impl<'a> Cx<'a> {
         }
     }
 
-    fn restore_snapshot(&mut self, snap: &HashSet<String>) {
+    fn restore_snapshot(&mut self, snap: &MoveSnap) {
         for s in self.scopes.iter_mut() {
             for (n, v) in s.iter_mut() {
-                v.moved = snap.contains(n);
+                v.moved = snap.vars.contains(n);
+                v.moved_span = snap.spans.get(n).copied();
+                // Field moves must also roll back: exclusive branches must
+                // not observe each other's partial moves (same rule as whole
+                // moves above; previously leaked, causing spurious E0301).
+                v.moved_fields = snap.fields.get(n).cloned().unwrap_or_default();
+                v.moved_field_spans = snap.field_spans.get(n).cloned().unwrap_or_default();
             }
         }
     }
@@ -1449,7 +1770,16 @@ impl<'a> Cx<'a> {
                     ),
             ),
             ExprKind::Call { name, args } => {
-                let borrow_only = name == "print" || name == "println";
+                let borrow_only = name == "print"
+                    || name == "println"
+                    // C1 functionals borrow their data (kernels clone what
+                    // they keep; fold clones owned inits at the boundary).
+                    // F1 `par_map` borrows the vec (fresh output vector).
+                    || name == "map"
+                    || name == "filter"
+                    || name == "fold"
+                    || name == "par_map"
+                    || name == "split_apply";
                 for a in args {
                     let moves = !borrow_only && self.moves_ty(a.id);
                     self.check_expr(a, moves);
@@ -1494,6 +1824,16 @@ impl<'a> Cx<'a> {
             ExprKind::Cast { expr, .. } => {
                 // Conversions borrow (all convertible types are `Copy` anyway).
                 self.check_expr(expr, false);
+            }
+            ExprKind::AsUnit { expr, .. } => {
+                // Dimension assertion/conversion borrows (numerics are `Copy`).
+                self.check_expr(expr, false);
+            }
+            ExprKind::Index { base, idx } => {
+                // Element reads never move out (codegen clones owned
+                // elements, exactly like `get`); both sides borrow.
+                self.check_expr(base, false);
+                self.check_expr(idx, false);
             }
             ExprKind::StructLit { fields, .. } => {
                 // Literal construction consumes non-Copy field values (like args).
@@ -1558,8 +1898,46 @@ impl<'a> Cx<'a> {
                         }
                     }
                     _ => {
-                        // Field of a temporary (e.g. `make_point().x`): fresh value.
+                        // Field of a field chain (`l.inner.x`) or a temporary
+                        // (`make_point().x`): walk to the root variable; a move
+                        // out of a shared borrow is E0301 at any depth.
                         self.check_expr(base, false);
+                        if move_ctx {
+                            let mut root = base;
+                            while let ExprKind::Field { base: b, .. } = &root.kind {
+                                root = b;
+                            }
+                            if let ExprKind::Var(name) = &root.kind {
+                                let bad_root = match self.find(name).map(|s| s.ty) {
+                                    Some(rt) => match borrowed_field_ty(&rt, field, self.checked) {
+                                        Some(ft)
+                                            if !is_copy_ty(
+                                                &ft,
+                                                &self.checked.structs,
+                                                &self.checked.enums,
+                                            ) =>
+                                        {
+                                            matches!(rt, Ty::Reference { mutable: false, .. })
+                                        }
+                                        _ => false,
+                                    },
+                                    None => false,
+                                };
+                                if bad_root {
+                                    self.errs.push(
+                                        Diagnostic::error(
+                                            "E0301",
+                                            e.span,
+                                            format!(
+                                                "cannot move `{}` out of borrowed content",
+                                                describe_place(name, std::slice::from_ref(field))
+                                            ),
+                                        )
+                                        .with_help("clone the value out instead".to_string()),
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1586,6 +1964,15 @@ impl<'a> Cx<'a> {
                 args,
                 ..
             } => {
+                if self.ufcs_hit(method, &self.ty_of(receiver.id), args.len()) {
+                    // UFCS: the receiver is a real first argument and may
+                    // move, exactly like the equivalent free call.
+                    self.check_expr(receiver, self.moves_ty(receiver.id));
+                    for a in args {
+                        self.check_expr(a, self.moves_ty(a.id));
+                    }
+                    return;
+                }
                 // Receivers borrow (pointer model — never moves). Only `push`
                 // moves its element argument in.
                 self.check_expr(receiver, false);
@@ -1617,9 +2004,12 @@ impl<'a> Cx<'a> {
             }
             ExprKind::Match { scrutinee, arms } => {
                 self.check_expr(scrutinee, false);
+                let mut union = HashSet::new();
+                let mut uspans: HashMap<String, crate::source::Span> = HashMap::new();
                 for arm in arms {
-                    self.check_match_arm(arm, scrutinee, move_ctx);
+                    self.check_match_arm(arm, scrutinee, move_ctx, &mut union, &mut uspans);
                 }
+                self.apply_moved(&union, &uspans);
             }
             ExprKind::Loop { body } => {
                 // Value loop: check body in a scope; `break v` tails propagate
@@ -1640,16 +2030,56 @@ impl<'a> Cx<'a> {
                 self.scopes.pop();
                 let moved_body = self.moved_snapshot();
                 self.restore_snapshot(&before);
-                self.apply_moved(&moved_body);
+                self.apply_moved(&moved_body.vars, &moved_body.spans);
+            }
+            ExprKind::Block(b) => {
+                // Desugared statement sequence: scoped like a value-loop
+                // body; a tail (never present in our desugars) inherits
+                // the ambient move context like `if` tails.
+                let before = self.moved_snapshot();
+                self.scopes.push(HashMap::new());
+                for s in &b.stmts {
+                    self.check_stmt(s);
+                }
+                if let Some(t) = &b.tail {
+                    if let Some(seq) = self.tail_of.get(&b.id).copied() {
+                        self.cur = seq;
+                    }
+                    self.check_expr(t, move_ctx);
+                }
+                self.scopes.pop();
+                let moved_body = self.moved_snapshot();
+                self.restore_snapshot(&before);
+                self.apply_moved(&moved_body.vars, &moved_body.spans);
             }
             ExprKind::Assign { target, value, .. } => {
                 let moves = self.moves_ty(value.id);
                 self.check_expr(value, moves);
+                // Index expressions read in borrow position; writing
+                // through an index of a moved-away base is E0301.
+                let mut idxs = vec![];
+                Self::place_indices(target, &mut idxs);
+                for ix in &idxs {
+                    self.check_expr(ix, false);
+                }
                 // Resolve the target place and check write conflicts: any live
                 // loan on an overlapping place forbids the write, except loans
                 // held by vars in the target's own deref chain (writing
                 // through the loan itself, e.g. `*r = v`).
                 let (root, path) = self.resolve_place(target);
+                if !idxs.is_empty() && self.place_moved(&root, &path) {
+                    self.errs.push(
+                        Diagnostic::error(
+                            "E0301",
+                            value.span,
+                            format!(
+                                "cannot assign into moved `{}`",
+                                Self::describe_target(target)
+                            ),
+                        )
+                        .with_help("the vector was moved away; clone it before moving".to_string()),
+                    );
+                }
                 let mut chain = vec![];
                 Self::collect_target_holders(target, &mut chain);
                 let conflicts: Vec<usize> = self
@@ -1758,10 +2188,14 @@ impl<'a> Cx<'a> {
                     self.scopes.pop();
                 }
                 let moved_else = self.moved_snapshot();
-                let mut union = moved_then;
-                union.extend(moved_else);
+                let mut union = moved_then.vars;
+                union.extend(moved_else.vars);
+                let mut uspans = moved_then.spans;
+                for (n, sp) in moved_else.spans {
+                    uspans.entry(n).or_insert(sp);
+                }
                 self.restore_snapshot(&before);
-                self.apply_moved(&union);
+                self.apply_moved(&union, &uspans);
             }
         }
     }

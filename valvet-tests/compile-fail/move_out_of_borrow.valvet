@@ -1,0 +1,13 @@
+import std::frame::DynamicFrame;
+
+fun take(names: Vec<String>): Int64 {
+    names.len()
+}
+
+fun probe(f: &DynamicFrame): Int64 {
+    take(f.names)
+}
+
+fun main() {
+    println(1);
+}

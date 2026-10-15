@@ -1,0 +1,20 @@
+import std::frame::DynamicFrame;
+import std::frame::frame_mutate;
+import std::frame::ColExpr;
+fun go(): Int32 {
+val f = DynamicFrame { names: vec!["x"], cols: vec![vec!["1", "2", "2", "4"]], nrows: 4 as Int64 };
+val g = frame_mutate(f, "lag1", ColExpr::Lag("x", 1 as Int64));
+println(g.cols[1 as Int64]);
+val h = frame_mutate(g, "rn", ColExpr::RowNum);
+println(h.cols[2 as Int64]);
+val k = frame_mutate(h, "cs", ColExpr::Cumsum("x"));
+println(k.cols[3 as Int64]);
+val m = frame_mutate(k, "rk", ColExpr::Rank("x"));
+println(m.cols[4 as Int64]);
+val l = frame_mutate(m, "lead1", ColExpr::Lead("x", 1 as Int64));
+println(l.cols[5 as Int64]);
+return 0;
+}
+fun main() {
+println(go())
+}

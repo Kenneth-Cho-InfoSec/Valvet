@@ -1,0 +1,39 @@
+import std::autodiff::Dual;
+import std::autodiff::dual_const;
+import std::autodiff::dual_mul;
+import std::autodiff::dual_sub;
+import std::autodiff::seed;
+
+// d(x^2)/dx at x=3 is 6, and the dual agrees with finite differences.
+fun sq(p: Vec<Dual>): Dual {
+    dual_mul(p[0], p[0])
+}
+
+fun sq_f(x: Float64): Float64 {
+    x * x
+}
+
+fun quad(p: Vec<Dual>): Dual {
+    val e = dual_sub(p[0], dual_const(3.0));
+    dual_mul(e, e)
+}
+
+fun main() {
+    val x = vec![3.0];
+    val d = sq(seed(x.clone(), 0 as Int64)).d;
+    println(d);
+    val h = 0.000001;
+    val fd = (sq_f(3.0 + h) - sq_f(3.0 - h)) / (2.0 * h);
+    println(fd > 5.999999 && fd < 6.000001);
+    // Gradient descent on (w-3)^2 from 0: converges to 3.
+    var w = vec![0.0];
+    var it = 0 as Int64
+    while (it < 50 as Int64) {
+        val lp = quad(seed(w.clone(), 0 as Int64));
+        w[0] = w[0] - 0.1 * lp.d;
+        it += 1 as Int64
+    }
+    println(w);
+    val final_loss = quad(seed(w.clone(), 0 as Int64)).v;
+    println(final_loss < 0.000001);
+}

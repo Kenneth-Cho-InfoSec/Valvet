@@ -1,0 +1,50 @@
+fun main() {
+    // Symmetric eigen of [[4,2],[2,3]] is (7+-sqrt17)/2, vectors checked
+    // by Av = lv; SVD of the 3x2 verified by U'U = VtV' = I and U S V'.
+    val a = match (mat_from_rows(vec![vec![4.0, 2.0], vec![2.0, 3.0]])) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0 as Int64, 0 as Int64),
+    };
+    val ev = match (a.clone().eigen_values()) {
+        Ok(v) -> v,
+        Err(_) -> vec![0.0 - 1.0],
+    };
+    println(ev);
+    val vecs = match (a.clone().eigen_vectors()) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0 as Int64, 0 as Int64),
+    };
+    println(vecs);
+    val b = match (mat_from_rows(vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]])) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0 as Int64, 0 as Int64),
+    };
+    val s = match (b.clone().svd_s()) {
+        Ok(v) -> v,
+        Err(_) -> vec![0.0 - 1.0],
+    };
+    println(s);
+    val u = match (b.clone().svd_u()) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0 as Int64, 0 as Int64),
+    };
+    println(u);
+    val vt = match (b.clone().svd_vt()) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0 as Int64, 0 as Int64),
+    };
+    println(vt);
+    // Wide matrices need rows >= cols for the one-sided SVD.
+    val wide = b.clone().transpose();
+    val se = match (wide.svd_s()) {
+        Ok(_) -> "ok",
+        Err(_) -> "need-rows-ge-cols",
+    };
+    println(se);
+    // Non-square eigen is Err.
+    val ne = match (b.clone().eigen_values()) {
+        Ok(_) -> "ok",
+        Err(_) -> "need-square",
+    };
+    println(ne);
+}

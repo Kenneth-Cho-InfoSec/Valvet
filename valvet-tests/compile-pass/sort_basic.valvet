@@ -1,0 +1,34 @@
+fun main() {
+    // Int32 basics, duplicates, reverse, singletons, empty.
+    var a = vec![3, 1, 2, 1, -4, 0, 7, 7, 7, -100, 100];
+    a.sort();
+    println(a);
+    var r = vec![5, 4, 3, 2, 1];
+    r.sort();
+    println(r);
+    var one = vec![42];
+    one.sort();
+    println(one);
+    var mt: Vec<Int32> = vec![];
+    mt.sort();
+    println(mt.len());
+    // Float64 with NaN (sorts last) and signed values.
+    var f = vec![3.5, 0.0 / 0.0, -1.25, 2.0, 0.0 / 0.0, 100.5, -100.5];
+    f.sort();
+    println(f);
+    // Strings: lexicographic, prefix-shorter first.
+    var s = vec!["pear", "fig", "apple", "fig", "", "apricot"];
+    s.sort();
+    println(s);
+    // Bool: false before true.
+    var b = vec![true, false, true, false];
+    b.sort();
+    println(b);
+    // order() permutation + stability (ties keep original positions).
+    val t = vec![30, 10, 20, 10, 30];
+    println(t.order());
+    val u = vec![2.5, 1.5];
+    println(u.order());
+    val e: Vec<Int64> = vec![];
+    println(e.order().len());
+}

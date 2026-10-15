@@ -1,0 +1,20 @@
+import std::infer::anova_oneway;
+fun go(): Int32 {
+val g1: Vec<Float64> = vec![1.0, 2.0, 3.0]
+val g2: Vec<Float64> = vec![4.0, 5.0, 6.0]
+val g3: Vec<Float64> = vec![7.0, 8.0, 9.0]
+let Some(a) = anova_oneway(vec![g1, g2, g3]) else {
+println("none")
+return 1
+};
+println(a.ss_between)
+println(a.ss_within)
+println(a.f)
+println(a.p)
+val h1: Vec<Float64> = vec![1.0]
+println(match (anova_oneway(vec![h1])) { Some(_) -> "some", None -> "none", })
+return 0
+}
+fun main() {
+println(go())
+}

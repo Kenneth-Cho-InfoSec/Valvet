@@ -1,0 +1,1130 @@
+module std.frame;
+
+import std::csv::CsvTable;
+import std::csv::is_na;
+
+// Column-major frame: every column has exactly `nrows` cells.
+// A frame with no columns still knows its row count via `nrows`.
+pub struct DynamicFrame { names: Vec<String>, cols: Vec<Vec<String>>, nrows: Int64 }
+
+pub fun frame_from_table(t: CsvTable): DynamicFrame {
+    val ncols = t.header.len()
+    var cols: Vec<Vec<String>> = vec![]
+    var c = 0 as Int64
+    while (c < ncols) {
+        var col: Vec<String> = vec![]
+        var r = 0 as Int64
+        while (r < t.rows.len()) {
+            col.push(t.rows[r][c]);
+            r += 1 as Int64
+        }
+        cols.push(col);
+        c += 1 as Int64
+    }
+    val nrows = t.rows.len()
+    DynamicFrame { names: t.header, cols: cols, nrows: nrows }
+}
+
+pub fun frame_nrows(f: &DynamicFrame): Int64 {
+    f.nrows
+}
+
+pub fun frame_ncols(f: &DynamicFrame): Int64 {
+    f.names.len()
+}
+
+pub fun frame_names(f: &DynamicFrame): Vec<String> {
+    var out: Vec<String> = vec![]
+    var i = 0 as Int64
+    while (i < f.names.len()) {
+        out.push(f.names[i]);
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun frame_col(f: &DynamicFrame, name: String): Option<Vec<String>> {
+    var i = 0 as Int64
+    while (i < f.names.len()) {
+        if (f.names[i] == name) {
+            return Some(f.cols[i]);
+        }
+        i += 1 as Int64
+    }
+    return None;
+}
+
+pub fun frame_select(f: &DynamicFrame, names: Vec<String>): DynamicFrame {
+    var onames: Vec<String> = vec![]
+    var ocols: Vec<Vec<String>> = vec![]
+    var i = 0 as Int64
+    while (i < names.len()) {
+        val want = names[i]
+        var j = 0 as Int64
+        while (j < f.names.len()) {
+            if (f.names[j] == want) {
+                onames.push(f.names[j]);
+                ocols.push(f.cols[j]);
+            }
+            j += 1 as Int64
+        }
+        i += 1 as Int64
+    }
+    val n = f.nrows
+    DynamicFrame { names: onames, cols: ocols, nrows: n }
+}
+
+fun kept_indices(mask: Vec<Bool>, nrows: Int64): Vec<Int64> {
+    var out: Vec<Int64> = vec![]
+    var r = 0 as Int64
+    while (r < nrows) {
+        val keep = if (r < mask.len()) { mask[r] } else { false }
+        if (keep) {
+            out.push(r);
+        }
+        r += 1 as Int64
+    }
+    out
+}
+
+pub fun frame_filter_mask(f: &DynamicFrame, mask: Vec<Bool>): DynamicFrame {
+    val kept = kept_indices(mask, f.nrows);
+    var onames: Vec<String> = vec![]
+    var ocols: Vec<Vec<String>> = vec![]
+    var c = 0 as Int64
+    while (c < f.names.len()) {
+        onames.push(f.names[c]);
+        val col = f.cols[c]
+        var ncol: Vec<String> = vec![]
+        var k = 0 as Int64
+        while (k < kept.len()) {
+            ncol.push(col[kept[k]]);
+            k += 1 as Int64
+        }
+        ocols.push(ncol);
+        c += 1 as Int64
+    }
+    val n = kept.len()
+    DynamicFrame { names: onames, cols: ocols, nrows: n }
+}
+
+pub fun frame_group_count(f: &DynamicFrame, key: String): DynamicFrame {
+    val keyname = key.clone();
+    val no_col: Vec<String> = vec![];
+    val keycol = match (frame_col(f, key)) { Some(c) -> c, None -> no_col, };
+    var keys: Vec<String> = vec![]
+    var counts: Vec<Int64> = vec![]
+    var r = 0 as Int64
+    while (r < keycol.len()) {
+        val k = keycol[r]
+        var g = (0 - 1) as Int64
+        var j = 0 as Int64
+        while (j < keys.len()) {
+            if (keys[j] == k) {
+                g = j;
+            }
+            j += 1 as Int64
+        }
+        if (g < (0 as Int64)) {
+            keys.push(k);
+            counts.push(1 as Int64);
+        } else {
+            counts[g] = counts[g] + (1 as Int64);
+        }
+        r += 1 as Int64
+    }
+    var scounts: Vec<String> = vec![]
+    var i = 0 as Int64
+    while (i < counts.len()) {
+        scounts.push(to_string(counts[i]));
+        i += 1 as Int64
+    }
+    val n = keys.len()
+    DynamicFrame { names: vec![keyname, "count"], cols: vec![keys, scounts], nrows: n }
+}
+
+pub fun frame_group_sum(f: &DynamicFrame, key: String, value: String): DynamicFrame {
+    val keyname = key.clone();
+    val no_col: Vec<String> = vec![];
+    val keycol = match (frame_col(f, key)) { Some(c) -> c, None -> no_col, };
+    val no_col2: Vec<String> = vec![];
+    val valcol = match (frame_col(f, value)) { Some(c) -> c, None -> no_col2, };
+    var keys: Vec<String> = vec![]
+    var sums: Vec<Float64> = vec![]
+    var r = 0 as Int64
+    while (r < keycol.len()) {
+        val k = keycol[r]
+        var g = (0 - 1) as Int64
+        var j = 0 as Int64
+        while (j < keys.len()) {
+            if (keys[j] == k) {
+                g = j;
+            }
+            j += 1 as Int64
+        }
+        val parsed = valcol[r].parse_float()
+        val isna = match (parsed) { Some(x) -> false, None -> true, };
+        val amount = match (parsed) { Some(x) -> x, None -> 0.0, };
+        if (g < (0 as Int64)) {
+            keys.push(k);
+            if (isna) {
+                sums.push(0.0);
+            } else {
+                sums.push(amount);
+            }
+        } else {
+            if (!isna) {
+                sums[g] = sums[g] + amount;
+            }
+        }
+        r += 1 as Int64
+    }
+    var ssums: Vec<String> = vec![]
+    var i = 0 as Int64
+    while (i < sums.len()) {
+        ssums.push(to_string(sums[i]));
+        i += 1 as Int64
+    }
+    val n = keys.len()
+    DynamicFrame { names: vec![keyname, "sum"], cols: vec![keys, ssums], nrows: n }
+}
+
+pub fun frame_group_mean(f: &DynamicFrame, key: String, value: String): DynamicFrame {
+    val keyname = key.clone();
+    val no_col: Vec<String> = vec![];
+    val keycol = match (frame_col(f, key)) { Some(c) -> c, None -> no_col, };
+    val no_col2: Vec<String> = vec![];
+    val valcol = match (frame_col(f, value)) { Some(c) -> c, None -> no_col2, };
+    var keys: Vec<String> = vec![]
+    var sums: Vec<Float64> = vec![]
+    var counts: Vec<Int64> = vec![]
+    var r = 0 as Int64
+    while (r < keycol.len()) {
+        val k = keycol[r]
+        var g = (0 - 1) as Int64
+        var j = 0 as Int64
+        while (j < keys.len()) {
+            if (keys[j] == k) {
+                g = j;
+            }
+            j += 1 as Int64
+        }
+        val parsed = valcol[r].parse_float()
+        val isna = match (parsed) { Some(x) -> false, None -> true, };
+        val amount = match (parsed) { Some(x) -> x, None -> 0.0, };
+        if (g < (0 as Int64)) {
+            keys.push(k);
+            if (isna) {
+                sums.push(0.0);
+                counts.push(0 as Int64);
+            } else {
+                sums.push(amount);
+                counts.push(1 as Int64);
+            }
+        } else {
+            if (!isna) {
+                sums[g] = sums[g] + amount;
+                counts[g] = counts[g] + (1 as Int64);
+            }
+        }
+        r += 1 as Int64
+    }
+    var scells: Vec<String> = vec![]
+    var i = 0 as Int64
+    while (i < sums.len()) {
+        val cell = if (counts[i] == (0 as Int64)) { "NA" } else { to_string(sums[i] / (counts[i] as Float64)) };
+        scells.push(cell);
+        i += 1 as Int64
+    }
+    val n = keys.len()
+    DynamicFrame { names: vec![keyname, "mean"], cols: vec![keys, scells], nrows: n }
+}
+
+// ----- Audited joins (K1): no silent row loss. Every join returns its
+// audit (matched / left-only / right-only / row counts); a missing key
+// column is `Err`, never an empty frame. Output order is deterministic:
+// left rows in order, right matches in right-table order. Duplicate keys
+// produce the cartesian product (documented, counted in `matched`).
+// Output columns are the left columns plus the right non-key columns.
+
+pub struct JoinAudit {
+    matched: Int64,
+    left_only: Int64,
+    right_only: Int64,
+    left_rows: Int64,
+    right_rows: Int64,
+    out_rows: Int64,
+}
+
+pub struct JoinResult { frame: DynamicFrame, audit: JoinAudit }
+
+fun col_index(names: Vec<String>, want: String): Int64 {
+    var i = 0 as Int64
+    while (i < names.len()) {
+        if (names[i] == want) {
+            return i;
+        }
+        i += 1 as Int64
+    }
+    return (0 - 1) as Int64
+}
+
+pub fun audit_summary(a: &JoinAudit): String {
+    val s1 = "matched=" + to_string(a.matched) + " left_only=" + to_string(a.left_only);
+    val s2 = s1 + " right_only=" + to_string(a.right_only) + " out=" + to_string(a.out_rows);
+    s2
+}
+
+fun join_core(left: &DynamicFrame, lkey: String, right: &DynamicFrame, rkey: String, keep_left: Bool): Result<JoinResult, String> {
+    // NOTE: `.clone()` is load-bearing: passing a field out of a
+    // borrowed struct by value would move (and corrupt); clone first.
+    val li = col_index(left.names.clone(), lkey.clone());
+    val ri = col_index(right.names.clone(), rkey.clone());
+    if (li < (0 as Int64)) {
+        return Err("join: left frame has no column " + lkey);
+    }
+    if (ri < (0 as Int64)) {
+        return Err("join: right frame has no column " + rkey);
+    }
+    // Output schema: left columns, then right non-key columns.
+    var onames: Vec<String> = vec![]
+    var c = 0 as Int64
+    while (c < left.names.len()) {
+        onames.push(left.names[c]);
+        c += 1 as Int64
+    }
+    var rc = 0 as Int64
+    while (rc < right.names.len()) {
+        if (rc != ri) {
+            onames.push(right.names[rc]);
+        }
+        rc += 1 as Int64
+    }
+    // Rows first (dynamic width), transposed into columns at the end
+    // (nested index stores are rejected, so columns cannot grow in place).
+    var orows: Vec<Vec<String>> = vec![]
+    var matched = 0 as Int64
+    var left_only = 0 as Int64
+    var r = 0 as Int64
+    while (r < left.nrows) {
+        val lval = left.cols[li][r]
+        var hits = 0 as Int64
+        var q = 0 as Int64
+        while (q < right.nrows) {
+            if (right.cols[ri][q] == lval) {
+                var row: Vec<String> = vec![]
+                var lc = 0 as Int64
+                while (lc < left.names.len()) {
+                    row.push(left.cols[lc][r]);
+                    lc += 1 as Int64
+                }
+                var rc2 = 0 as Int64
+                while (rc2 < right.names.len()) {
+                    if (rc2 != ri) {
+                        row.push(right.cols[rc2][q]);
+                    }
+                    rc2 += 1 as Int64
+                }
+                orows.push(row);
+                hits += 1 as Int64
+            }
+            q += 1 as Int64
+        }
+        if (hits == (0 as Int64)) {
+            left_only += 1 as Int64
+            if (keep_left) {
+                var row: Vec<String> = vec![]
+                var lc = 0 as Int64
+                while (lc < left.names.len()) {
+                    row.push(left.cols[lc][r]);
+                    lc += 1 as Int64
+                }
+                var rc3 = 0 as Int64
+                while (rc3 < right.names.len()) {
+                    if (rc3 != ri) {
+                        row.push("");
+                    }
+                    rc3 += 1 as Int64
+                }
+                orows.push(row);
+            }
+        } else {
+            matched += hits
+        }
+        r += 1 as Int64
+    }
+    // Right-only rows: right keys no left row carries.
+    var right_only = 0 as Int64
+    var q2 = 0 as Int64
+    while (q2 < right.nrows) {
+        var hit = false
+        var r3 = 0 as Int64
+        while (r3 < left.nrows) {
+            if (left.cols[li][r3] == right.cols[ri][q2]) {
+                hit = true;
+            }
+            r3 += 1 as Int64
+        }
+        if (!hit) {
+            right_only += 1 as Int64
+        }
+        q2 += 1 as Int64
+    }
+    var ocols: Vec<Vec<String>> = vec![]
+    var c2 = 0 as Int64
+    while (c2 < onames.len()) {
+        var col: Vec<String> = vec![]
+        var r2 = 0 as Int64
+        while (r2 < orows.len()) {
+            col.push(orows[r2][c2]);
+            r2 += 1 as Int64
+        }
+        ocols.push(col);
+        c2 += 1 as Int64
+    }
+    val n = orows.len()
+    val audit = JoinAudit {
+        matched: matched,
+        left_only: left_only,
+        right_only: right_only,
+        left_rows: left.nrows,
+        right_rows: right.nrows,
+        out_rows: n,
+    }
+    return Ok(JoinResult {
+        frame: DynamicFrame { names: onames, cols: ocols, nrows: n },
+        audit: audit,
+    });
+}
+
+pub fun frame_join_inner(left: &DynamicFrame, lkey: String, right: &DynamicFrame, rkey: String): Result<JoinResult, String> {
+    join_core(left, lkey, right, rkey, false)
+}
+
+pub fun frame_join_left(left: &DynamicFrame, lkey: String, right: &DynamicFrame, rkey: String): Result<JoinResult, String> {
+    join_core(left, lkey, right, rkey, true)
+}
+
+// D1 verbs: pipe-friendly frame transforms (frames move by value, so
+// `f |> frame_arrange("x", true) |> frame_mutate(...)` chains). Missing
+// columns follow the file's existing precedent (silent empty), documented
+// per verb. All numeric parsing skips/recycles exactly like
+// `frame_group_sum` (unparseable cells are ignored, never traps).
+
+// First-order column expressions (flat by design: Valvet has no Box, so
+// expressions nest only through intermediate `frame_mutate` columns,
+// never inside one `ColExpr`).
+pub enum ColExpr {
+    Col(String),
+    Lit(String),
+    Count,
+    Add(String, String),
+    Sub(String, String),
+    Mul(String, String),
+    Div(String, String),
+    MeanOf(String),
+    SumOf(String),
+    MinOf(String),
+    MaxOf(String),
+    Lag(String, Int64),
+    Lead(String, Int64),
+    RowNum,
+    Cumsum(String),
+    Rank(String),
+}
+
+fun strcol_of(f: &DynamicFrame, col: String, n: Int64): Vec<String> {
+    val empty: Vec<String> = vec![];
+    val c = match (frame_col(f, col)) { Some(v) -> v, None -> empty, };
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        if (i < c.len()) {
+            out.push(c[i]);
+        } else {
+            out.push("");
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun numcol_of(f: &DynamicFrame, col: String, n: Int64): Vec<Float64> {
+    val s = strcol_of(f, col, n);
+    var out: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < s.len()) {
+        val v = match (s[i].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+        out.push(v);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun is_nan(x: Float64): Bool {
+    return x != x;
+}
+
+fun agg_mean(v: Vec<Float64>): Float64 {
+    var sum = 0.0;
+    var n = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (!is_nan(v[i])) {
+            sum = sum + v[i];
+            n = n + (1 as Int64);
+        }
+        i = i + (1 as Int64);
+    }
+    if (n == (0 as Int64)) {
+        return 0.0 / 0.0;
+    }
+    val nf = match (to_string(n).parse_float()) { Some(x) -> x, None -> 1.0, };
+    return sum / nf;
+}
+
+fun agg_sum(v: Vec<Float64>): Float64 {
+    var sum = 0.0;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (!is_nan(v[i])) {
+            sum = sum + v[i];
+        }
+        i = i + (1 as Int64);
+    }
+    return sum;
+}
+
+fun agg_min(v: Vec<Float64>): Float64 {
+    var best = 0.0 / 0.0;
+    var started = false;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (is_nan(v[i])) {
+            return 0.0 / 0.0;
+        }
+        if (!started || v[i] < best) {
+            best = v[i];
+            started = true;
+        }
+        i = i + (1 as Int64);
+    }
+    return best;
+}
+
+fun agg_max(v: Vec<Float64>): Float64 {
+    var best = 0.0 / 0.0;
+    var started = false;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (is_nan(v[i])) {
+            return 0.0 / 0.0;
+        }
+        if (!started || v[i] > best) {
+            best = v[i];
+            started = true;
+        }
+        i = i + (1 as Int64);
+    }
+    return best;
+}
+
+fun eval_arith(a: Vec<Float64>, b: Vec<Float64>, op: Int64, n: Int64): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val x = a[i];
+        val y = b[i];
+        var r = 0.0 / 0.0;
+        if (op == (0 as Int64)) {
+            r = x + y;
+        }
+        if (op == (1 as Int64)) {
+            r = x - y;
+        }
+        if (op == (2 as Int64)) {
+            r = x * y;
+        }
+        if (op == (3 as Int64)) {
+            r = x / y;
+        }
+        out.push(to_string(r));
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun broadcast(s: String, n: Int64): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        out.push(s.clone());
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+// Row-wise evaluation (aggregates broadcast their scalar to every row).
+// Window variants: Lag/Lead shift by k with "" fill, RowNum is 1-based,
+// Cumsum is running total (NaN poisons rest), Rank is average rank
+// (1-based, ties averaged, NaN ranks NaN).
+fun lag_col(v: Vec<String>, k: Int64, n: Int64): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val src = i - k;
+        if (src < (0 as Int64) || src >= v.len()) {
+            out.push("");
+        } else {
+            out.push(v[src]);
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun lead_col(v: Vec<String>, k: Int64, n: Int64): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val src = i + k;
+        if (src < (0 as Int64) || src >= v.len()) {
+            out.push("");
+        } else {
+            out.push(v[src]);
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun rownum_col(n: Int64): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        out.push(to_string(i + (1 as Int64)));
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun cumsum_col(f: &DynamicFrame, col: String, n: Int64): Vec<String> {
+    val v = numcol_of(f, col, n);
+    var out: Vec<String> = vec![];
+    var acc = 0.0;
+    var bad = false;
+    var i = 0 as Int64;
+    while (i < n) {
+        if (bad || is_nan(v[i])) {
+            bad = true;
+            out.push(to_string(0.0 / 0.0));
+        } else {
+            acc = acc + v[i];
+            out.push(to_string(acc));
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun rank_col(f: &DynamicFrame, col: String, n: Int64): Vec<String> {
+    val v = numcol_of(f, col, n);
+    val ord = v.clone().order();
+    var ranks: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        ranks.push(0.0);
+        i = i + (1 as Int64);
+    }
+    var a = 0 as Int64;
+    while (a < n) {
+        var b = a;
+        while (b + (1 as Int64) < n && !is_nan(v[ord[b]]) && !is_nan(v[ord[b + (1 as Int64)]]) && v[ord[b]] == v[ord[b + (1 as Int64)]]) {
+            b = b + (1 as Int64);
+        }
+        if (is_nan(v[ord[a]])) {
+            var q = a;
+            while (q < n) {
+                ranks[ord[q]] = 0.0 / 0.0;
+                q = q + (1 as Int64);
+            }
+            a = n;
+        } else {
+            val avg = ((a + (1 as Int64)) as Float64 + (b + (1 as Int64)) as Float64) / 2.0;
+            var q = a;
+            while (q <= b) {
+                ranks[ord[q]] = avg;
+                q = q + (1 as Int64);
+            }
+            a = b + (1 as Int64);
+        }
+    }
+    var out: Vec<String> = vec![];
+    var i2 = 0 as Int64;
+    while (i2 < n) {
+        out.push(to_string(ranks[i2]));
+        i2 = i2 + (1 as Int64);
+    }
+    return out;
+}
+
+fun eval_colexpr(f: &DynamicFrame, e: ColExpr, n: Int64): Vec<String> {
+    return match (e) {
+        ColExpr::Col(c) -> strcol_of(f, c, n),
+        ColExpr::Lit(s) -> broadcast(s, n),
+        ColExpr::Count -> broadcast(to_string(n), n),
+        ColExpr::Add(a, b) -> eval_arith(numcol_of(f, a, n), numcol_of(f, b, n), 0 as Int64, n),
+        ColExpr::Sub(a, b) -> eval_arith(numcol_of(f, a, n), numcol_of(f, b, n), 1 as Int64, n),
+        ColExpr::Mul(a, b) -> eval_arith(numcol_of(f, a, n), numcol_of(f, b, n), 2 as Int64, n),
+        ColExpr::Div(a, b) -> eval_arith(numcol_of(f, a, n), numcol_of(f, b, n), 3 as Int64, n),
+        ColExpr::MeanOf(c) -> broadcast(to_string(agg_mean(numcol_of(f, c, n))), n),
+        ColExpr::SumOf(c) -> broadcast(to_string(agg_sum(numcol_of(f, c, n))), n),
+        ColExpr::MinOf(c) -> broadcast(to_string(agg_min(numcol_of(f, c, n))), n),
+        ColExpr::MaxOf(c) -> broadcast(to_string(agg_max(numcol_of(f, c, n))), n),
+        ColExpr::Lag(c, k) -> lag_col(strcol_of(f, c, n), k, n),
+        ColExpr::Lead(c, k) -> lead_col(strcol_of(f, c, n), k, n),
+        ColExpr::RowNum -> rownum_col(n),
+        ColExpr::Cumsum(c) -> cumsum_col(f, c, n),
+        ColExpr::Rank(c) -> rank_col(f, c, n),
+    };
+}
+
+pub fun frame_mutate(f: DynamicFrame, name: String, e: ColExpr): DynamicFrame {
+    val n = f.nrows;
+    val newcol = eval_colexpr(&f, e, n);
+    var onames: Vec<String> = vec![];
+    var ocols: Vec<Vec<String>> = vec![];
+    var replaced = false;
+    var i = 0 as Int64;
+    while (i < f.names.len()) {
+        if (f.names[i] == name) {
+            onames.push(f.names[i]);
+            ocols.push(newcol.clone());
+            replaced = true;
+        } else {
+            onames.push(f.names[i]);
+            ocols.push(f.cols[i]);
+        }
+        i = i + (1 as Int64);
+    }
+    if (!replaced) {
+        onames.push(name);
+        ocols.push(newcol);
+    }
+    return DynamicFrame { names: onames, cols: ocols, nrows: n };
+}
+
+// `summarise` evaluates exactly like `mutate`, then keeps the first row
+// (aggregates broadcast, so row 0 is the scalar; empty frames stay empty).
+pub fun frame_summarise(f: DynamicFrame, name: String, e: ColExpr): DynamicFrame {
+    val n = f.nrows;
+    if (n == (0 as Int64)) {
+        val ec: Vec<String> = vec![];
+        return DynamicFrame { names: vec![name.clone()], cols: vec![ec], nrows: 0 as Int64 };
+    }
+    val col = eval_colexpr(&f, e, n);
+    return DynamicFrame { names: vec![name], cols: vec![vec![col[0 as Int64]]], nrows: 1 as Int64 };
+}
+
+// Arrange rows by one column (M2 `order`). Numeric when every cell parses
+// as Float64, else lexicographic on raw strings (documented). Missing
+// columns return the frame unchanged; `asc` false reverses the order.
+pub fun frame_arrange(f: DynamicFrame, col: String, asc: Bool): DynamicFrame {
+    val empty: Vec<String> = vec![];
+    val key = match (frame_col(&f, col)) { Some(v) -> v, None -> empty, };
+    val missing = key.len() == (0 as Int64);
+    if (missing) {
+        return DynamicFrame { names: f.names.clone(), cols: f.cols.clone(), nrows: f.nrows };
+    }
+    var all_num = true;
+    var nums: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < key.len()) {
+        val p = match (key[i].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+        if (is_nan(p)) {
+            all_num = false;
+        }
+        nums.push(p);
+        i = i + (1 as Int64);
+    }
+    var ord: Vec<Int64> = vec![];
+    if (all_num) {
+        ord = nums.order();
+    } else {
+        ord = key.clone().order();
+    }
+    if (!asc) {
+        var rev: Vec<Int64> = vec![];
+        var k = ord.len() - (1 as Int64);
+        while (k >= (0 as Int64)) {
+            rev.push(ord[k]);
+            k = k - (1 as Int64);
+        }
+        ord = rev;
+    }
+    var onames: Vec<String> = vec![];
+    var ocols: Vec<Vec<String>> = vec![];
+    var c = 0 as Int64;
+    while (c < f.names.len()) {
+        onames.push(f.names[c]);
+        var ncol: Vec<String> = vec![];
+        var r = 0 as Int64;
+        while (r < ord.len()) {
+            ncol.push(f.cols[c][ord[r]]);
+            r = r + (1 as Int64);
+        }
+        ocols.push(ncol);
+        c = c + (1 as Int64);
+    }
+    return DynamicFrame { names: onames, cols: ocols, nrows: f.nrows };
+}
+
+// Wrangling batch: drop/fill NA, describe, cut, crosstab, pivot longer.
+pub fun frame_drop_na(f: DynamicFrame, col: String): DynamicFrame {
+    val empty: Vec<String> = vec![];
+    val key = match (frame_col(&f, col)) { Some(v) -> v, None -> empty, };
+    if (key.len() == (0 as Int64)) {
+        return DynamicFrame { names: f.names.clone(), cols: f.cols.clone(), nrows: f.nrows };
+    }
+    var keep: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < f.nrows) {
+        val kc = key[i].clone();
+        if (!is_na(&kc)) {
+            keep.push(i);
+        }
+        i = i + (1 as Int64);
+    }
+    var ocols: Vec<Vec<String>> = vec![];
+    var c = 0 as Int64;
+    while (c < f.names.len()) {
+        var ncol: Vec<String> = vec![];
+        var k = 0 as Int64;
+        while (k < keep.len()) {
+            ncol.push(f.cols[c][keep[k]].clone());
+            k = k + (1 as Int64);
+        }
+        ocols.push(ncol);
+        c = c + (1 as Int64);
+    }
+    return DynamicFrame { names: f.names.clone(), cols: ocols, nrows: keep.len() };
+}
+
+pub fun frame_fill_na(f: DynamicFrame, col: String, fill: String): DynamicFrame {
+    var ocols: Vec<Vec<String>> = vec![];
+    var c = 0 as Int64;
+    while (c < f.names.len()) {
+        var ncol: Vec<String> = vec![];
+        var r = 0 as Int64;
+        while (r < f.nrows) {
+            val cell = f.cols[c][r].clone();
+            if (f.names[c] == col && is_na(&cell)) {
+                ncol.push(fill.clone());
+            } else {
+                ncol.push(cell);
+            }
+            r = r + (1 as Int64);
+        }
+        ocols.push(ncol);
+        c = c + (1 as Int64);
+    }
+    return DynamicFrame { names: f.names.clone(), cols: ocols, nrows: f.nrows };
+}
+
+pub fun frame_describe(f: &DynamicFrame, col: String): String {
+    val empty: Vec<String> = vec![];
+    val key = match (frame_col(f, col)) { Some(v) -> v, None -> empty, };
+    var n = 0 as Int64;
+    var sum = 0.0;
+    var mn = 0.0 / 0.0;
+    var mx = 0.0 / 0.0;
+    var started = false;
+    var i = 0 as Int64;
+    while (i < key.len()) {
+        val v = match (key[i].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, };
+        if (v == v) {
+            n = n + (1 as Int64);
+            sum = sum + v;
+            if (!started || v < mn) {
+                mn = v;
+            }
+            if (!started || v > mx) {
+                mx = v;
+            }
+            started = true;
+        }
+        i = i + (1 as Int64);
+    }
+    val mean = if (n > (0 as Int64)) { sum / (n as Float64) } else { 0.0 / 0.0 };
+    return "n=" + to_string(n) + " mean=" + to_string(mean) + " min=" + to_string(mn) + " max=" + to_string(mx);
+}
+
+pub fun frame_cut(f: DynamicFrame, src: String, name: String, breaks: Vec<Float64>): DynamicFrame {
+    val n = f.nrows;
+    val empty: Vec<String> = vec![];
+    val key = match (frame_col(&f, src)) { Some(v) -> v, None -> empty, };
+    var bincol: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val v = if (i < key.len()) { match (key[i].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, } } else { 0.0 / 0.0 };
+        if (v != v) {
+            bincol.push("");
+        } else {
+            var b = 0 as Int64;
+            var placed = false;
+            while (b + (1 as Int64) < breaks.len()) {
+                if (v >= breaks[b] && v < breaks[b + (1 as Int64)]) {
+                    bincol.push(to_string(b));
+                    placed = true;
+                }
+                b = b + (1 as Int64);
+            }
+            if (!placed) {
+                if (breaks.len() > (0 as Int64) && v >= breaks[breaks.len() - (1 as Int64)]) {
+                    bincol.push(to_string(breaks.len() - (1 as Int64)));
+                } else {
+                    bincol.push(to_string(0 as Int64));
+                }
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    var onames = f.names.clone();
+    var ocols = f.cols.clone();
+    onames.push(name);
+    ocols.push(bincol);
+    return DynamicFrame { names: onames, cols: ocols, nrows: n };
+}
+
+pub fun frame_crosstab(f: &DynamicFrame, a: String, b: String): DynamicFrame {
+    val empty: Vec<String> = vec![];
+    val ca = match (frame_col(f, a.clone())) { Some(v) -> v, None -> empty.clone(), };
+    val cb = match (frame_col(f, b.clone())) { Some(v) -> v, None -> empty, };
+    var la: Vec<String> = vec![];
+    var lb: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < ca.len() && i < cb.len()) {
+        var fa = false;
+        var k = 0 as Int64;
+        while (k < la.len()) {
+            if (la[k] == ca[i]) {
+                fa = true;
+            }
+            k = k + (1 as Int64);
+        }
+        if (!fa) {
+            la.push(ca[i].clone());
+        }
+        var fb = false;
+        var j = 0 as Int64;
+        while (j < lb.len()) {
+            if (lb[j] == cb[i]) {
+                fb = true;
+            }
+            j = j + (1 as Int64);
+        }
+        if (!fb) {
+            lb.push(cb[i].clone());
+        }
+        i = i + (1 as Int64);
+    }
+    var names: Vec<String> = vec![a.clone()];
+    var j = 0 as Int64;
+    while (j < lb.len()) {
+        names.push(lb[j].clone());
+        j = j + (1 as Int64);
+    }
+    var rows_a: Vec<Vec<String>> = vec![];
+    var r = 0 as Int64;
+    while (r < la.len()) {
+        var row: Vec<String> = vec![la[r].clone()];
+        var c = 0 as Int64;
+        while (c < lb.len()) {
+            var cnt = 0 as Int64;
+            var k2 = 0 as Int64;
+            while (k2 < ca.len() && k2 < cb.len()) {
+                if (ca[k2] == la[r] && cb[k2] == lb[c]) {
+                    cnt = cnt + (1 as Int64);
+                }
+                k2 = k2 + (1 as Int64);
+            }
+            row.push(to_string(cnt));
+            c = c + (1 as Int64);
+        }
+        rows_a.push(row);
+        r = r + (1 as Int64);
+    }
+    var cols: Vec<Vec<String>> = vec![];
+    var cc = 0 as Int64;
+    while (cc < names.len()) {
+        var col: Vec<String> = vec![];
+        var rr = 0 as Int64;
+        while (rr < rows_a.len()) {
+            col.push(rows_a[rr][cc].clone());
+            rr = rr + (1 as Int64);
+        }
+        cols.push(col);
+        cc = cc + (1 as Int64);
+    }
+    return DynamicFrame { names: names, cols: cols, nrows: la.len() };
+}
+
+pub fun frame_pivot_longer(f: DynamicFrame, cols: Vec<String>, name_col: String, value_col: String): DynamicFrame {
+    var keep_idx: Vec<Int64> = vec![];
+    var melt_idx: Vec<Int64> = vec![];
+    var c = 0 as Int64;
+    while (c < f.names.len()) {
+        var is_melt = false;
+        var k = 0 as Int64;
+        while (k < cols.len()) {
+            if (f.names[c] == cols[k]) {
+                is_melt = true;
+            }
+            k = k + (1 as Int64);
+        }
+        if (is_melt) {
+            melt_idx.push(c);
+        } else {
+            keep_idx.push(c);
+        }
+        c = c + (1 as Int64);
+    }
+    var onames: Vec<String> = vec![];
+    var ki = 0 as Int64;
+    while (ki < keep_idx.len()) {
+        onames.push(f.names[keep_idx[ki]].clone());
+        ki = ki + (1 as Int64);
+    }
+    onames.push(name_col);
+    onames.push(value_col);
+    var ocols: Vec<Vec<String>> = vec![];
+    var q = 0 as Int64;
+    while (q < onames.len()) {
+        val e: Vec<String> = vec![];
+        ocols.push(e);
+        q = q + (1 as Int64);
+    }
+    var r = 0 as Int64;
+    while (r < f.nrows) {
+        var m = 0 as Int64;
+        while (m < melt_idx.len()) {
+            var oc = 0 as Int64;
+            while (oc < keep_idx.len()) {
+                var kc = ocols[oc].clone();
+                kc.push(f.cols[keep_idx[oc]][r].clone());
+                ocols[oc] = kc;
+                oc = oc + (1 as Int64);
+            }
+            var nc0 = ocols[keep_idx.len()].clone();
+            nc0.push(f.names[melt_idx[m]].clone());
+            ocols[keep_idx.len()] = nc0;
+            var nc1 = ocols[keep_idx.len() + (1 as Int64)].clone();
+            nc1.push(f.cols[melt_idx[m]][r].clone());
+            ocols[keep_idx.len() + (1 as Int64)] = nc1;
+            m = m + (1 as Int64);
+        }
+        r = r + (1 as Int64);
+    }
+    val nr = f.nrows * melt_idx.len();
+    return DynamicFrame { names: onames, cols: ocols, nrows: nr };
+}
+
+pub fun frame_qcut(f: DynamicFrame, src: String, name: String, q: Int64): DynamicFrame {
+    val empty: Vec<String> = vec![];
+    val key = match (frame_col(&f, src.clone())) { Some(v) -> v, None -> empty, };
+    var nums: Vec<Float64> = vec![];
+    var i = 0 as Int64;
+    while (i < key.len()) {
+        nums.push(match (key[i].parse_float()) { Some(x) -> x, None -> 0.0 / 0.0, });
+        i = i + (1 as Int64);
+    }
+    var s = nums.clone();
+    s.sort();
+    var breaks: Vec<Float64> = vec![];
+    var b = 0 as Int64;
+    while (b <= q) {
+        val pos = (b as Float64) * ((s.len() - (1 as Int64)) as Float64) / (q as Float64);
+        val lo = pos as Int64;
+        val hi = if (lo + (1 as Int64) < s.len()) { lo + (1 as Int64) } else { lo };
+        val frac = pos - (lo as Float64);
+        breaks.push(s[lo] * (1.0 - frac) + s[hi] * frac);
+        b = b + (1 as Int64);
+    }
+    return frame_cut(f, src.clone(), name.clone(), breaks);
+}
+
+pub fun frame_pivot_wider(f: &DynamicFrame, id: String, key: String, vcol: String): DynamicFrame {
+    val empty: Vec<String> = vec![];
+    val ci = match (frame_col(f, id.clone())) { Some(v) -> v, None -> empty.clone(), };
+    val e2: Vec<String> = vec![];
+    val e3: Vec<String> = vec![];
+    val ck = match (frame_col(f, key.clone())) { Some(v) -> v, None -> e2, };
+    val cv = match (frame_col(f, vcol.clone())) { Some(v) -> v, None -> e3, };
+    var ids: Vec<String> = vec![];
+    var keys: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < ci.len() && i < ck.len()) {
+        var fa = false;
+        var k = 0 as Int64;
+        while (k < ids.len()) {
+            if (ids[k] == ci[i]) {
+                fa = true;
+            }
+            k = k + (1 as Int64);
+        }
+        if (!fa) {
+            ids.push(ci[i].clone());
+        }
+        var fb = false;
+        var j = 0 as Int64;
+        while (j < keys.len()) {
+            if (keys[j] == ck[i]) {
+                fb = true;
+            }
+            j = j + (1 as Int64);
+        }
+        if (!fb) {
+            keys.push(ck[i].clone());
+        }
+        i = i + (1 as Int64);
+    }
+    var names: Vec<String> = vec![id.clone()];
+    var k2 = 0 as Int64;
+    while (k2 < keys.len()) {
+        names.push(keys[k2].clone());
+        k2 = k2 + (1 as Int64);
+    }
+    var rows: Vec<Vec<String>> = vec![];
+    var r = 0 as Int64;
+    while (r < ids.len()) {
+        var row: Vec<String> = vec![ids[r].clone()];
+        var c2 = 0 as Int64;
+        while (c2 < keys.len()) {
+            var found = "";
+            var t = 0 as Int64;
+            while (t < ci.len() && t < ck.len() && t < cv.len()) {
+                if (ci[t] == ids[r] && ck[t] == keys[c2]) {
+                    found = cv[t].clone();
+                }
+                t = t + (1 as Int64);
+            }
+            row.push(found);
+            c2 = c2 + (1 as Int64);
+        }
+        rows.push(row);
+        r = r + (1 as Int64);
+    }
+    var cols: Vec<Vec<String>> = vec![];
+    var cc = 0 as Int64;
+    while (cc < names.len()) {
+        var col: Vec<String> = vec![];
+        var rr = 0 as Int64;
+        while (rr < rows.len()) {
+            col.push(rows[rr][cc].clone());
+            rr = rr + (1 as Int64);
+        }
+        cols.push(col);
+        cc = cc + (1 as Int64);
+    }
+    return DynamicFrame { names: names, cols: cols, nrows: ids.len() };
+}

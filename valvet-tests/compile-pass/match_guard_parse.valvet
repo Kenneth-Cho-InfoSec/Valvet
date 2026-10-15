@@ -1,0 +1,8 @@
+import std::re::re_detect;
+fun is_date(s: String): Bool {
+return re_detect("^[0-9]+-[0-9]+-[0-9]+$", s);
+}
+fun main() {
+println(match ("2026-10-14") { s if is_date(s) -> "date", _ -> "other", })
+println(match ("hello") { s if is_date(s) -> "date", _ -> "other", })
+}

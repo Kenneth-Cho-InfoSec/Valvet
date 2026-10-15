@@ -1,0 +1,145 @@
+// std::causal: cheap causal toolkit on existing solvers.
+module std.causal;
+
+import std::model::LmFit;
+import std::model::ModelFrame;
+import std::model::lm;
+import std::model::formula_parse;
+import std::model::model_frame;
+import std::frame::DynamicFrame;
+import std::math::sqrt;
+
+pub fun did_2x2(y00: Float64, y01: Float64, y10: Float64, y11: Float64): Float64 {
+    return (y11 - y10) - (y01 - y00);
+}
+
+pub fun robust_se(fit: &LmFit, mf: &ModelFrame): Vec<Float64> {
+    // HC0 sandwich via row gather from mat_col columns. Falls back to
+    // model SE when the design is singular.
+    val xt = mf.x.transpose();
+    val ok1 = match (xt.clone().matmul(mf.x.clone())) { Ok(_) -> true, Err(_) -> false, };
+    if (!ok1) {
+        return fit.se.clone();
+    }
+    val xtx = match (xt.clone().matmul(mf.x.clone())) { Ok(v) -> v, Err(_) -> mf.x.clone(), };
+    if (xtx.det() == 0.0) {
+        return fit.se.clone();
+    }
+    val ok2 = match (xtx.clone().inverse()) { Ok(_) -> true, Err(_) -> false, };
+    if (!ok2) {
+        return fit.se.clone();
+    }
+    val inv = match (xtx.clone().inverse()) { Ok(v) -> v, Err(_) -> xtx.clone(), };
+    val p = fit.coef.len();
+    val n = mf.y.len();
+    var meat: Vec<Vec<Float64>> = vec![];
+    var a = 0 as Int64;
+    while (a < p) {
+        var row: Vec<Float64> = vec![];
+        var b = 0 as Int64;
+        while (b < p) {
+            row.push(0.0);
+            b = b + (1 as Int64);
+        }
+        meat.push(row);
+        a = a + (1 as Int64);
+    }
+    var cols: Vec<Vec<Float64>> = vec![];
+    var cj = 0 as Int64;
+    while (cj < p) {
+        cols.push(mf.x.mat_col(cj));
+        cj = cj + (1 as Int64);
+    }
+    var i = 0 as Int64;
+    while (i < n && i < fit.resid.len()) {
+        val e2 = fit.resid[i] * fit.resid[i];
+        var x1 = 0 as Int64;
+        while (x1 < p) {
+            var x2 = 0 as Int64;
+            var row = meat[x1].clone();
+            while (x2 < p) {
+                row[x2] = row[x2] + e2 * cols[x1][i] * cols[x2][i];
+                x2 = x2 + (1 as Int64);
+            }
+            meat[x1] = row;
+            x1 = x1 + (1 as Int64);
+        }
+        i = i + (1 as Int64);
+    }
+    val mmat = match (mat_from_rows(meat)) { Ok(v) -> v, Err(_) -> xtx.clone(), };
+    val ok3 = match (inv.clone().matmul(mmat.clone())) { Ok(_) -> true, Err(_) -> false, };
+    if (!ok3) {
+        return fit.se.clone();
+    }
+    val tmp = match (inv.clone().matmul(mmat.clone())) { Ok(v) -> v, Err(_) -> inv.clone(), };
+    val ok4 = match (tmp.matmul(inv.clone())) { Ok(_) -> true, Err(_) -> false, };
+    if (!ok4) {
+        return fit.se.clone();
+    }
+    val vc = match (tmp.matmul(inv.clone())) { Ok(v) -> v, Err(_) -> inv.clone(), };
+    val dg = vc.mat_diag();
+    var se: Vec<Float64> = vec![];
+    var s = 0 as Int64;
+    while (s < dg.len()) {
+        se.push(sqrt(dg[s]));
+        s = s + (1 as Int64);
+    }
+    return se;
+}
+
+fun cov2(a: Vec<Float64>, b: Vec<Float64>): Float64 {
+    val n = a.len();
+    var ma = 0.0;
+    var mb = 0.0;
+    var i = 0 as Int64;
+    while (i < n) {
+        ma = ma + a[i];
+        mb = mb + b[i];
+        i = i + (1 as Int64);
+    }
+    ma = ma / (n as Float64);
+    mb = mb / (n as Float64);
+    var s = 0.0;
+    var j = 0 as Int64;
+    while (j < n) {
+        s = s + (a[j] - ma) * (b[j] - mb);
+        j = j + (1 as Int64);
+    }
+    return s / (n as Float64);
+}
+
+pub fun tsls_diff(y: Vec<Float64>, d: Vec<Float64>, z: Vec<Float64>): Float64 {
+    val denom = cov2(d.clone(), z.clone());
+    if (denom == 0.0) {
+        return 0.0 / 0.0;
+    }
+    return cov2(y.clone(), z.clone()) / denom;
+}
+
+pub fun ps_match(score: Vec<Float64>, treat: Vec<Bool>): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < score.len() && i < treat.len()) {
+        if (treat[i]) {
+            var best = -1 as Int64;
+            var bd = 0.0 / 0.0;
+            var j = 0 as Int64;
+            while (j < score.len() && j < treat.len()) {
+                if (!treat[j]) {
+                    val d = score[i] - score[j];
+                    val ad = if (d < 0.0) { 0.0 - d } else { d };
+                    if (bd != bd || ad < bd) {
+                        bd = ad;
+                        best = j;
+                    }
+                }
+                j = j + (1 as Int64);
+            }
+            out.push(best);
+        } else {
+            out.push(-1 as Int64);
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}

@@ -1,0 +1,4 @@
+prelude;
+println(str_contains("hello", "ell"))
+println(str_replace("aaa", "a", "b"))
+println(cwd().len() > (0 as Int64))

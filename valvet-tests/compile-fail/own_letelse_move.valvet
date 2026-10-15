@@ -1,0 +1,13 @@
+fun eat(s: String): Int64 {
+1 as Int64
+}
+fun f(o: Option<String>) {
+let Some(s) = o else {
+return
+};
+println(eat(s))
+println(s)
+}
+fun main() {
+f(Some("a"))
+}

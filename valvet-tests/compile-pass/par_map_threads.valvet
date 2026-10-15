@@ -1,0 +1,10 @@
+fun double(x: Float64): Float64 {
+x * 2.0
+}
+fun main() {
+val v = vec![1.0, 2.0, 3.0, 4.0, 5.0]
+println(par_map(v.clone(), double, 1 as Int64))
+println(par_map(v.clone(), double, 2 as Int64))
+println(par_map(v.clone(), double, 8 as Int64))
+println(map(v.clone(), double))
+}

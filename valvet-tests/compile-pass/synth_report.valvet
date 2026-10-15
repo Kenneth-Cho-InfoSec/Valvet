@@ -1,0 +1,43 @@
+import std::synth::synth_frame;
+import std::report::model_table_latex;
+import std::report::model_table_html;
+import std::plot::plot_pairs;
+import std::plot::plot_ecdf;
+import std::plot::plot_correlogram;
+import std::plot::plot_svg;
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::model::formula_parse;
+import std::model::model_frame;
+import std::model::lm;
+fun go(): Int32 {
+val sy = synth_frame(vec!["a", "b"], vec!["float", "string"], 4 as Int64, 7 as Int64);
+println(sy.nrows);
+println(sy.names);
+val h = vec!["x", "y"];
+val r0 = vec!["1", "2.1"];
+val r1 = vec!["2", "3.9"];
+val r2 = vec!["3", "6.2"];
+val t = frame_from_table(CsvTable { header: h, rows: vec![r0, r1, r2] });
+let Some(fo) = formula_parse("y ~ x") else {
+return 1;
+};
+let Ok(mf) = model_frame(&t, fo) else {
+return 1;
+};
+let Ok(fit) = lm(mf) else {
+return 1;
+};
+println(model_table_latex(&fit));
+println(model_table_html(&fit));
+val ec = plot_ecdf(vec![3.0, 1.0, 2.0]);
+println(match (plot_svg(ec)) { Ok(s) -> s.len() > (0 as Int64), Err(_) -> false, });
+val cg = plot_correlogram(vec![1.0, 2.0, 1.0, 2.0, 1.0], 2 as Int64);
+println(match (plot_svg(cg)) { Ok(s) -> s.len() > (0 as Int64), Err(_) -> false, });
+val pr = plot_pairs(&sy, vec!["a"]);
+println(match (plot_svg(pr)) { Ok(s) -> s.len() > (0 as Int64), Err(_) -> false, });
+return 0;
+}
+fun main() {
+println(go())
+}

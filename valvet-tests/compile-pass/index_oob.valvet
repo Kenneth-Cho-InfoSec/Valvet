@@ -1,0 +1,4 @@
+fun main() {
+    var v = vec![1, 2]
+    println(v[5])
+}

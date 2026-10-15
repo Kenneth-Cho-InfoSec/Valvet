@@ -1,0 +1,27 @@
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::frame::frame_nrows;
+import std::frame::frame_col;
+import std::frame::frame_filter_mask;
+import std::frame::frame_ncols;
+
+fun main() {
+    val h = vec!["region", "sales"];
+    val r0 = vec!["east", "10"];
+    val r1 = vec!["west", "20"];
+    val r2 = vec!["east", "30"];
+    val t = CsvTable { header: h, rows: vec![r0, r1, r2] };
+    val f = frame_from_table(t);
+    val ec: Vec<String> = vec![];
+    val keep = vec![true, false, true];
+    val f1 = frame_filter_mask(&f, keep);
+    println(frame_nrows(&f1));
+    println(match (frame_col(&f1, "region")) { Some(c) -> c, None -> ec, });
+    val short = vec![true];
+    val fs = frame_filter_mask(&f, short);
+    println(frame_nrows(&fs));
+    val none = vec![false, false, false];
+    val fn = frame_filter_mask(&f, none);
+    println(frame_nrows(&fn));
+    println(frame_ncols(&fn));
+}

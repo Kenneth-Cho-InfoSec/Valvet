@@ -1,0 +1,6 @@
+struct Cell { v: Int32 }
+fun main() {
+    var v = vec![Cell { v: 1 }];
+    v.sort();
+    println(v.len());
+}

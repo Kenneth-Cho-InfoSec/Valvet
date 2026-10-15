@@ -1,0 +1,21 @@
+import std::complex::cnew;
+import std::complex::cmul;
+import std::complex::cdiv;
+import std::complex::cexp;
+import std::complex::cabs;
+import std::complex::carg;
+import std::complex::cpow_int;
+fun main() {
+val a = cnew(1.0, 2.0)
+val b = cnew(3.0, 4.0)
+val m = cmul(&a, &b)
+println(m.re)
+println(m.im)
+println(cabs(&m))
+println(carg(&m))
+val e = cexp(&a)
+println(e.re)
+println(e.im)
+println(cpow_int(&a, 2 as Int64).re)
+println(cdiv(&b, &b).re)
+}

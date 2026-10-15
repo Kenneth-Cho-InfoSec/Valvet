@@ -19,6 +19,8 @@ pub enum Tok {
     // Reserved but deferred (parsed as keyword, rejected in parser)
     Match,
     Defer,
+    Unless,
+    Until,
     Unsafe,
     Extern,
     Struct,
@@ -45,6 +47,15 @@ pub enum Tok {
     Ident(String),
     IntLit(i64),
     FloatLit(f64),
+    /// Numeric suffix attached to the preceding literal (`1i64`, `2.5f64`).
+    /// The lexer only emits these adjacently; other suffixes are E0010.
+    IntSuffix(NumSuffix),
+    /// `"...{expr}..."` interpolation (D1): `InterpBegin` opens, the
+    /// interior is lexed with `step`, `InterpEnd` closes; literal chunks
+    /// after the first arrive as `StrCont` (so `"a" "b"` stays an error).
+    InterpBegin,
+    InterpEnd,
+    StrCont(String),
     StrLit(String),
     CharLit(char),
     /// Explicit lifetime `'a` (disambiguated from char literals in the lexer).
@@ -64,6 +75,8 @@ pub enum Tok {
     AndAnd,
     OrOr,
     BitOr,
+    /// `|>` left-to-right pipe (D1): `x |> f(args)` lowers to `f(x, args)`.
+    Pipe,
     Bang,
     Eq,
     PlusEq,
@@ -89,9 +102,21 @@ pub enum Tok {
     DotQuestion,
     Amp,
     AmpMut,
+    /// `@` introducing a units-of-measure annotation (J: `@m/s`).
+    At,
+    /// `^` power in unit expressions (`m/s^2`).
+    Caret,
     // Layout
     Nl,
     Eof,
+}
+
+/// Numeric literal suffix (`1i32`, `1i64`, `2.5f64`); see `Tok::IntSuffix`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumSuffix {
+    I32,
+    I64,
+    F64,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +132,8 @@ pub fn keyword(word: &str) -> Option<Tok> {
         "var" => Tok::Var,
         "if" => Tok::If,
         "else" => Tok::Else,
+        "unless" => Tok::Unless,
+        "until" => Tok::Until,
         "while" => Tok::While,
         "return" => Tok::Return,
         "true" => Tok::True,

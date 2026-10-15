@@ -1,0 +1,6 @@
+fun main() {
+println(is_in(vec![1 as Int64, 5 as Int64], vec![5 as Int64, 6 as Int64]))
+println(is_in(vec!["a", "b"], vec!["b", "c"]))
+println(mat_outer(vec![1.0, 2.0], vec![10.0, 20.0, 30.0]))
+println(mat_kron(mat_identity(2 as Int64), mat_identity(2 as Int64)))
+}

@@ -1,0 +1,28 @@
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::frame::frame_col;
+import std::frame::frame_group_count;
+import std::frame::frame_group_sum;
+import std::frame::frame_group_mean;
+
+fun main() {
+    val h = vec!["region", "sales"];
+    val r0 = vec!["east", "10"];
+    val r1 = vec!["west", "20"];
+    val r2 = vec!["east", "NA"];
+    val r3 = vec!["west", "40"];
+    val r4 = vec!["north", "NA"];
+    val t = CsvTable { header: h, rows: vec![r0, r1, r2, r3, r4] };
+    val f = frame_from_table(t);
+    val e1: Vec<String> = vec![];
+    val e2: Vec<String> = vec![];
+    val e3: Vec<String> = vec![];
+    val e4: Vec<String> = vec![];
+    val g = frame_group_count(&f, "region");
+    println(match (frame_col(&g, "region")) { Some(c) -> c, None -> e1, });
+    println(match (frame_col(&g, "count")) { Some(c) -> c, None -> e2, });
+    val gs = frame_group_sum(&f, "region", "sales");
+    println(match (frame_col(&gs, "sum")) { Some(c) -> c, None -> e3, });
+    val gm = frame_group_mean(&f, "region", "sales");
+    println(match (frame_col(&gm, "mean")) { Some(c) -> c, None -> e4, });
+}
