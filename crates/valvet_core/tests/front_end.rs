@@ -1460,3 +1460,12 @@ fn slice_and_inplace_verbs() {
         vec!["E0201"]
     );
 }
+
+#[test]
+fn destructure_desugar() {
+    check_ok("struct P { x: Float64, y: Float64 }\nfun mk(): P {\nreturn P { x: 1.0, y: 2.0 }\n}\nfun main() {\nval P { x, y } = mk()\nprintln(x + y)\n}\n");
+    assert_eq!(
+        check_codes("struct P { x: Float64 }\nfun main() {\nval P { z } = P { x: 1.0 }\n}\n"),
+        vec!["E0401"]
+    );
+}

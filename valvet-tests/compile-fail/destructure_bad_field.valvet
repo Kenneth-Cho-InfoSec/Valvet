@@ -1,0 +1,8 @@
+struct Point { x: Float64, y: Float64 }
+fun go(): Int32 {
+val Point { x, z } = Point { x: 1.0, y: 2.0 };
+return 0;
+}
+fun main() {
+println(go())
+}

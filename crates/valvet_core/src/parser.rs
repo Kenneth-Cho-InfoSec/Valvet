@@ -13,6 +13,10 @@ pub struct Parser {
     /// Counter for hygienic `$tN` temporaries in desugars (`$` is not an
     /// identifier character, so these cannot collide with user names).
     tmp: u32,
+    /// Spliced statements from multi-statement desugars (struct
+    /// destructuring): drained into the enclosing statement list right
+    /// after the returned statement, so bindings join the same scope.
+    pending: Vec<Stmt>,
     /// Struct literals forbidden here (condition/scrutinee positions where
     /// `{` opens a block — Rust's rule; parens re-allow, see LParen arm).
     no_struct: u32,
@@ -26,6 +30,7 @@ impl Parser {
             errs: vec![],
             next_id: 1,
             tmp: 0,
+            pending: vec![],
             no_struct: 0,
         }
     }
@@ -173,6 +178,7 @@ impl Parser {
                                 );
                                 }
                                 top.push(s);
+                                top.append(&mut self.pending);
                             }
                             Some(ParsedStmt::Bare(e, espan)) => {
                                 if mode == Mode::Exp {
@@ -1187,7 +1193,10 @@ impl Parser {
             // Strategy: parse statement; Stmt::Expr without trailing separator + `}` => convert to tail.
             let stmt_start = self.cur_span().start;
             match self.parse_stmt()? {
-                ParsedStmt::Stmt(s) => stmts.push(s),
+                ParsedStmt::Stmt(s) => {
+                    stmts.push(s);
+                    stmts.append(&mut self.pending);
+                }
                 ParsedStmt::Bare(e, espan) => {
                     // Postfix `if`/`unless` (A2): same-line only, as at
                     // top level (a newline surfaces as `Nl` first).
@@ -1411,6 +1420,105 @@ impl Parser {
                 let start = self.cur_span().start;
                 self.bump();
                 let (name, nspan) = self.expect_ident("variable name")?;
+                // Struct destructuring (Batch 3): `val Point { x, y } = e`
+                // desugars to a hygienic temp plus one field read per name,
+                // so every later stage sees only ordinary statements.
+                if matches!(self.cur(), Tok::LBrace) {
+                    self.bump();
+                    self.skip_nls();
+                    let mut fields: Vec<(String, Span)> = vec![];
+                    loop {
+                        if matches!(self.cur(), Tok::RBrace) {
+                            break;
+                        }
+                        let (f, fs) = self.expect_ident("field name")?;
+                        fields.push((f, fs));
+                        self.skip_nls();
+                        if matches!(self.cur(), Tok::Comma) {
+                            self.bump();
+                            self.skip_nls();
+                        } else {
+                            break;
+                        }
+                    }
+                    if fields.is_empty() {
+                        self.err("E0005", "destructure needs at least one field");
+                        return None;
+                    }
+                    self.expect(Tok::RBrace, "expected `}` after destructured fields")?;
+                    self.expect(Tok::Eq, "expected `=` in destructuring declaration")?;
+                    let init = self.parse_expr()?;
+                    let end = init.span.end;
+                    self.expect_separator("destructuring declaration")?;
+                    let span = Span::new(start, end);
+                    let tname = self.tmp_name();
+                    let tspan = init.span;
+                    // The leading struct name annotates the temp, so a
+                    // wrong name fails through the ordinary annotation check.
+                    let sty = Some(Ty::Named(name));
+                    let mut out = vec![if is_val {
+                        Stmt::Val {
+                            id: self.fresh(),
+                            name: tname.clone(),
+                            name_span: tspan,
+                            ty: sty.clone(),
+                            unit: None,
+                            init,
+                            span,
+                        }
+                    } else {
+                        Stmt::Var {
+                            id: self.fresh(),
+                            name: tname.clone(),
+                            name_span: tspan,
+                            ty: sty,
+                            unit: None,
+                            init,
+                            span,
+                        }
+                    }];
+                    for (f, fs) in fields {
+                        let base = Expr {
+                            id: self.fresh(),
+                            span: tspan,
+                            kind: ExprKind::Var(tname.clone()),
+                        };
+                        let read = Expr {
+                            id: self.fresh(),
+                            span: fs,
+                            kind: ExprKind::Field {
+                                base: Box::new(base),
+                                field: f.clone(),
+                                field_span: fs,
+                            },
+                        };
+                        out.push(if is_val {
+                            Stmt::Val {
+                                id: self.fresh(),
+                                name: f,
+                                name_span: fs,
+                                ty: None,
+                                unit: None,
+                                init: read,
+                                span: fs,
+                            }
+                        } else {
+                            Stmt::Var {
+                                id: self.fresh(),
+                                name: f,
+                                name_span: fs,
+                                ty: None,
+                                unit: None,
+                                init: read,
+                                span: fs,
+                            }
+                        });
+                    }
+                    let mut it = out.drain(..);
+                    let first = it.next()?;
+                    self.pending.extend(it);
+                    return Some(ParsedStmt::Stmt(first));
+                }
                 let mut ty = None;
                 if matches!(self.cur(), Tok::Colon) {
                     self.bump();

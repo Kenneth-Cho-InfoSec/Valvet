@@ -1,0 +1,14 @@
+struct Point { x: Float64, y: Float64 }
+fun mk(): Point {
+return Point { x: 1.5, y: 2.5 };
+}
+fun go(): Int32 {
+val Point { x, y } = mk();
+println(x);
+println(y);
+println(x + y);
+return 0;
+}
+fun main() {
+println(go())
+}
