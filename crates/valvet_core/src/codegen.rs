@@ -6819,11 +6819,25 @@ pub fn find_cc() -> Option<PathBuf> {
 
 /// Compile C source file to native executable. Returns stderr on failure.
 pub fn cc_build(c_file: &Path, exe: &Path) -> Result<(), String> {
+    cc_build_profile(c_file, exe, "release", false)
+}
+
+/// Profiled C link: `dev` is `-O0 -g` (fast builds), `release` is `-O2`
+/// (plus `-flto` when asked). Unknown profiles fall back to release flags
+/// rather than failing the build.
+pub fn cc_build_profile(c_file: &Path, exe: &Path, profile: &str, lto: bool) -> Result<(), String> {
     let cc = find_cc().ok_or_else(|| "no C compiler found (set VALVET_CC)".to_string())?;
     let mut cmd = Command::new(&cc);
-    cmd.arg("-std=c11")
-        .arg("-O2")
-        .arg("-fwrapv")
+    cmd.arg("-std=c11");
+    if profile == "dev" {
+        cmd.arg("-O0").arg("-g");
+    } else {
+        cmd.arg("-O2");
+    }
+    if lto {
+        cmd.arg("-flto");
+    }
+    cmd.arg("-fwrapv")
         .arg("-pthread")
         .arg("-o")
         .arg(exe)

@@ -6,6 +6,8 @@ pub struct Manifest {
     pub name: String,
     pub version: String,
     pub deps: Vec<Dep>,
+    pub profile_default: Option<String>,
+    pub profile_lto: bool,
 }
 
 /// One dependency: path (`{ path, version }`) or git (`{ git, rev }` for
@@ -107,11 +109,24 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
             }
             continue;
         }
-        // Profiles and features parse but only record presence; selection
-        // lands in later batches (Batch 6/7 read them back from here).
-        if section == "profile" || section == "features" {
+        // Features record presence only (Batch 7 reads them back).
+        if section == "features" {
             if kv(line).is_none() {
                 return Err(bad(i, "expected `key = value`"));
+            }
+            continue;
+        }
+        if section == "profile" {
+            let (k, v) = kv(line).ok_or_else(|| bad(i, "expected `key = value`"))?;
+            match k.as_str() {
+                "default" => {
+                    m.profile_default =
+                        Some(unquote(&v).ok_or_else(|| bad(i, "expected a string"))?);
+                }
+                "lto" => {
+                    m.profile_lto = matches!(v.trim(), "true");
+                }
+                _ => return Err(bad(i, &format!("unknown profile key `{}`", k))),
             }
             continue;
         }

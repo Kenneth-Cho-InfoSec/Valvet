@@ -31,12 +31,17 @@ fn run(args: Vec<String>) -> i32 {
         .filter(|(i, a)| *i >= dash || a != "--offline")
         .map(|(_, a)| a)
         .collect();
+    let args = match apply_target(&args) {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
     match args[0].as_str() {
         "check" => cmd_check(get_path(&args)),
         "build" => cmd_build(
             get_path(&args),
             default_exe(get_path(&args)),
             args.iter().any(|a| a == "--frozen"),
+            &args,
         ),
         "run" => {
             if args.iter().any(|a| a == "--watch") {
@@ -52,14 +57,27 @@ fn run(args: Vec<String>) -> i32 {
                 cmd_watch(f)
             } else {
                 let frozen = args[2..].iter().any(|a| a == "--frozen");
-                let clean: Vec<String> = std::iter::once(args[0].clone())
-                    .chain(args[1..].iter().filter(|a| *a != "--frozen").cloned())
-                    .collect();
-                cmd_run(get_path(&clean), script_argv(&clean), frozen)
+                let prof = cli_profile(&args).is_some();
+                let mut clean: Vec<String> = vec![args[0].clone(), args[1].clone()];
+                let mut skip = false;
+                for a in &args[2..] {
+                    if skip {
+                        skip = false;
+                        continue;
+                    }
+                    if prof && a == "--profile" {
+                        skip = true;
+                        continue;
+                    }
+                    if a != "--frozen" {
+                        clean.push(a.clone());
+                    }
+                }
+                cmd_run(get_path(&clean), script_argv(&clean), frozen, &args)
             }
         }
         "fmt" => cmd_fmt(get_path(&args)),
-        "fix" => cmd_fix(get_path(&args)),
+        "fix" => cmd_fix(get_path(&args), true),
         "tree" => cmd_tree(get_path(&args)),
         "metadata" => cmd_metadata(get_path(&args)),
         "verify" => cmd_verify(get_path(&args)),
@@ -72,7 +90,7 @@ fn run(args: Vec<String>) -> i32 {
                 let dir = args.get(1).filter(|s| *s != "--doc").map(|s| s.as_str());
                 cmd_test_doc(dir)
             } else {
-                cmd_test(args.get(1).map(|s| s.as_str()))
+                cmd_test(&args)
             }
         }
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
@@ -87,12 +105,26 @@ fn run(args: Vec<String>) -> i32 {
 }
 
 fn get_path(args: &[String]) -> &str {
-    if args.len() < 2 {
-        eprintln!("error: missing <file>");
-        eprintln!("run `valvet --help` for usage");
-        std::process::exit(2);
+    // First non-flag argument before any script `--` separator (flag
+    // pairs like `--profile dev` are skipped, never mistaken for paths).
+    let dash = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    let mut i = 1;
+    while i < dash {
+        match args[i].as_str() {
+            "--profile" | "--target" | "--jobs" | "--bench-max-ms" => i += 1,
+            s if s == "--frozen"
+                || s == "--offline"
+                || s == "--watch"
+                || s == "--bench"
+                || s == "--doc" => {}
+            s if !s.starts_with('-') => return &args[i],
+            _ => {}
+        }
+        i += 1;
     }
-    &args[1]
+    eprintln!("error: missing <file>");
+    eprintln!("run `valvet --help` for usage");
+    std::process::exit(2);
 }
 
 fn print_help() {
@@ -120,6 +152,10 @@ fn print_help() {
     println!("    valvet vendor <file>         copy manifest deps under vendor/");
     println!("    valvet update <file>         refresh valvet.lock against bounds");
     println!("    --offline                      no network; use caches or fail");
+    println!("    --profile dev|release        C opt level (manifest [profile] default)");
+    println!("    --target <triple>            use <triple>-gcc as the C driver");
+    println!("    --jobs N                     fixture threads (test)");
+    println!("    --bench [--bench-max-ms N]   time fixture exes, bound them");
     println!("    valvet repl                  interactive session (definitions persist)");
     println!("    valvet -e 'expr'              evaluate a scriptlet and print its value");
     println!("    valvet --version             display version");
@@ -208,7 +244,87 @@ fn default_exe(path: &str) -> PathBuf {
 /// File-based: `path` is the entry file; its imports resolve from its directory.
 /// Successful builds cache by content hash (version + toolchain + sources);
 /// a cache hit skips C emission and linking entirely.
-fn build_exe(path: &str, quiet: bool, frozen: bool) -> Result<PathBuf, i32> {
+/// One fixture outcome: worker index, display name, pass, output lines,
+/// optional bench median.
+type FixtureRow = (usize, String, bool, Vec<String>, Option<u128>);
+
+/// Build options (bundled: clippy arity limit).
+#[derive(Clone)]
+struct BuildOpts {
+    quiet: bool,
+    frozen: bool,
+    profile: String,
+    lto: bool,
+}
+
+/// `--profile <name>` before the script `--` separator, if present.
+fn cli_profile(args: &[String]) -> Option<String> {
+    let dash = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    args[..dash]
+        .windows(2)
+        .find(|w| w[0] == "--profile")
+        .map(|w| w[1].clone())
+}
+
+/// Profile plus LTO from CLI, else the entry manifest, else release.
+fn opts_for(entry: &str, args: &[String], quiet: bool, frozen: bool) -> BuildOpts {
+    let root = Path::new(entry)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let (mut profile, mut lto) = (None, false);
+    if let Ok(text) = std::fs::read_to_string(root.join("valvet.toml")) {
+        if let Ok(m) = valvet_core::manifest::parse(&text) {
+            profile = m.profile_default;
+            lto = m.profile_lto;
+        }
+    }
+    let profile = cli_profile(args)
+        .or(profile)
+        .unwrap_or_else(|| "release".to_string());
+    BuildOpts {
+        quiet,
+        frozen,
+        profile: profile.clone(),
+        lto: lto && profile == "release",
+    }
+}
+
+/// `--target <triple>` resolves `<triple>-gcc` on PATH into VALVET_CC.
+fn apply_target(args: &[String]) -> Result<Vec<String>, i32> {
+    let dash = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    let pos = args[..dash].iter().position(|a| *a == "--target");
+    let Some(p) = pos else {
+        return Ok(args.to_vec());
+    };
+    let triple = args.get(p + 1).map(|s| s.as_str()).unwrap_or("");
+    if triple.is_empty() {
+        eprintln!("error: --target needs a triple");
+        return Err(2);
+    }
+    let driver = format!("{}-gcc", triple);
+    let found = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {}", driver))
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !found {
+        eprintln!(
+            "error: no driver `{}` on PATH (host toolchains only)",
+            driver
+        );
+        return Err(2);
+    }
+    std::env::set_var("VALVET_CC", driver);
+    let mut out = args.to_vec();
+    out.drain(p..p + 2);
+    Ok(out)
+}
+
+
+fn build_exe(path: &str, opts: &BuildOpts) -> Result<PathBuf, i32> {
+    let quiet = opts.quiet;
+    let frozen = opts.frozen;
     let checked = pipeline::front_end_file(Path::new(path)).map_err(|fd| {
         if !quiet {
             eprintln!("{}", fd.render());
@@ -275,7 +391,7 @@ fn build_exe(path: &str, quiet: bool, frozen: bool) -> Result<PathBuf, i32> {
         }
         return Err(1);
     }
-    if let Err(e) = codegen::cc_build(&c_file, &exe) {
+    if let Err(e) = codegen::cc_build_profile(&c_file, &exe, &opts.profile, opts.lto) {
         if !quiet {
             eprintln!("error: backend linking failed:\n{}", e);
         }
@@ -375,7 +491,7 @@ fn zip_store(files: &[(String, Vec<u8>)]) -> Vec<u8> {
 /// sources plus manifest and lock. Dep files outside the root ride along
 /// under `external/<n>/` so the archive is self-contained.
 fn cmd_package(path: &str) -> i32 {
-    let exe = match build_exe(path, false, false) {
+    let exe = match build_exe(path, &opts_for(path, &[], false, false)) {
         Ok(e) => e,
         Err(c) => return c,
     };
@@ -452,7 +568,7 @@ fn cmd_package(path: &str) -> i32 {
 /// `valvet install`: release-style build, then copy the binary into
 /// `~/.local/bin` (created as needed).
 fn cmd_install(path: &str) -> i32 {
-    let exe = match build_exe(path, false, false) {
+    let exe = match build_exe(path, &opts_for(path, &[], false, false)) {
         Ok(e) => e,
         Err(c) => return c,
     };
@@ -573,7 +689,7 @@ fn cmd_update(path: &str) -> i32 {
         d.join("valvet.lock")
     };
     let _ = std::fs::remove_file(&lock);
-    match build_exe(path, false, false) {
+    match build_exe(path, &opts_for(path, &[], false, false)) {
         Ok(_) => {
             println!("updated {}", lock.display());
             0
@@ -747,8 +863,8 @@ fn check_lock(entry: &str, checked: &valvet_core::sema::Checked) -> Result<(), S
     Ok(())
 }
 
-fn cmd_build(path: &str, _exe: PathBuf, frozen: bool) -> i32 {
-    match build_exe(path, false, frozen) {
+fn cmd_build(path: &str, _exe: PathBuf, frozen: bool, cli_args: &[String]) -> i32 {
+    match build_exe(path, &opts_for(path, cli_args, false, frozen)) {
         Ok(exe) => {
             println!("built {}", exe.display());
             0
@@ -765,7 +881,7 @@ fn cmd_watch(path: &str) -> i32 {
         let cur = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
         if cur != last {
             last = cur;
-            let code = cmd_run(path, vec![], false);
+            let code = cmd_run(path, vec![], false, &[]);
             if code != 0 {
                 eprintln!("watch: exit {}", code);
             }
@@ -796,8 +912,8 @@ fn cmd_fmt(path: &str) -> i32 {
     }
 }
 
-fn cmd_run(path: &str, script_argv: Vec<String>, frozen: bool) -> i32 {
-    let exe = match build_exe(path, false, frozen) {
+fn cmd_run(path: &str, script_argv: Vec<String>, frozen: bool, cli_args: &[String]) -> i32 {
+    let exe = match build_exe(path, &opts_for(path, cli_args, false, frozen)) {
         Ok(e) => e,
         Err(c) => return c,
     };
@@ -851,7 +967,7 @@ fn cmd_eval(expr: Option<&str>) -> i32 {
         eprintln!("error: cannot write `{}`", path.display());
         return 1;
     }
-    cmd_run(&path.to_string_lossy(), vec![], false)
+    cmd_run(&path.to_string_lossy(), vec![], false, &[])
 }
 
 // ---------- fixture test suite ----------
@@ -1093,20 +1209,30 @@ fn harvest_fences(md: &str) -> Vec<(String, bool)> {
 
 /// Shared pass-fixture runner: front end, lower, link, execute, and
 /// compare stdout/exit. Used by `test`, `test --doc`, and examples.
-fn run_pass_file(path: &Path, stem: &str, exp_out: Option<&str>, exp_exit: i32) -> bool {
+fn run_pass_file(
+    path: &Path,
+    stem: &str,
+    exp_out: Option<&str>,
+    exp_exit: i32,
+) -> (bool, Vec<String>) {
     let name = path.display().to_string();
+    let mut lines = vec![];
     let checked = match pipeline::front_end_file(path) {
         Ok(c) => c,
         Err(fd) => {
-            println!("FAIL {} (unexpected compile error):\n{}", name, fd.render());
-            return false;
+            lines.push(format!(
+                "FAIL {} (unexpected compile error):\n{}",
+                name,
+                fd.render()
+            ));
+            return (false, lines);
         }
     };
     let c_src = match codegen::lower(&checked) {
         Ok(c) => c,
         Err(ice) => {
-            println!("FAIL {} (ICE: {})", name, ice.0);
-            return false;
+            lines.push(format!("FAIL {} (ICE: {})", name, ice.0));
+            return (false, lines);
         }
     };
     let dir = target_dir().join("fixtures");
@@ -1114,30 +1240,30 @@ fn run_pass_file(path: &Path, stem: &str, exp_out: Option<&str>, exp_exit: i32) 
     let c_file = dir.join(format!("{}.c", stem));
     let exe = dir.join(stem);
     if std::fs::write(&c_file, &c_src).is_err() {
-        println!("FAIL {} (cannot write C)", name);
-        return false;
+        lines.push(format!("FAIL {} (cannot write C)", name));
+        return (false, lines);
     }
     if let Err(e) = codegen::cc_build(&c_file, &exe) {
-        println!("FAIL {} (link failed: {})", name, e);
-        return false;
+        lines.push(format!("FAIL {} (link failed: {})", name, e));
+        return (false, lines);
     }
     let output = match Command::new(&exe).output() {
         Ok(o) => o,
         Err(e) => {
-            println!("FAIL {} (cannot run: {})", name, e);
-            return false;
+            lines.push(format!("FAIL {} (cannot run: {})", name, e));
+            return (false, lines);
         }
     };
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let code = output.status.code().unwrap_or(-1);
     if exp_out.map(|e| e == stdout).unwrap_or(true) && code == exp_exit {
-        true
+        (true, lines)
     } else {
-        println!(
+        lines.push(format!(
             "FAIL {} (expected stdout {:?} exit {}, got {:?} exit {})",
             name, exp_out, exp_exit, stdout, code
-        );
-        false
+        ));
+        (false, lines)
     }
 }
 
@@ -1167,7 +1293,7 @@ fn fix_rule(code: &str, text: &str, span: (usize, usize)) -> Option<(usize, usiz
 /// Auto-apply machine-applicable lints (cargo-fix lesson): W1002, W1003,
 /// W1005 only (never E-codes, never ambiguous ties). Fixpoint of 3 passes;
 /// files rewrite only when every applied rule asserted.
-fn cmd_fix(path: &str) -> i32 {
+fn cmd_fix(path: &str, verbose: bool) -> i32 {
     let mut fixed = 0u32;
     for _ in 0..3 {
         // Warnings ride on success (imp) or as denied errors (exp mode
@@ -1252,13 +1378,17 @@ fn cmd_fix(path: &str) -> i32 {
     // Final verdict: errors remaining?
     match pipeline::front_end_file(Path::new(path)) {
         Ok(_) => {
-            println!("fixed {} lint(s)", fixed);
+            if verbose {
+                println!("fixed {} lint(s)", fixed);
+            }
             0
         }
         Err(fd) => {
             let errs: Vec<_> = fd.diags.iter().filter(|d| !d.warning).collect();
             if errs.is_empty() {
-                println!("fixed {} lint(s)", fixed);
+                if verbose {
+                    println!("fixed {} lint(s)", fixed);
+                }
                 0
             } else {
                 eprintln!("{}", fd.render());
@@ -1290,7 +1420,11 @@ fn cmd_test_doc(dir: Option<&str>) -> i32 {
                 }
                 // Doc fences assert clean execution only (exit 0); inline
                 // `// value` comments are prose, not oracles.
-                if run_pass_file(&tmp, &format!("doc-fence-{}", n), None, 0) {
+                let (ok, lines) = run_pass_file(&tmp, &format!("doc-fence-{}", n), None, 0);
+                for l in lines {
+                    println!("{}", l);
+                }
+                if ok {
                     println!("ok {}", name);
                     pass += 1;
                 } else {
@@ -1317,7 +1451,11 @@ fn cmd_test_doc(dir: Option<&str>) -> i32 {
                 p.file_stem().and_then(|s| s.to_str()).unwrap_or("t")
             );
             let exp = sidecar(&p, ".stdout");
-            if run_pass_file(&p, &stem, exp.as_deref(), 0) {
+            let (ok, lines) = run_pass_file(&p, &stem, exp.as_deref(), 0);
+            for l in lines {
+                println!("{}", l);
+            }
+            if ok {
                 println!("ok {}", p.display());
                 pass += 1;
             } else {
@@ -1334,62 +1472,168 @@ fn cmd_test_doc(dir: Option<&str>) -> i32 {
     }
 }
 
-fn cmd_test(dir: Option<&str>) -> i32 {
+fn test_flag(args: &[String], name: &str) -> Option<String> {
+    let dash = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    args[..dash]
+        .windows(2)
+        .find(|w| w[0] == name)
+        .map(|w| w[1].clone())
+}
+
+fn cmd_test(args: &[String]) -> i32 {
+    let dir = args
+        .get(1)
+        .filter(|s| !s.starts_with("--"))
+        .map(|s| s.as_str());
     let root = PathBuf::from(dir.unwrap_or("valvet-tests"));
     let fixtures = collect_fixtures(&root);
     if fixtures.is_empty() {
         eprintln!("error: no fixtures found under {}", root.display());
         return 1;
     }
+    // Parallelism (à la carte lesson, ordered output): workers run
+    // fixtures, the driver prints path-sorted lines for determinism.
+    let jobs: usize = test_flag(args, "--jobs")
+        .and_then(|s| s.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        });
+    let bench = args.iter().any(|a| a == "--bench");
+    let bench_max: Option<u64> = test_flag(args, "--bench-max-ms").and_then(|s| s.parse().ok());
     let mut pass = 0u32;
     let mut fail = 0u32;
-    for f in &fixtures {
-        let name = f.path.display().to_string();
-        if let Err(e) = std::fs::read_to_string(&f.path) {
-            println!("FAIL {} (cannot read: {})", name, e);
-            fail += 1;
-            continue;
-        }
-        if f.kind == "fail" {
-            let expected = sidecar(&f.path, ".error");
-            match pipeline::front_end_file(&f.path) {
-                Ok(_) => {
-                    println!("FAIL {} (expected compile failure, compiled ok)", name);
-                    fail += 1;
-                }
-                Err(fd) => {
-                    let codes = fd.codes();
-                    let ok = match &expected {
-                        Some(e) => codes.iter().any(|c| *c == e),
-                        None => true,
-                    };
-                    if ok {
-                        println!("ok {} (rejected {:?})", name, codes);
-                        pass += 1;
-                    } else {
-                        println!(
-                            "FAIL {} (expected {}, got {:?})\n{}",
-                            name,
-                            expected.unwrap(),
-                            codes,
-                            fd.render()
-                        );
-                        fail += 1;
+    let mut bench_rows: Vec<(String, u128)> = vec![];
+
+    // pass/run: build + execute + verify stdout/exit. Workers run
+    // fixtures in parallel; the driver prints path-sorted lines so
+    // output stays deterministic. Stems gain a worker index so no two
+    // threads share C/exe paths.
+    let dir = target_dir().join("fixtures");
+    let _ = std::fs::create_dir_all(&dir);
+    let chunk = (fixtures.len() + jobs.max(1) - 1) / jobs.max(1);
+    let mut rows: Vec<FixtureRow> = vec![];
+    std::thread::scope(|scope| {
+        let mut handles = vec![];
+        for (ci, group) in fixtures.chunks(chunk.max(1)).enumerate() {
+            let base = ci * chunk.max(1);
+            handles.push(scope.spawn(move || {
+                let mut out = vec![];
+                for (k, f) in group.iter().enumerate() {
+                    let name = f.path.display().to_string();
+                    if f.kind == "fail" {
+                        let expected = sidecar(&f.path, ".error");
+                        match pipeline::front_end_file(&f.path) {
+                            Ok(_) => out.push((
+                                base + k,
+                                name.clone(),
+                                false,
+                                vec![format!(
+                                    "FAIL {} (expected compile failure, compiled ok)",
+                                    name
+                                )],
+                                None,
+                            )),
+                            Err(fd) => {
+                                let codes = fd.codes();
+                                let ok = match &expected {
+                                    Some(e) => codes.iter().any(|c| *c == e),
+                                    None => true,
+                                };
+                                if ok {
+                                    out.push((
+                                        base + k,
+                                        name.clone(),
+                                        true,
+                                        vec![format!("ok {} (rejected {:?})", name, codes)],
+                                        None,
+                                    ));
+                                } else {
+                                    out.push((
+                                        base + k,
+                                        name.clone(),
+                                        false,
+                                        vec![format!(
+                                            "FAIL {} (expected {}, got {:?})\n{}",
+                                            name,
+                                            expected.unwrap(),
+                                            codes,
+                                            fd.render()
+                                        )],
+                                        None,
+                                    ));
+                                }
+                            }
+                        }
+                        continue;
                     }
+                    if std::fs::read_to_string(&f.path).is_err() {
+                        out.push((
+                            base + k,
+                            name.clone(),
+                            false,
+                            vec![format!("FAIL {} (cannot read)", name)],
+                            None,
+                        ));
+                        continue;
+                    }
+                    let exp_out = sidecar(&f.path, ".stdout");
+                    let exp_exit: i32 = sidecar(&f.path, ".exit")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
+                    let stem = format!("{}-{}", f.stem, base + k);
+                    let (ok, lines) = run_pass_file(&f.path, &stem, exp_out.as_deref(), exp_exit);
+                    let mut timed = None;
+                    if ok && bench {
+                        let exe = target_dir().join("fixtures").join(&stem);
+                        let mut ms = vec![];
+                        for _ in 0..3 {
+                            let t = std::time::Instant::now();
+                            let _ = std::process::Command::new(&exe).output();
+                            ms.push(t.elapsed().as_millis());
+                        }
+                        ms.sort();
+                        timed = Some(ms[1]);
+                    }
+                    let mut all = lines;
+                    if ok {
+                        all.push(format!("ok {}", name));
+                    }
+                    out.push((base + k, name, ok, all, timed));
                 }
-            }
-            continue;
+                out
+            }));
         }
-        // pass/run: build + execute + verify stdout/exit
-        let exp_out = sidecar(&f.path, ".stdout");
-        let exp_exit: i32 = sidecar(&f.path, ".exit")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        if run_pass_file(&f.path, &f.stem, exp_out.as_deref(), exp_exit) {
-            println!("ok {}", name);
+        for h in handles {
+            rows.extend(h.join().unwrap());
+        }
+    });
+    rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    for (_, name, ok, lines, timed) in &rows {
+        for l in lines {
+            println!("{}", l);
+        }
+        if *ok {
             pass += 1;
         } else {
             fail += 1;
+        }
+        if bench {
+            if let Some(ms) = timed {
+                bench_rows.push((name.clone(), *ms));
+            }
+        }
+    }
+    if bench {
+        bench_rows.sort();
+        for (name, ms) in &bench_rows {
+            println!("bench {} {}ms (median of 3)", name, ms);
+            if bench_max.is_some_and(|m| (*ms as u64) > m) {
+                println!("FAIL {} (over {}ms bound)", name, bench_max.unwrap());
+                fail += 1;
+            }
         }
     }
     // fix corpus: `fix/*.valvet` rewrites to its `.fixed` sidecar.
@@ -1420,7 +1664,7 @@ fn cmd_test(dir: Option<&str>) -> i32 {
                 fail += 1;
                 continue;
             }
-            let code = cmd_fix(&stage.to_string_lossy());
+            let code = cmd_fix(&stage.to_string_lossy(), false);
             let after = std::fs::read_to_string(&stage).unwrap_or_default();
             if code == 0 && after == want {
                 println!("ok fix/{}", stem);
@@ -1829,7 +2073,15 @@ fn cmd_repl() -> i32 {
             eprintln!("error: cannot write session file");
             continue;
         }
-        let exe = match build_exe(&session_file, true, false) {
+        let exe = match build_exe(
+            &session_file,
+            &BuildOpts {
+                quiet: true,
+                frozen: false,
+                profile: "release".to_string(),
+                lto: false,
+            },
+        ) {
             Ok(e) => e,
             Err(_) if echo => {
                 let text = session.render(Some(&entry), false);
@@ -1837,7 +2089,15 @@ fn cmd_repl() -> i32 {
                     eprintln!("error: cannot write session file");
                     continue;
                 }
-                match build_exe(&session_file, false, false) {
+                match build_exe(
+                    &session_file,
+                    &BuildOpts {
+                        quiet: false,
+                        frozen: false,
+                        profile: "release".to_string(),
+                        lto: false,
+                    },
+                ) {
                     Ok(e) => e,
                     Err(_) => {
                         let _ = std::fs::remove_file(&session_path);
