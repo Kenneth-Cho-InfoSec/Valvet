@@ -47,6 +47,8 @@ fn run(args: Vec<String>) -> i32 {
             }
         }
         "fmt" => cmd_fmt(get_path(&args)),
+        "tree" => cmd_tree(get_path(&args)),
+        "metadata" => cmd_metadata(get_path(&args)),
         "test" => cmd_test(args.get(1).map(|s| s.as_str())),
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
         "repl" => cmd_repl(),
@@ -83,6 +85,8 @@ fn print_help() {
     println!("    valvet new <name>            scaffold a new single-dir project");
     println!("    valvet run --watch <file>    re-run on file change");
     println!("    valvet fmt <file>            normalize whitespace and trailing newline");
+    println!("    valvet tree <file>           show the import dependency tree");
+    println!("    valvet metadata <file>      print crate metadata as JSON");
     println!("    valvet repl                  interactive session (definitions persist)");
     println!("    valvet -e 'expr'              evaluate a scriptlet and print its value");
     println!("    valvet --version             display version");
@@ -292,6 +296,11 @@ fn write_lock(entry: &str, checked: &valvet_core::sema::Checked) -> std::io::Res
     for f in &checked.files {
         out.push_str(&format!("file {} {}\n", f.name, file_hex(&f.text)));
     }
+    let mut deps = checked.dep_locks.clone();
+    deps.sort();
+    for (name, version) in &deps {
+        out.push_str(&format!("dep {} {}\n", name, version));
+    }
     std::fs::write(lock_path_for(entry), out)
 }
 
@@ -314,6 +323,11 @@ fn check_lock(entry: &str, checked: &valvet_core::sema::Checked) -> Result<(), S
                 let hash = parts.next().unwrap_or_default().to_string();
                 want.insert(name, hash);
             }
+            Some("dep") => {
+                let name = parts.next().unwrap_or_default().to_string();
+                let version = parts.next().unwrap_or_default().to_string();
+                want.insert(format!("dep:{}", name), version);
+            }
             _ => {}
         }
     }
@@ -325,6 +339,13 @@ fn check_lock(entry: &str, checked: &valvet_core::sema::Checked) -> Result<(), S
             Some(h) if *h == file_hex(&f.text) => {}
             Some(_) => return Err(format!("source changed: {}", f.name)),
             None => return Err(format!("source not locked: {}", f.name)),
+        }
+    }
+    for (name, version) in &checked.dep_locks {
+        match want.get(&format!("dep:{}", name)) {
+            Some(v) if v == version => {}
+            Some(_) => return Err(format!("dependency changed: {}", name)),
+            None => return Err(format!("dependency not locked: {}", name)),
         }
     }
     Ok(())
@@ -530,6 +551,124 @@ fn sidecar(path: &Path, ext: &str) -> Option<String> {
     std::fs::read_to_string(Path::new(&p))
         .ok()
         .map(|s| s.trim().to_string())
+}
+
+/// Dependency tree from recorded import edges (cycle-safe).
+fn cmd_tree(path: &str) -> i32 {
+    let checked = match pipeline::front_end_file(Path::new(path)) {
+        Ok(c) => c,
+        Err(fd) => {
+            eprintln!("{}", fd.render());
+            return 1;
+        }
+    };
+    let mut kids: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for (a, b) in &checked.edges {
+        kids.entry(a.as_str()).or_default().push(b.as_str());
+    }
+    for v in kids.values_mut() {
+        v.sort();
+    }
+    fn show(
+        kids: &std::collections::HashMap<&str, Vec<&str>>,
+        node: &str,
+        depth: usize,
+        seen: &mut Vec<String>,
+    ) {
+        println!("{}{}", "  ".repeat(depth), node);
+        if seen.contains(&node.to_string()) {
+            return;
+        }
+        seen.push(node.to_string());
+        if let Some(next) = kids.get(node) {
+            for c in next {
+                show(kids, c, depth + 1, seen);
+            }
+        }
+        seen.pop();
+    }
+    let root = if checked.edges.is_empty() {
+        path.to_string()
+    } else {
+        checked
+            .edges
+            .iter()
+            .map(|(a, _)| a.clone())
+            .find(|a| !checked.edges.iter().any(|(_, b)| b == a))
+            .unwrap_or_else(|| path.to_string())
+    };
+    let mut seen = vec![];
+    show(&kids, &root, 0, &mut seen);
+    0
+}
+
+fn json_str(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '\\' => o.push_str("\\\\"),
+            '"' => o.push_str("\\\""),
+            '\n' => o.push_str("\\n"),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// Machine-readable crate metadata (format version 1).
+fn cmd_metadata(path: &str) -> i32 {
+    let checked = match pipeline::front_end_file(Path::new(path)) {
+        Ok(c) => c,
+        Err(fd) => {
+            eprintln!("{}", fd.render());
+            return 1;
+        }
+    };
+    let mut out = String::from("{\"format_version\":1,");
+    out.push_str(&format!("\"entry\":{},", json_str(path)));
+    out.push_str("\"files\":[");
+    let mut files: Vec<(&str, usize)> = checked
+        .files
+        .iter()
+        .map(|f| (f.name.as_str(), f.text.len()))
+        .collect();
+    files.sort();
+    for (i, (n, len)) in files.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!("{{\"path\":{},\"bytes\":{}}}", json_str(n), len));
+    }
+    out.push_str("],\"deps\":[");
+    let mut deps = checked.dep_locks.clone();
+    deps.sort();
+    for (i, (n, v)) in deps.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"name\":{},\"version\":{}}}",
+            json_str(n),
+            json_str(v)
+        ));
+    }
+    out.push_str("],\"edges\":[");
+    let mut edges = checked.edges.clone();
+    edges.sort();
+    for (i, (a, b)) in edges.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"from\":{},\"to\":{}}}",
+            json_str(a),
+            json_str(b)
+        ));
+    }
+    out.push_str("]}");
+    println!("{}", out);
+    0
 }
 
 fn cmd_test(dir: Option<&str>) -> i32 {

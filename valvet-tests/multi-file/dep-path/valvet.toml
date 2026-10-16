@@ -1,0 +1,6 @@
+[package]
+name = "depapp"
+version = "0.1.0"
+
+[dependencies]
+math2 = { path = "libs/math2", version = "^1.0" }

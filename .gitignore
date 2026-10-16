@@ -12,3 +12,6 @@ target/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Reproducibility locks are build artifacts (written beside the entry)
+valvet.lock

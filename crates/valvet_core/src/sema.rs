@@ -69,6 +69,10 @@ pub struct Checked {
     /// Sources by load order (entry first) for warning rendering.
     /// Single-source mode holds the one source.
     pub files: Vec<crate::source::Source>,
+    /// Resolved manifest deps (name, version) for `valvet.lock`.
+    pub dep_locks: Vec<(String, String)>,
+    /// Import edges (importer display, target display) for `valvet tree`.
+    pub edges: Vec<(String, String)>,
     /// Composite instantiations printed via `println` (keys into
     /// `generic_insts`); codegen emits format helpers exactly for these.
     pub print_insts: std::collections::HashSet<String>,
@@ -288,6 +292,9 @@ pub fn check_with_files(
             warnings: cx.warns,
             // Pipeline stamps owning sources after (sema never sees text).
             files: vec![],
+            // Pipeline stamps resolved deps + import edges after.
+            dep_locks: vec![],
+            edges: vec![],
             print_insts: cx.print_insts,
             is_in_insts: cx.is_in_insts.clone(),
             fun_kernels: cx.fun_kernels,

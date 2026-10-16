@@ -58,6 +58,10 @@ pub struct Crate {
     /// Every successfully-read source (superset of units: includes files
     /// that failed to parse, so their errors still render with position).
     pub sources: Vec<Source>,
+    /// Resolved manifest deps (name, version) for `valvet.lock`.
+    pub deps: Vec<(String, String)>,
+    /// Import edges (importer display, target display) for `valvet tree`.
+    pub edges: Vec<(String, String)>,
 }
 
 impl Crate {
@@ -131,26 +135,109 @@ pub fn default_stdlib_roots() -> Vec<PathBuf> {
 /// (possibly partial) crate alongside errors so failures still render
 /// per-file; callers proceed only when errors are empty.
 /// Errors carry `.file` attribution for per-file rendering.
+/// `valvet.toml` beside the entry directory, if present and well-formed.
+/// Malformed manifests fail the load (like Cargo: no silent ignoring).
+fn read_manifest(root: &Path) -> Result<Option<crate::manifest::Manifest>, String> {
+    let path = root.join("valvet.toml");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text =
+        std::fs::read_to_string(&path).map_err(|_| "cannot read `valvet.toml`".to_string())?;
+    crate::manifest::parse(&text)
+        .map(Some)
+        .map_err(|m| format!("bad manifest: {}", m))
+}
+
 pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
     let root = entry
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
     let mut l = Loader {
-        root,
+        root: root.clone(),
         stdlib_roots: default_stdlib_roots(),
+        dep_roots: vec![],
+        dep_locks: vec![],
+        edges: vec![],
         units: vec![],
         sources: vec![],
         index: HashMap::new(),
         stack: vec![],
         errs: vec![],
     };
+    // Manifest deps: resolve paths, require each dep to be a package
+    // (its own `valvet.toml` with name + version), check the bound
+    // (Cargo-style max-compatible), and record the lock entry.
+    match read_manifest(&root) {
+        Err(m) => {
+            l.errs.push(Diagnostic::error(
+                "E0701",
+                crate::source::Span::empty(0),
+                m,
+            ));
+        }
+        Ok(Some(m)) => {
+            for dep in &m.deps {
+                let dir = root.join(&dep.path);
+                let dman = match std::fs::read_to_string(dir.join("valvet.toml")) {
+                    Ok(t) => t,
+                    Err(_) => {
+                        l.errs.push(Diagnostic::error(
+                            "E0701",
+                            crate::source::Span::empty(0),
+                            format!(
+                                "dependency `{}` is not a package (no valvet.toml)",
+                                dep.name
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+                let dm = match crate::manifest::parse(&dman) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        l.errs.push(Diagnostic::error(
+                            "E0701",
+                            crate::source::Span::empty(0),
+                            format!("bad manifest in dependency `{}`: {}", dep.name, e),
+                        ));
+                        continue;
+                    }
+                };
+                if dm.name != dep.name {
+                    l.errs.push(Diagnostic::error(
+                        "E0701",
+                        crate::source::Span::empty(0),
+                        format!("dependency `{}` is package `{}`", dep.name, dm.name),
+                    ));
+                    continue;
+                }
+                if !crate::manifest::matches_req(&dm.version, &dep.req) {
+                    l.errs.push(Diagnostic::error(
+                        "E0701",
+                        crate::source::Span::empty(0),
+                        format!(
+                            "dependency `{}` is {} (wants {})",
+                            dep.name, dm.version, dep.req
+                        ),
+                    ));
+                    continue;
+                }
+                l.dep_locks.push((dep.name.clone(), dm.version));
+                l.dep_roots.push((dep.name.clone(), dir));
+            }
+        }
+        Ok(None) => {}
+    }
     let entry_display = entry.display().to_string();
     let _ = l.load_unit(entry, &entry_display, String::new(), None);
     (
         Crate {
             units: l.units,
             sources: l.sources,
+            deps: l.dep_locks,
+            edges: l.edges,
         },
         l.errs,
     )
@@ -161,6 +248,12 @@ struct Loader {
     /// Ordered fallbacks for `std::` imports (J0): explicit override,
     /// install layout, then a live dev checkout.
     stdlib_roots: Vec<PathBuf>,
+    /// Manifest `[dependencies]` roots (name, dir), entry-relative first.
+    dep_roots: Vec<(String, PathBuf)>,
+    /// Resolved manifest deps (name, version) for `valvet.lock`.
+    dep_locks: Vec<(String, String)>,
+    /// Import edges (importer display, target display) for `valvet tree`.
+    edges: Vec<(String, String)>,
     units: Vec<Unit>,
     sources: Vec<Source>,
     /// Normalized absolute path -> unit index (diamond dedup).
@@ -370,9 +463,18 @@ impl Loader {
                     None => fallback,
                 }
             } else {
-                first_hit(&self.root.join(&rel)).unwrap_or(fallback)
+                first_hit(&self.root.join(&rel))
+                    .or_else(|| {
+                        self.dep_roots
+                            .iter()
+                            .filter_map(|(_, r)| first_hit(&r.join(&rel)))
+                            .next()
+                    })
+                    .unwrap_or(fallback)
             };
             let target_display = target.display().to_string();
+            self.edges
+                .push((display.to_string(), target_display.clone()));
             self.load_unit(&target, &target_display, dotted, Some((display, ispan)))?;
         }
         self.stack.pop();

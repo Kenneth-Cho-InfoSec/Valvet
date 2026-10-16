@@ -168,6 +168,8 @@ pub fn front_end_file(entry: &std::path::Path) -> Result<Checked, FileDiags> {
         });
     }
     checked.files = files;
+    checked.dep_locks = krate.deps.clone();
+    checked.edges = krate.edges.clone();
     // `mode exp` denies warnings (same as the single-source tail above).
     if checked.program.mode == crate::ast::Mode::Exp && !checked.warnings.is_empty() {
         for w in &mut checked.warnings {

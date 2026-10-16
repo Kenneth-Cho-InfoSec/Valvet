@@ -2,6 +2,7 @@ pub mod ast;
 pub mod codegen;
 pub mod diag;
 pub mod lexer;
+pub mod manifest;
 pub mod ownership;
 pub mod parser;
 pub mod pipeline;
