@@ -46,7 +46,8 @@ pub struct Checked {
     /// FunDecl id -> (param types, ret)
     pub sigs: HashMap<NodeId, (Vec<Ty>, Ty)>,
     /// Functions by (qualified name, arity) for call resolution
-    /// (arity overloads share a name; diagnostics list known arities).
+    /// (arity overloads share a name; same-arity type overloads live in
+    /// `fun_overloads`; diagnostics list known arities).
     pub fun_names: HashMap<(String, usize), NodeId>,
     /// Resolved struct definitions by name.
     pub structs: HashMap<String, StructDef>,
@@ -144,6 +145,7 @@ pub fn check_with_files(
         types: HashMap::new(),
         sigs: HashMap::new(),
         fun_names: HashMap::new(),
+        fun_overloads: HashMap::new(),
         locals: vec![],
         loop_stack: vec![],
         fn_ret: Ty::Unit,
@@ -192,16 +194,32 @@ pub fn check_with_files(
         }
         let q = crate::resolver::qname(&f.module, &f.name);
         let arity = f.params.len();
-        if cx.fun_names.contains_key(&(q.clone(), arity)) {
-            cx.err(
-                "E0401",
-                f.name_span,
-                format!("duplicate function `{}` with {} argument(s)", f.name, arity),
-                Some("rename one of the functions".into()),
-            );
-            continue;
+        let ptypes: Vec<Ty> = f.params.iter().map(|p| p.ty.clone()).collect();
+        if let Some(prev) = cx.fun_names.get(&(q.clone(), arity)).copied() {
+            // Same name + arity: identical signatures stay E0401; differing
+            // parameter types form a static overload set (Julia-style
+            // dispatch resolved at compile time, never at runtime).
+            let same = cx
+                .sigs
+                .get(&prev)
+                .map(|(eps, _)| *eps == ptypes)
+                .unwrap_or(false);
+            if same {
+                cx.err(
+                    "E0401",
+                    f.name_span,
+                    format!("duplicate function `{}` with {} argument(s)", f.name, arity),
+                    Some("rename one of the functions".into()),
+                );
+                continue;
+            }
+            cx.fun_overloads
+                .entry((q.clone(), arity))
+                .or_insert_with(|| vec![prev])
+                .push(f.id);
+        } else {
+            cx.fun_names.insert((q.clone(), arity), f.id);
         }
-        cx.fun_names.insert((q, arity), f.id);
         cx.sigs.insert(
             f.id,
             (
@@ -285,6 +303,10 @@ struct Cx {
     types: HashMap<NodeId, Ty>,
     sigs: HashMap<NodeId, (Vec<Ty>, Ty)>,
     fun_names: HashMap<(String, usize), NodeId>,
+    /// Static overload sets: every FunDecl id sharing (qualified name,
+    /// arity), in declaration order. Single-candidate names resolve exactly
+    /// as before; multi-candidate names score arg types at the call.
+    fun_overloads: HashMap<(String, usize), Vec<NodeId>>,
     locals: Vec<HashMap<String, Local>>,
     loop_stack: Vec<LoopCtx>,
     /// Enclosing function return type (for `return` inside value-`loop` bodies).
@@ -338,6 +360,18 @@ struct BinCheck<'a> {
     rd: &'a Dim,
     lhs: Option<&'a Expr>,
     rhs: Option<&'a Expr>,
+}
+
+/// Resolved call operands (bundled: clippy arity limit, like BinCheck).
+struct CallArgs<'a> {
+    id: NodeId,
+    span: Span,
+    name: &'a str,
+    args: &'a [Expr],
+    pt: Vec<Ty>,
+    rt: Ty,
+    pdims: Vec<Dim>,
+    ret_dim: Dim,
 }
 
 /// Whether a statement tree contains a `return` at any depth. Valvet has no
@@ -687,6 +721,33 @@ impl Cx {
             return self.fun_names.get(&(tq, arity)).copied();
         }
         None
+    }
+
+    /// All FunDecl ids sharing (name, arity): the single fast-path id when
+    /// there is no overload set, every member in declaration order when the
+    /// same name + arity carries differing parameter types.
+    fn resolve_all(&self, name: &str, arity: usize) -> Vec<NodeId> {
+        let own = crate::resolver::qname(&self.cur_module, name);
+        if let Some(ids) = self.fun_overloads.get(&(own.clone(), arity)) {
+            return ids.clone();
+        }
+        if let Some((tm, tn)) = self
+            .aliases
+            .get(&(self.cur_module.clone(), name.to_string()))
+        {
+            let tq = crate::resolver::qname(tm, tn);
+            if let Some(ids) = self.fun_overloads.get(&(tq.clone(), arity)) {
+                return ids.clone();
+            }
+            if let Some(id) = self.fun_names.get(&(tq, arity)) {
+                return vec![*id];
+            }
+            return vec![];
+        }
+        self.fun_names
+            .get(&(own, arity))
+            .map(|id| vec![*id])
+            .unwrap_or_default()
     }
 
     /// Any-arity existence (builtin/ctor shadowing checks).
@@ -5141,7 +5202,13 @@ impl Cx {
 
     /// Resolve a Stage-1 function operand to (param types, return type).
     /// Only bare `fun` items qualify (never `main`, methods, or builtins).
-    fn fun_value_sig(&mut self, arg: &Expr, what: &str, arity: usize) -> Option<(Vec<Ty>, Ty)> {
+    fn fun_value_sig(
+        &mut self,
+        arg: &Expr,
+        what: &str,
+        arity: usize,
+        score: &[Ty],
+    ) -> Option<(Vec<Ty>, Ty)> {
         let fname = match &arg.kind {
             ExprKind::Var(n) => n.clone(),
             _ => {
@@ -5166,7 +5233,33 @@ impl Cx {
             );
             return None;
         }
-        let id = match self.resolve_fun(&fname, arity) {
+        let cands = self.resolve_all(&fname, arity);
+        let id = match cands.len() {
+            0 => None,
+            1 => Some(cands[0]),
+            _ => {
+                let table: Vec<(crate::ast::NodeId, Vec<Ty>)> = cands
+                    .iter()
+                    .filter_map(|fid| self.sigs.get(fid).map(|(p, _)| (*fid, p.clone())))
+                    .collect();
+                match Self::pick_overload(&table, score) {
+                    Some(id) => Some(id),
+                    None => {
+                        self.err(
+                            "E0201",
+                            arg.span,
+                            format!(
+                                "`{}`: ambiguous overload of `{}`; annotate the call",
+                                what, fname
+                            ),
+                            None,
+                        );
+                        return None;
+                    }
+                }
+            }
+        };
+        let id = match id {
             Some(id) => id,
             None => {
                 let known = self.fun_arities(&fname);
@@ -5260,7 +5353,7 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[1], "map", 1) else {
+                let Some((ps, r)) = self.fun_value_sig(&args[1], "map", 1, std::slice::from_ref(&t)) else {
                     return Ty::Error;
                 };
                 if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -5341,7 +5434,7 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[1], "filter", 1) else {
+                let Some((ps, r)) = self.fun_value_sig(&args[1], "filter", 1, std::slice::from_ref(&t)) else {
                     return Ty::Error;
                 };
                 if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -5417,7 +5510,9 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[2], "fold", 2) else {
+                let Some((ps, r)) =
+                    self.fun_value_sig(&args[2], "fold", 2, &[a.clone(), t.clone()])
+                else {
                     return Ty::Error;
                 };
                 if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -5489,7 +5584,8 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[2], "split_apply", 1) else {
+                let Some((ps, r)) = self.fun_value_sig(&args[2], "split_apply", 1, std::slice::from_ref(&vt))
+                else {
                     return Ty::Error;
                 };
                 if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -6220,7 +6316,7 @@ impl Cx {
                 return Ty::Error;
             }
             self.record_vec_inst(&Ty::Float64);
-            let Some((ps, r)) = self.fun_value_sig(&args[1], "par_map", 1) else {
+            let Some((ps, r)) = self.fun_value_sig(&args[1], "par_map", 1, &[Ty::Float64]) else {
                 return Ty::Error;
             };
             if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -6694,9 +6790,13 @@ impl Cx {
             );
             return Ty::Error;
         }
+        let overloads = self.resolve_all(name, args.len());
+        if overloads.len() > 1 {
+            return self.check_overload_call(id, span, name, args, &overloads);
+        }
         let fid_opt = self.resolve_fun(name, args.len());
-        let (pt, rt) = match fid_opt.and_then(|fid| self.sigs.get(&fid)) {
-            Some(s) => (s.0.clone(), s.1.clone()),
+        let (fid, pt, rt) = match fid_opt.and_then(|fid| self.sigs.get(&fid).map(|s| (fid, s))) {
+            Some((fid, s)) => (fid, s.0.clone(), s.1.clone()),
             None => {
                 // Tuple-struct construction `Meters(1.0)` lives in value position too.
                 let qtype = self.resolve_type(name);
@@ -6763,28 +6863,46 @@ impl Cx {
                 return Ty::Error;
             }
         };
-        // Parameter + return dimensions (for unit conversion checks).
-        let pdims: Vec<Dim> = fid_opt
-            .and_then(|fid| self.param_dims.get(&fid))
-            .cloned()
-            .unwrap_or_default();
-        let ret_dim: Dim = fid_opt
-            .and_then(|fid| self.dims.get(&fid))
-            .cloned()
-            .unwrap_or_else(Dim::dimensionless);
+        let call = CallArgs {
+            id,
+            span,
+            name,
+            args,
+            pt,
+            rt,
+            pdims: self
+                .param_dims
+                .get(&fid)
+                .cloned()
+                .unwrap_or_default(),
+            ret_dim: self
+                .dims
+                .get(&fid)
+                .cloned()
+                .unwrap_or_else(Dim::dimensionless),
+        };
+        self.check_call_resolved(&call)
+    }
+
+    /// Shared call body after callee resolution: per-arg checks with
+    /// expected-type pinning, unit dimensions, and borrow compatibility.
+    /// Used by both the single-callee path and overload winners.
+    fn check_call_resolved(&mut self, call: &CallArgs) -> Ty {
+        let args = call.args;
+        let pt = &call.pt;
         if args.len() != pt.len() {
             self.err(
                 "E0201",
-                span,
+                call.span,
                 format!(
                     "function `{}` takes {} arguments, found {}",
-                    name,
+                    call.name,
                     pt.len(),
                     args.len()
                 ),
                 None,
             );
-            return rt;
+            return call.rt.clone();
         }
         for (i, (a, p)) in args.iter().zip(pt.iter()).enumerate() {
             let saved_exp = self.expected.clone();
@@ -6796,7 +6914,7 @@ impl Cx {
             self.expected = saved_exp;
             // Units: argument dimension must match the parameter's
             // (literals pin; scales convert silently at codegen).
-            if let Some(pdim) = pdims.get(i) {
+            if let Some(pdim) = call.pdims.get(i) {
                 self.unify_dim(a, pdim, a.span, "argument");
             }
             // Reference compatibility: mutability + inner type must match;
@@ -6846,8 +6964,138 @@ impl Cx {
                 );
             }
         }
-        self.set_dim(id, ret_dim);
-        rt
+        self.set_dim(call.id, call.ret_dim.clone());
+        call.rt.clone()
+    }
+
+    /// Static overload choice: score raw arg types against every candidate
+    /// signature (0 exact, 1 numeric latitude, 2 mismatch; errors tolerate).
+    /// The winner runs the shared body, which pins literals and reports
+    /// honestly; ties and raw-check failures stay single-diagnostic.
+    fn check_overload_call(
+        &mut self,
+        id: crate::ast::NodeId,
+        span: Span,
+        name: &str,
+        args: &[Expr],
+        cands: &[crate::ast::NodeId],
+    ) -> Ty {
+        let base_errs = self.errs.len();
+        let saved_exp = self.expected.clone();
+        self.expected = None;
+        let mut raw: Vec<Ty> = vec![];
+        for a in args {
+            raw.push(match self.ctor_use(a) {
+                Some((cn, cargs)) => self.check_ctor_call(a.id, a.span, &cn, &cargs, None),
+                None => self.check_expr(a),
+            });
+        }
+        self.expected = saved_exp;
+        if self.errs.len() != base_errs {
+            return Ty::Error;
+        }
+        let table: Vec<(crate::ast::NodeId, Vec<Ty>)> = cands
+            .iter()
+            .filter_map(|fid| self.sigs.get(fid).map(|(p, _)| (*fid, p.clone())))
+            .collect();
+        let winner = match Self::pick_overload(&table, &raw) {
+            Some(fid) => fid,
+            None => {
+                let sigs = cands
+                    .iter()
+                    .filter_map(|fid| self.sigs.get(fid))
+                    .map(|(ps, _)| ps.iter().map(|t| t.name()).collect::<Vec<_>>().join(", "))
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                self.err(
+                    "E0201",
+                    span,
+                    format!("ambiguous call to `{}` among ({})", name, sigs),
+                    Some("annotate an argument or rename one overload".into()),
+                );
+                return Ty::Error;
+            }
+        };
+        let (pt, rt) = match self.sigs.get(&winner) {
+            Some((p, r)) => (p.clone(), r.clone()),
+            None => return Ty::Error,
+        };
+        let call = CallArgs {
+            id,
+            span,
+            name,
+            args,
+            pt,
+            rt,
+            pdims: self
+                .param_dims
+                .get(&winner)
+                .cloned()
+                .unwrap_or_default(),
+            ret_dim: self
+                .dims
+                .get(&winner)
+                .cloned()
+                .unwrap_or_else(Dim::dimensionless),
+        };
+        self.check_call_resolved(&call)
+    }
+
+    /// Shared overload picker: lowest total `overload_score` wins; ties and
+    /// empty sets are `None` (callers emit their own diagnostic).
+    fn pick_overload(
+        table: &[(crate::ast::NodeId, Vec<Ty>)],
+        against: &[Ty],
+    ) -> Option<crate::ast::NodeId> {
+        let mut best: Option<(u32, crate::ast::NodeId)> = None;
+        let mut tied = false;
+        for (fid, pts) in table {
+            let score: u32 = against
+                .iter()
+                .zip(pts.iter())
+                .map(|(a, p)| Self::overload_score(a, p))
+                .sum();
+            match best {
+                Some((b, _)) if score < b => {
+                    best = Some((score, *fid));
+                    tied = false;
+                }
+                Some((b, _)) if score == b => {
+                    tied = true;
+                }
+                None => {
+                    best = Some((score, *fid));
+                }
+                _ => {}
+            }
+        }
+        match best {
+            Some((_, fid)) if !tied => Some(fid),
+            _ => None,
+        }
+    }
+
+    /// One-argument overload distance used by `check_overload_call`.
+    fn overload_score(arg: &Ty, param: &Ty) -> u32 {
+        if arg == param || ty_has_error(arg) || ty_has_error(param) {
+            return 0;
+        }
+        if matches!(arg, Ty::Int32 | Ty::Int64 | Ty::Float64)
+            && matches!(param, Ty::Int32 | Ty::Int64 | Ty::Float64)
+        {
+            return 1;
+        }
+        match (arg, param) {
+            (Ty::Generic { base: ab, args: aa }, Ty::Generic { base: pb, args: pa })
+                if ab == pb && aa.len() == pa.len() =>
+            {
+                aa.iter()
+                    .zip(pa.iter())
+                    .map(|(a, p)| Self::overload_score(a, p))
+                    .sum()
+            }
+            _ => 2,
+        }
     }
 
     /// Literal pinning (R2a): an unsuffixed literal side adopts a numeric

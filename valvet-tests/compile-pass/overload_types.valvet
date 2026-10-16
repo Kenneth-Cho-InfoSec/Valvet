@@ -1,0 +1,22 @@
+fun pick(x: Int32): String {
+return "i32";
+}
+fun pick(x: Int64): String {
+return "i64";
+}
+fun pick(x: Float64): String {
+return "f64";
+}
+fun pick(x: String): String {
+return "str";
+}
+fun go(): Int32 {
+println(pick(1));
+println(pick(1 as Int64));
+println(pick(1.5));
+println(pick("s"));
+return 0;
+}
+fun main() {
+println(go())
+}

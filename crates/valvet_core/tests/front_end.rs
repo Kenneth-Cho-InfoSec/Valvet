@@ -1433,3 +1433,18 @@ fn overload_duplicate_rejected() {
         vec!["E0401"]
     );
 }
+
+#[test]
+fn overload_dispatch_and_errors() {
+    // Most specific wins; identical signatures stay duplicates; genuine
+    // ties report one E0201.
+    check_ok("fun f(x: Int32): Int32 {\nreturn x\n}\nfun f(x: Float64): Float64 {\nreturn x\n}\nfun main() {\nprintln(f(1))\n}\n");
+    assert_eq!(
+        check_codes("fun f(x: Int32): Int32 {\nreturn x\n}\nfun f(x: Int32): Int32 {\nreturn x\n}\nfun main() {\nprintln(1)\n}\n"),
+        vec!["E0401"]
+    );
+    assert_eq!(
+        check_codes("fun f(x: Int32): Int32 {\nreturn x\n}\nfun f(x: Int64): Int64 {\nreturn x\n}\nfun main() {\nval v: Vec<Int32> = vec![1]\nprintln(f(v))\n}\n"),
+        vec!["E0201"]
+    );
+}
