@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "valvet_cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "valvet_core",
 ]
 
 [[package]]
 name = "valvet_core"
-version = "0.3.0"
+version = "0.4.0"
