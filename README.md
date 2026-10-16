@@ -121,7 +121,7 @@ Audited joins never silently drop rows: `frame_join_inner` / `frame_join_left`
 return the frame plus its audit (matched / left-only / right-only counts),
 and a missing key column is `Err`, not an empty frame:
 
-```valvet
+```valvet no-test
 val s = match (frame_join_inner(&l, "id", &r, "id")) { Ok(j) -> audit_summary(&j.audit), Err(e) -> e, };
 println(s)  // matched=1 left_only=0 right_only=0 out=1
 ```
@@ -129,7 +129,7 @@ println(s)  // matched=1 left_only=0 right_only=0 out=1
 Frames can carry provenance: source hash plus transform log, printable
 with any result (`stdlib/provenance.valvet`):
 
-```valvet
+```valvet no-test
 val p = provenance_of_text("demo", "a,b\n");
 println(prov_report(&p))  // source=demo hash=6376667723524501508 ops=[]
 ```
@@ -138,7 +138,7 @@ Forward-mode autodiff via dual numbers (`stdlib/autodiff.valvet`): write the
 loss once over `Dual`, seed each dimension, read `.d`. A logistic-regression
 gradient descent in the suite is bit-identical to its Python reference:
 
-```valvet
+```valvet no-test
 println(sq(seed(vec![3.0], 0 as Int64)).d)  // d(x^2)/dx at 3 = 6
 ```
 
@@ -187,7 +187,7 @@ distance, VIF, Durbin-Watson, Breusch-Pagan), all oracled against Python.
 Categorical predictors auto-expand to treatment contrasts, and `wlm` fits
 weighted least squares through the same pipeline:
 
-```valvet
+```valvet no-test
 import std::infer::anova_oneway;
 val g1: Vec<Float64> = vec![1.0, 2.0, 3.0];
 val g2: Vec<Float64> = vec![4.0, 5.0, 6.0];
@@ -209,7 +209,7 @@ robust SE), meta-analysis and adjustments (`std::meta`), feature
 engineering (`std::features`), random test frames (`std::synth`), and
 LaTeX/HTML model tables (`std::report`):
 
-```valvet
+```valvet no-test
 import std::sql::sql;
 let Ok(q) = sql(&f, "SELECT g, SUM(x) FROM f GROUP BY g ORDER BY g") else {
     println("bad query");
@@ -230,13 +230,13 @@ state with `q = f(q)` move-plus-reassign and clones at divergence points.
 
 Multi-file projects: the root is the entry file's directory:
 
-```valvet
+```valvet no-test
 // main.valvet
 import math::double;
 println(double(21))           // 42
 ```
 
-```valvet
+```valvet no-test
 // math.valvet
 module math;
 
@@ -307,7 +307,7 @@ ASan/UBSan-clean output.
 Named recognizer functions plus `if` guards on match arms partition data
 the way F# active patterns do (no special syntax needed):
 
-```valvet
+```valvet no-test
 fun is_even(n: Int64): Bool {
     n % (2 as Int64) == (0 as Int64)
 }

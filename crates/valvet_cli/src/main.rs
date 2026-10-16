@@ -50,7 +50,14 @@ fn run(args: Vec<String>) -> i32 {
         "tree" => cmd_tree(get_path(&args)),
         "metadata" => cmd_metadata(get_path(&args)),
         "verify" => cmd_verify(get_path(&args)),
-        "test" => cmd_test(args.get(1).map(|s| s.as_str())),
+        "test" => {
+            if args.iter().any(|a| a == "--doc") {
+                let dir = args.get(1).filter(|s| *s != "--doc").map(|s| s.as_str());
+                cmd_test_doc(dir)
+            } else {
+                cmd_test(args.get(1).map(|s| s.as_str()))
+            }
+        }
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
         "repl" => cmd_repl(),
         "-e" => cmd_eval(args.get(1).map(|s| s.as_str())),
@@ -83,6 +90,7 @@ fn print_help() {
     println!("    (.valvet, .vv and .vvt sources are equivalent)");
     println!("    valvet run <file> -- args    run with script arguments in `args`");
     println!("    valvet test [dir]            run the Valvet fixture test suite");
+    println!("    valvet test --doc            run README fences plus examples");
     println!("    valvet new <name>            scaffold a new single-dir project");
     println!("    valvet run --watch <file>    re-run on file change");
     println!("    valvet fmt <file>            normalize whitespace and trailing newline");
@@ -740,6 +748,146 @@ fn cmd_metadata(path: &str) -> i32 {
     0
 }
 
+/// Fenced Valvet snippets harvested from one Markdown file.
+/// `no-test` fences skip (fragments, multi-file halves, error displays).
+fn harvest_fences(md: &str) -> Vec<(String, bool)> {
+    let mut out = vec![];
+    let lines: Vec<&str> = md.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let head = lines[i].trim();
+        if head.starts_with("```valvet") {
+            let skip = head.contains("no-test");
+            i += 1;
+            let mut body = String::new();
+            while i < lines.len() && !lines[i].trim().starts_with("```") {
+                body.push_str(lines[i]);
+                body.push('\n');
+                i += 1;
+            }
+            out.push((body, skip));
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Shared pass-fixture runner: front end, lower, link, execute, and
+/// compare stdout/exit. Used by `test`, `test --doc`, and examples.
+fn run_pass_file(path: &Path, stem: &str, exp_out: Option<&str>, exp_exit: i32) -> bool {
+    let name = path.display().to_string();
+    let checked = match pipeline::front_end_file(path) {
+        Ok(c) => c,
+        Err(fd) => {
+            println!("FAIL {} (unexpected compile error):\n{}", name, fd.render());
+            return false;
+        }
+    };
+    let c_src = match codegen::lower(&checked) {
+        Ok(c) => c,
+        Err(ice) => {
+            println!("FAIL {} (ICE: {})", name, ice.0);
+            return false;
+        }
+    };
+    let dir = target_dir().join("fixtures");
+    let _ = std::fs::create_dir_all(&dir);
+    let c_file = dir.join(format!("{}.c", stem));
+    let exe = dir.join(stem);
+    if std::fs::write(&c_file, &c_src).is_err() {
+        println!("FAIL {} (cannot write C)", name);
+        return false;
+    }
+    if let Err(e) = codegen::cc_build(&c_file, &exe) {
+        println!("FAIL {} (link failed: {})", name, e);
+        return false;
+    }
+    let output = match Command::new(&exe).output() {
+        Ok(o) => o,
+        Err(e) => {
+            println!("FAIL {} (cannot run: {})", name, e);
+            return false;
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let code = output.status.code().unwrap_or(-1);
+    if exp_out.map(|e| e == stdout).unwrap_or(true) && code == exp_exit {
+        true
+    } else {
+        println!(
+            "FAIL {} (expected stdout {:?} exit {}, got {:?} exit {})",
+            name, exp_out, exp_exit, stdout, code
+        );
+        false
+    }
+}
+
+/// Doc suite (rustdoc lesson): every runnable README fence plus every
+/// `examples/*.valvet` must compile and run; examples pin `.stdout`.
+fn cmd_test_doc(dir: Option<&str>) -> i32 {
+    let root = PathBuf::from(dir.unwrap_or("."));
+    let mut pass = 0u32;
+    let mut fail = 0u32;
+    let readme = root.join("README.md");
+    match std::fs::read_to_string(&readme) {
+        Ok(md) => {
+            for (n, (body, skip)) in harvest_fences(&md).iter().enumerate() {
+                if *skip {
+                    continue;
+                }
+                let name = format!("{}#fence{}", readme.display(), n);
+                let tmp = target_dir().join(format!("doc-fence-{}.valvet", n));
+                if std::fs::write(&tmp, body).is_err() {
+                    println!("FAIL {} (cannot stage)", name);
+                    fail += 1;
+                    continue;
+                }
+                // Doc fences assert clean execution only (exit 0); inline
+                // `// value` comments are prose, not oracles.
+                if run_pass_file(&tmp, &format!("doc-fence-{}", n), None, 0) {
+                    println!("ok {}", name);
+                    pass += 1;
+                } else {
+                    println!("FAIL {} (see mismatch above)", name);
+                    fail += 1;
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("error: no README.md under {}", root.display());
+            return 1;
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(root.join("examples")) {
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("valvet"))
+            .collect();
+        paths.sort();
+        for p in paths {
+            let stem = format!(
+                "doc-example-{}",
+                p.file_stem().and_then(|s| s.to_str()).unwrap_or("t")
+            );
+            let exp = sidecar(&p, ".stdout");
+            if run_pass_file(&p, &stem, exp.as_deref(), 0) {
+                println!("ok {}", p.display());
+                pass += 1;
+            } else {
+                println!("FAIL {} (see mismatch above)", p.display());
+                fail += 1;
+            }
+        }
+    }
+    println!("{} passed, {} failed (doc suite)", pass, fail);
+    if fail > 0 {
+        1
+    } else {
+        0
+    }
+}
+
 fn cmd_test(dir: Option<&str>) -> i32 {
     let root = PathBuf::from(dir.unwrap_or("valvet-tests"));
     let fixtures = collect_fixtures(&root);
@@ -787,60 +935,14 @@ fn cmd_test(dir: Option<&str>) -> i32 {
             continue;
         }
         // pass/run: build + execute + verify stdout/exit
-        let checked = match pipeline::front_end_file(&f.path) {
-            Ok(c) => c,
-            Err(fd) => {
-                println!("FAIL {} (unexpected compile error):\n{}", name, fd.render());
-                fail += 1;
-                continue;
-            }
-        };
-        let c_src = match codegen::lower(&checked) {
-            Ok(c) => c,
-            Err(ice) => {
-                println!("FAIL {} (ICE: {})", name, ice.0);
-                fail += 1;
-                continue;
-            }
-        };
-        let dir = target_dir().join("fixtures");
-        let _ = std::fs::create_dir_all(&dir);
-        let stem = &f.stem;
-        let c_file = dir.join(format!("{}.c", stem));
-        let exe = dir.join(stem);
-        if std::fs::write(&c_file, &c_src).is_err() {
-            println!("FAIL {} (cannot write C)", name);
-            fail += 1;
-            continue;
-        }
-        if let Err(e) = codegen::cc_build(&c_file, &exe) {
-            println!("FAIL {} (link failed: {})", name, e);
-            fail += 1;
-            continue;
-        }
-        let output = match Command::new(&exe).output() {
-            Ok(o) => o,
-            Err(e) => {
-                println!("FAIL {} (cannot run: {})", name, e);
-                fail += 1;
-                continue;
-            }
-        };
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let code = output.status.code().unwrap_or(-1);
         let exp_out = sidecar(&f.path, ".stdout");
         let exp_exit: i32 = sidecar(&f.path, ".exit")
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let ok = exp_out.as_deref().map(|e| e == stdout).unwrap_or(true) && code == exp_exit;
-        if ok {
+        if run_pass_file(&f.path, &f.stem, exp_out.as_deref(), exp_exit) {
             println!("ok {}", name);
             pass += 1;
         } else {
-            println!(
-                "FAIL {} (expected stdout {:?} exit {}, got {:?} exit {})",
-                name, exp_out, exp_exit, stdout, code
-            );
             fail += 1;
         }
     }
