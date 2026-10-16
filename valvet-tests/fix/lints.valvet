@@ -1,0 +1,10 @@
+fun go(): Int32 {
+val v: Vec<Int64> = vec![1 as Int64];
+print(v.len());
+println(v.clone().len());
+println(1 as Int32);
+return 0;
+}
+fun main() {
+println(go())
+}

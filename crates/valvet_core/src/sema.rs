@@ -2979,14 +2979,23 @@ impl Cx {
                 // W1005: every method borrows its receiver (pointer model),
                 // so calling one on a `.clone()` temporary is needless;
                 // borrow the original instead.
-                if !ty_has_error(&rt)
-                    && matches!(&receiver.kind, ExprKind::Method { method, .. } if method == "clone")
-                {
-                    self.warn(
-                        "W1005",
-                        receiver.span,
-                        "needless `.clone()`; methods borrow",
-                    );
+                if !ty_has_error(&rt) {
+                    if let ExprKind::Method {
+                        method,
+                        method_span: inner,
+                        ..
+                    } = &receiver.kind
+                    {
+                        if method == "clone" {
+                            // Span starts at the `.` so `fix` deletes the
+                            // whole call (the rule asserts the `()` tail).
+                            self.warn(
+                                "W1005",
+                                Span::new(inner.start - 1, inner.end),
+                                "needless `.clone()`; methods borrow",
+                            );
+                        }
+                    }
                 }
                 match rt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
@@ -3064,9 +3073,11 @@ impl Cx {
                     );
                 }
                 if st == *target {
+                    // Span covers exactly the ` as T` suffix so `fix`
+                    // deletes it verbatim (render points at the needless part).
                     self.warn(
                         "W1003",
-                        e.span,
+                        Span::new(expr.span.end, e.span.end),
                         format!("needless `as` (already {})", st.name()),
                     );
                 }

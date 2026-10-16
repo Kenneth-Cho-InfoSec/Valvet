@@ -47,6 +47,7 @@ fn run(args: Vec<String>) -> i32 {
             }
         }
         "fmt" => cmd_fmt(get_path(&args)),
+        "fix" => cmd_fix(get_path(&args)),
         "tree" => cmd_tree(get_path(&args)),
         "metadata" => cmd_metadata(get_path(&args)),
         "verify" => cmd_verify(get_path(&args)),
@@ -94,6 +95,7 @@ fn print_help() {
     println!("    valvet new <name>            scaffold a new single-dir project");
     println!("    valvet run --watch <file>    re-run on file change");
     println!("    valvet fmt <file>            normalize whitespace and trailing newline");
+    println!("    valvet fix <file>            auto-apply machine-applicable lints");
     println!("    valvet tree <file>           show the import dependency tree");
     println!("    valvet metadata <file>      print crate metadata as JSON");
     println!("    valvet verify <file>         recompute lock and cache digests");
@@ -822,6 +824,133 @@ fn run_pass_file(path: &Path, stem: &str, exp_out: Option<&str>, exp_exit: i32) 
     }
 }
 
+/// One machine-applicable rewrite: (start, end, replacement) plus a
+/// text assertion so a surprising span never corrupts a file.
+fn fix_rule(code: &str, text: &str, span: (usize, usize)) -> Option<(usize, usize, String)> {
+    let (a, b) = span;
+    let got = text.get(a..b)?;
+    match code {
+        // ` as T` suffix deletes verbatim.
+        "W1003" if got.starts_with(" as ") => Some((a, b, String::new())),
+        // Leading `print` (call spans start at the callee) gains `ln`.
+        "W1002"
+            if got.starts_with("print")
+                && got[5..].starts_with(|c: char| !c.is_alphanumeric() && c != '_') =>
+        {
+            Some((a, a + 5, "println".to_string()))
+        }
+        // `.clone` plus its asserted `()` tail deletes verbatim.
+        "W1005" if got.starts_with(".clone") && text.get(b..b + 2).is_some_and(|t| t == "()") => {
+            Some((a, b + 2, String::new()))
+        }
+        _ => None,
+    }
+}
+
+/// Auto-apply machine-applicable lints (cargo-fix lesson): W1002, W1003,
+/// W1005 only (never E-codes, never ambiguous ties). Fixpoint of 3 passes;
+/// files rewrite only when every applied rule asserted.
+fn cmd_fix(path: &str) -> i32 {
+    let mut fixed = 0u32;
+    for _ in 0..3 {
+        // Warnings ride on success (imp) or as denied errors (exp mode
+        // flips the flag but keeps the W code); harvest by code either way.
+        // Genuine E diagnostics are never fix candidates.
+        let mut jobs: Vec<(String, usize, usize, String)> = vec![];
+        match pipeline::front_end_file(Path::new(path)) {
+            Ok(c) => {
+                for d in &c.warnings {
+                    if d.code.starts_with('W') {
+                        if let Some(f) = d
+                            .file
+                            .clone()
+                            .or_else(|| c.files.first().map(|s| s.name.clone()))
+                        {
+                            jobs.push((f, d.span.start, d.span.end, d.code.to_string()));
+                        }
+                    }
+                }
+            }
+            Err(fd) => {
+                for d in &fd.diags {
+                    if !d.code.starts_with('W') {
+                        continue;
+                    }
+                    let fname = d
+                        .file
+                        .clone()
+                        .or_else(|| fd.files.first().map(|s| s.name.clone()));
+                    if let Some(f) = fname {
+                        jobs.push((f, d.span.start, d.span.end, d.code.to_string()));
+                    }
+                }
+            }
+        }
+        if jobs.is_empty() {
+            break;
+        }
+        // Group by file, apply back-to-front.
+        let mut by_file: std::collections::HashMap<String, Vec<(usize, usize, String)>> =
+            std::collections::HashMap::new();
+        for (f, a, b, c) in jobs {
+            by_file.entry(f).or_default().push((a, b, c));
+        }
+        let mut names: Vec<String> = by_file.keys().cloned().collect();
+        names.sort();
+        let mut applied = 0u32;
+        for name in names {
+            let text = match std::fs::read_to_string(&name) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let mut edits: Vec<(usize, usize, String)> = vec![];
+            let mut ok = true;
+            for (a, b, code) in &by_file[&name] {
+                match fix_rule(code, &text, (*a, *b)) {
+                    Some(e) => edits.push(e),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok || edits.is_empty() {
+                continue;
+            }
+            edits.sort_by_key(|x| std::cmp::Reverse(x.0));
+            let n = edits.len() as u32;
+            let mut out = text;
+            for (a, b, r) in edits {
+                out.replace_range(a..b, &r);
+            }
+            if std::fs::write(&name, out).is_ok() {
+                applied += n;
+            }
+        }
+        if applied == 0 {
+            break;
+        }
+        fixed += applied;
+    }
+    // Final verdict: errors remaining?
+    match pipeline::front_end_file(Path::new(path)) {
+        Ok(_) => {
+            println!("fixed {} lint(s)", fixed);
+            0
+        }
+        Err(fd) => {
+            let errs: Vec<_> = fd.diags.iter().filter(|d| !d.warning).collect();
+            if errs.is_empty() {
+                println!("fixed {} lint(s)", fixed);
+                0
+            } else {
+                eprintln!("{}", fd.render());
+                1
+            }
+        }
+    }
+}
+
 /// Doc suite (rustdoc lesson): every runnable README fence plus every
 /// `examples/*.valvet` must compile and run; examples pin `.stdout`.
 fn cmd_test_doc(dir: Option<&str>) -> i32 {
@@ -944,6 +1073,45 @@ fn cmd_test(dir: Option<&str>) -> i32 {
             pass += 1;
         } else {
             fail += 1;
+        }
+    }
+    // fix corpus: `fix/*.valvet` rewrites to its `.fixed` sidecar.
+    // Staged under target/ so sources stay pristine.
+    let fix_root = root.join("fix");
+    if let Ok(entries) = std::fs::read_dir(&fix_root) {
+        let mut names: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().and_then(|s| s.to_str()) == Some("valvet")
+                    && !p.to_string_lossy().ends_with(".fixed.valvet")
+            })
+            .collect();
+        names.sort();
+        for src in names {
+            let stem = src
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("t")
+                .to_string();
+            let stage = target_dir().join(format!("fix-{}.valvet", stem));
+            let want =
+                std::fs::read_to_string(src.with_extension("valvet.fixed")).unwrap_or_default();
+            let before = std::fs::read_to_string(&src).unwrap_or_default();
+            if std::fs::write(&stage, &before).is_err() {
+                println!("FAIL fix/{} (cannot stage)", stem);
+                fail += 1;
+                continue;
+            }
+            let code = cmd_fix(&stage.to_string_lossy());
+            let after = std::fs::read_to_string(&stage).unwrap_or_default();
+            if code == 0 && after == want {
+                println!("ok fix/{}", stem);
+                pass += 1;
+            } else {
+                println!("FAIL fix/{} (code {}, mismatch)", stem, code);
+                fail += 1;
+            }
         }
     }
     println!(
