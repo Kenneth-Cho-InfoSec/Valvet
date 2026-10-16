@@ -49,6 +49,7 @@ fn run(args: Vec<String>) -> i32 {
         "fmt" => cmd_fmt(get_path(&args)),
         "tree" => cmd_tree(get_path(&args)),
         "metadata" => cmd_metadata(get_path(&args)),
+        "verify" => cmd_verify(get_path(&args)),
         "test" => cmd_test(args.get(1).map(|s| s.as_str())),
         "new" => cmd_new(args.get(1).map(|s| s.as_str())),
         "repl" => cmd_repl(),
@@ -87,6 +88,7 @@ fn print_help() {
     println!("    valvet fmt <file>            normalize whitespace and trailing newline");
     println!("    valvet tree <file>           show the import dependency tree");
     println!("    valvet metadata <file>      print crate metadata as JSON");
+    println!("    valvet verify <file>         recompute lock and cache digests");
     println!("    valvet repl                  interactive session (definitions persist)");
     println!("    valvet -e 'expr'              evaluate a scriptlet and print its value");
     println!("    valvet --version             display version");
@@ -203,38 +205,16 @@ fn build_exe(path: &str, quiet: bool, frozen: bool) -> Result<PathBuf, i32> {
         .unwrap_or("a");
     let dir = target_dir();
     let exe = dir.join(stem);
-    let digest = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        VERSION.hash(&mut h);
-        std::env::var("VALVET_CC").unwrap_or_default().hash(&mut h);
-        // The compiler itself is an input: rebuilt binaries must not
-        // serve pre-fix executables for unchanged sources.
-        if let Ok(md) = std::env::current_exe()
-            .and_then(|p| std::fs::metadata(&p))
-            .and_then(|m| m.modified())
-        {
-            md.hash(&mut h);
-        }
-        for f in &checked.files {
-            f.name.hash(&mut h);
-            f.text.hash(&mut h);
-        }
-        format!("{:x}", h.finish())
-    };
-    let sidecar = {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut ph = DefaultHasher::new();
-        path.hash(&mut ph);
-        dir.join(format!("{}-{:x}.hash", stem, ph.finish()))
-    };
-    if exe.exists()
-        && std::fs::read_to_string(&sidecar)
-            .ok()
-            .is_some_and(|s| s.trim() == digest)
-    {
+    let digest = exe_digest(path, &checked);
+    let sidecar = sidecar_for(path, &dir, stem);
+    // Sidecar holds the exe digest plus the lowered-C digest (early
+    // cutoff, à la carte: identical C skips the link even when inputs
+    // moved, e.g. comment-only edits or compiler rebuilds).
+    let cached: Vec<String> = std::fs::read_to_string(&sidecar)
+        .ok()
+        .map(|s| s.lines().map(|l| l.trim().to_string()).collect())
+        .unwrap_or_default();
+    if exe.exists() && cached.first().is_some_and(|d| *d == digest) {
         return Ok(exe);
     }
     let c_src = codegen::lower(&checked).map_err(|ice| {
@@ -243,6 +223,14 @@ fn build_exe(path: &str, quiet: bool, frozen: bool) -> Result<PathBuf, i32> {
         }
         1
     })?;
+    let c_hex = valvet_core::sha256::hex(c_src.as_bytes());
+    if exe.exists() && cached.get(1).is_some_and(|c| *c == c_hex) {
+        if !quiet {
+            println!("note: unchanged lowering; skipping link");
+        }
+        let _ = std::fs::write(&sidecar, format!("{}\n{}\n", digest, c_hex));
+        return Ok(exe);
+    }
     if let Err(e) = std::fs::create_dir_all(&dir) {
         if !quiet {
             eprintln!("error: cannot create `{}`: {}", dir.display(), e);
@@ -263,11 +251,96 @@ fn build_exe(path: &str, quiet: bool, frozen: bool) -> Result<PathBuf, i32> {
         return Err(1);
     }
     // Memoize only successful builds (a failed link must rebuild next time).
-    let _ = std::fs::write(&sidecar, digest);
+    let _ = std::fs::write(&sidecar, format!("{}\n{}\n", digest, c_hex));
     Ok(exe)
 }
 
+/// Recompute every recorded digest (Nix-style verification, no daemon).
+fn cmd_verify(path: &str) -> i32 {
+    let checked = match pipeline::front_end_file(Path::new(path)) {
+        Ok(c) => c,
+        Err(fd) => {
+            eprintln!("{}", fd.render());
+            return 1;
+        }
+    };
+    if let Err(e) = check_lock(path, &checked) {
+        println!("drift: {}", e);
+        return 1;
+    }
+    println!("lock ok");
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("a");
+    let sidecar = sidecar_for(path, &target_dir(), stem);
+    let digest = exe_digest(path, &checked);
+    match std::fs::read_to_string(&sidecar) {
+        Ok(s) if s.lines().next().is_some_and(|d| d.trim() == digest) => {
+            println!("cache ok");
+            0
+        }
+        Ok(_) => {
+            println!("drift: cached exe digest differs (rebuild to refresh)");
+            1
+        }
+        Err(_) => {
+            println!("drift: no cache entry (build first)");
+            1
+        }
+    }
+}
+
+/// Cache sidecar for one entry stem (filename disambiguator only).
+fn sidecar_for(path: &str, dir: &Path, stem: &str) -> PathBuf {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut ph = DefaultHasher::new();
+    path.hash(&mut ph);
+    dir.join(format!("{}-{:x}.hash", stem, ph.finish()))
+}
+
 /// `valvet.lock` beside the entry directory (empty parent = cwd).
+/// Canonical build identity (Bazel lesson: every input that can move
+/// the output participates): version, C driver, compiler build, sources.
+fn exe_digest(path: &str, checked: &valvet_core::sema::Checked) -> String {
+    let mut buf = vec![];
+    buf.extend_from_slice(path.as_bytes());
+    buf.push(0);
+    buf.extend_from_slice(VERSION.as_bytes());
+    buf.push(0);
+    buf.extend_from_slice(std::env::var("VALVET_CC").unwrap_or_default().as_bytes());
+    buf.push(0);
+    // The compiler itself is an input: rebuilt binaries must not
+    // serve pre-fix executables for unchanged sources.
+    if let Ok(md) = std::env::current_exe()
+        .and_then(|p| std::fs::metadata(&p))
+        .and_then(|m| m.modified())
+    {
+        buf.extend_from_slice(format!("{:?}", md).as_bytes());
+    }
+    buf.push(0);
+    let mut files: Vec<(&str, &str)> = checked
+        .files
+        .iter()
+        .map(|f| (f.name.as_str(), f.text.as_str()))
+        .collect();
+    files.sort();
+    for (n, t) in files {
+        buf.extend_from_slice(n.as_bytes());
+        buf.push(0);
+        buf.extend_from_slice(t.as_bytes());
+        buf.push(0);
+    }
+    for (n, v) in &checked.dep_locks {
+        buf.extend_from_slice(n.as_bytes());
+        buf.push(0);
+        buf.extend_from_slice(v.as_bytes());
+        buf.push(0);
+    }
+    valvet_core::sha256::hex(&buf)
+}
+
 fn lock_path_for(entry: &str) -> PathBuf {
     let mut d = Path::new(entry)
         .parent()
@@ -280,11 +353,7 @@ fn lock_path_for(entry: &str) -> PathBuf {
 }
 
 fn file_hex(text: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    text.hash(&mut h);
-    format!("{:x}", h.finish())
+    valvet_core::sha256::hex(text.as_bytes())
 }
 
 /// Write the source lock after a successful front end.

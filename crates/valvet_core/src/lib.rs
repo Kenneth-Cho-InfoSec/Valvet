@@ -8,6 +8,7 @@ pub mod parser;
 pub mod pipeline;
 pub mod resolver;
 pub mod sema;
+pub mod sha256;
 pub mod source;
 pub mod token;
 pub mod units;

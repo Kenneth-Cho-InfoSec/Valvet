@@ -171,11 +171,8 @@ pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
     // (Cargo-style max-compatible), and record the lock entry.
     match read_manifest(&root) {
         Err(m) => {
-            l.errs.push(Diagnostic::error(
-                "E0701",
-                crate::source::Span::empty(0),
-                m,
-            ));
+            l.errs
+                .push(Diagnostic::error("E0701", crate::source::Span::empty(0), m));
         }
         Ok(Some(m)) => {
             for dep in &m.deps {
