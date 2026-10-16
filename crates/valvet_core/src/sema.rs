@@ -6281,8 +6281,18 @@ impl Cx {
             return Ty::Str;
         }
         // Scripting environment reads (std::sys): read-only, allowed in
-        // every mode. `sys_getenv` maps missing names to `None`.
+        // every mode except hermetic runs. `sys_getenv` maps missing
+        // names to `None`.
         if name == "sys_getenv" {
+            if std::env::var("VALVET_HERMETIC").is_ok_and(|v| v != "0" && !v.is_empty()) {
+                self.err(
+                    "E0401",
+                    span,
+                    "`sys_getenv` is denied in hermetic runs (environment is an input)",
+                    Some("drop `--hermetic` or thread the value as a parameter".into()),
+                );
+                return Ty::Error;
+            }
             if args.len() != 1 {
                 self.err(
                     "E0201",

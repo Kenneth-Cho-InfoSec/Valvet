@@ -25,6 +25,10 @@ fn run(args: Vec<String>) -> i32 {
     if args[..dash].contains(&"--offline".to_string()) {
         std::env::set_var("VALVET_OFFLINE", "1");
     }
+    let hermetic = args[..dash].contains(&"--hermetic".to_string());
+    if hermetic {
+        std::env::set_var("VALVET_HERMETIC", "1");
+    }
     if args[..dash].contains(&"--all-features".to_string()) {
         std::env::set_var("VALVET_FEATURES", "*");
     } else if let Some(v) = test_flag(&args, "--features") {
@@ -79,7 +83,7 @@ fn run(args: Vec<String>) -> i32 {
                         skip = true;
                         continue;
                     }
-                    if a != "--frozen" && a != "--all-features" {
+                    if a != "--frozen" && a != "--all-features" && a != "--hermetic" {
                         clean.push(a.clone());
                     }
                 }
@@ -124,6 +128,7 @@ fn get_path(args: &[String]) -> &str {
             "--profile" | "--target" | "--jobs" | "--bench-max-ms" | "--features" => i += 1,
             s if s == "--frozen"
                 || s == "--offline"
+                || s == "--hermetic"
                 || s == "--watch"
                 || s == "--bench"
                 || s == "--all-features"
@@ -166,6 +171,7 @@ fn print_help() {
     println!("    --profile dev|release        C opt level (manifest [profile] default)");
     println!("    --target <triple>            use <triple>-gcc as the C driver");
     println!("    --jobs N                     fixture threads (test)");
+    println!("    run --hermetic               strict entry, no subprocess or env reads");
     println!("    --features a,b / --all-features  enable manifest features");
     println!("    --bench [--bench-max-ms N]   time fixture exes, bound them");
     println!("    valvet repl                  interactive session (definitions persist)");

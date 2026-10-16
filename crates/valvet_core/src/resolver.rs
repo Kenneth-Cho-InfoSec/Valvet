@@ -95,11 +95,16 @@ impl Crate {
             // (entry `top` became `main`; anything else errored).
             top: vec![],
             // Entry mode governs the joint program (`units[0]` is the entry).
-            mode: self
-                .units
-                .first()
-                .map(|u| u.program.mode)
-                .unwrap_or(crate::ast::Mode::Auto),
+            // Batch 8: `--hermetic` forces strict entry rules (an explicit
+            // `mode imp` header under hermetic is E0604, checked at load).
+            mode: if hermetic() {
+                crate::ast::Mode::Exp
+            } else {
+                self.units
+                    .first()
+                    .map(|u| u.program.mode)
+                    .unwrap_or(crate::ast::Mode::Auto)
+            },
             prelude: self.units.first().is_some_and(|u| u.program.prelude),
             span,
         }
@@ -151,6 +156,10 @@ fn read_manifest(root: &Path) -> Result<Option<crate::manifest::Manifest>, Strin
 
 fn offline() -> bool {
     std::env::var("VALVET_OFFLINE").is_ok_and(|v| v != "0" && !v.is_empty())
+}
+
+fn hermetic() -> bool {
+    std::env::var("VALVET_HERMETIC").is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
 fn git_run(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
@@ -560,7 +569,19 @@ impl Loader {
         // Script mode is entry-only. Imported files hold items; a mode
         // header or top-level statements there is E0604. The entry's
         // top-level statements become a synthesized `fun main` (dummy
-        // ids — `renumber` reassigns every id before sema).
+        // ids — `renumber` reassigns every id before sema). Hermetic
+        // runs force strict entry: an explicit `mode imp` header errors.
+        if expected.is_empty() && hermetic() && program.mode == crate::ast::Mode::Imp {
+            self.errs.push(
+                Diagnostic::error(
+                    "E0604",
+                    program.span,
+                    "hermetic runs need strict entry (`mode imp` is lenient)",
+                )
+                .with_file(display),
+            );
+            return Err(());
+        }
         if !expected.is_empty() {
             if program.mode != crate::ast::Mode::Auto {
                 self.errs.push(
