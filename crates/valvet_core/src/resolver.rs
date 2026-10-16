@@ -273,6 +273,9 @@ pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
         dep_roots: vec![],
         dep_locks: vec![],
         edges: vec![],
+        known_features: vec![],
+        enabled_features: vec![],
+        flagged: vec![],
         units: vec![],
         sources: vec![],
         index: HashMap::new(),
@@ -347,6 +350,31 @@ pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
                 l.dep_locks.push((dep.name.clone(), dm.version));
                 l.dep_roots.push((dep.name.clone(), dir));
             }
+            l.known_features = m.features.clone();
+            let all = std::env::var("VALVET_FEATURES").unwrap_or_default();
+            if all.trim() == "*" {
+                l.enabled_features = m.features.clone();
+            } else {
+                for f in all.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    if !m.features.contains(&f.to_string()) {
+                        l.errs.push(Diagnostic::error(
+                            "E0401",
+                            crate::source::Span::empty(0),
+                            format!(
+                                "unknown feature `{}` (known: {})",
+                                f,
+                                if m.features.is_empty() {
+                                    "none".to_string()
+                                } else {
+                                    m.features.join(", ")
+                                }
+                            ),
+                        ));
+                    } else if !l.enabled_features.contains(&f.to_string()) {
+                        l.enabled_features.push(f.to_string());
+                    }
+                }
+            }
         }
         Ok(None) => {}
     }
@@ -372,6 +400,12 @@ struct Loader {
     dep_roots: Vec<(String, PathBuf)>,
     /// Resolved manifest deps (name, version) for `valvet.lock`.
     dep_locks: Vec<(String, String)>,
+    /// Declared `[features]` names plus the enabled subset (Batch 7).
+    /// Unknown `cfg` names and unknown `--features` fail at load.
+    known_features: Vec<String>,
+    enabled_features: Vec<String>,
+    /// Flags already reported, so one bad name stays one diagnostic.
+    flagged: Vec<String>,
     /// Import edges (importer display, target display) for `valvet tree`.
     edges: Vec<(String, String)>,
     units: Vec<Unit>,
@@ -384,6 +418,39 @@ struct Loader {
 }
 
 impl Loader {
+    /// Whether every `cfg` gate on an item holds. Unknown names report
+    /// once (E0401 with the known list); the item is dropped either way.
+    fn cfg_on(&mut self, cfg: &[String], display: &str) -> bool {
+        let mut on = true;
+        for f in cfg {
+            if !self.known_features.contains(f) {
+                if !self.flagged.contains(f) {
+                    self.flagged.push(f.clone());
+                    self.errs.push(
+                        Diagnostic::error(
+                            "E0401",
+                            crate::source::Span::empty(0),
+                            format!(
+                                "unknown feature `{}` (known: {})",
+                                f,
+                                if self.known_features.is_empty() {
+                                    "none".to_string()
+                                } else {
+                                    self.known_features.join(", ")
+                                }
+                            ),
+                        )
+                        .with_file(display),
+                    );
+                }
+                on = false;
+            } else if !self.enabled_features.contains(f) {
+                on = false;
+            }
+        }
+        on
+    }
+
     /// Read, parse, and (for imports) verify one file, then recurse into its
     /// imports. `expected` is the declared module for imports (`None` entry).
     /// `via` is the triggering import's (file, span) for error attribution.
@@ -444,6 +511,30 @@ impl Loader {
                 return Err(());
             }
         };
+        // Batch 7: drop feature-gated items whose gates do not hold.
+        // References to them fail downstream as unknown names (honest:
+        // the item does not exist in this configuration).
+        let mut kept_funs = vec![];
+        for f in program.funs.drain(..) {
+            if self.cfg_on(&f.cfg, display) {
+                kept_funs.push(f);
+            }
+        }
+        program.funs = kept_funs;
+        let mut kept_structs = vec![];
+        for d in program.structs.drain(..) {
+            if self.cfg_on(&d.cfg, display) {
+                kept_structs.push(d);
+            }
+        }
+        program.structs = kept_structs;
+        let mut kept_enums = vec![];
+        for e in program.enums.drain(..) {
+            if self.cfg_on(&e.cfg, display) {
+                kept_enums.push(e);
+            }
+        }
+        program.enums = kept_enums;
         // Non-entry files must declare the module their path implies.
         let module = if expected.is_empty() {
             String::new()
@@ -799,6 +890,7 @@ pub fn apply_entry_script(
         span,
         module: String::new(),
         is_pub: false,
+        cfg: vec![],
     });
     true
 }

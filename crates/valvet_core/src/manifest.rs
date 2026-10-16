@@ -8,6 +8,8 @@ pub struct Manifest {
     pub deps: Vec<Dep>,
     pub profile_default: Option<String>,
     pub profile_lto: bool,
+    /// Declared `[features]` names (Batch 7 gates item `cfg`).
+    pub features: Vec<String>,
 }
 
 /// One dependency: path (`{ path, version }`) or git (`{ git, rev }` for
@@ -111,8 +113,9 @@ pub fn parse(text: &str) -> Result<Manifest, String> {
         }
         // Features record presence only (Batch 7 reads them back).
         if section == "features" {
-            if kv(line).is_none() {
-                return Err(bad(i, "expected `key = value`"));
+            let (k, _) = kv(line).ok_or_else(|| bad(i, "expected `key = value`"))?;
+            if !m.features.contains(&k) {
+                m.features.push(k);
             }
             continue;
         }
@@ -238,6 +241,12 @@ mod tests {
         assert_eq!(g.deps[0].rev.as_deref(), Some("abc"));
         assert!(parse("[dependencies]\na = { path = \"p\", git = \"g\" }\n").is_err());
         assert!(parse("stray\n").is_err());
+    }
+
+    #[test]
+    fn feature_names() {
+        let m = parse("[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[features]\nfast = \"x\"\nslow = \"y\"\n").unwrap();
+        assert_eq!(m.features, vec!["fast".to_string(), "slow".to_string()]);
     }
 
     #[test]

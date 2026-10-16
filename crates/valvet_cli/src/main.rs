@@ -25,6 +25,16 @@ fn run(args: Vec<String>) -> i32 {
     if args[..dash].contains(&"--offline".to_string()) {
         std::env::set_var("VALVET_OFFLINE", "1");
     }
+    if args[..dash].contains(&"--all-features".to_string()) {
+        std::env::set_var("VALVET_FEATURES", "*");
+    } else if let Some(v) = test_flag(&args, "--features") {
+        // test_flag scans pre-`--` pairs; reuse it for the value form.
+        let dash = args.iter().position(|a| a == "--").unwrap_or(args.len());
+        let ok = args[..dash].windows(2).any(|w| w[0] == "--features");
+        if ok {
+            std::env::set_var("VALVET_FEATURES", v);
+        }
+    }
     let args: Vec<String> = args
         .into_iter()
         .enumerate()
@@ -65,11 +75,11 @@ fn run(args: Vec<String>) -> i32 {
                         skip = false;
                         continue;
                     }
-                    if prof && a == "--profile" {
+                    if (prof && a == "--profile") || a == "--features" {
                         skip = true;
                         continue;
                     }
-                    if a != "--frozen" {
+                    if a != "--frozen" && a != "--all-features" {
                         clean.push(a.clone());
                     }
                 }
@@ -111,11 +121,12 @@ fn get_path(args: &[String]) -> &str {
     let mut i = 1;
     while i < dash {
         match args[i].as_str() {
-            "--profile" | "--target" | "--jobs" | "--bench-max-ms" => i += 1,
+            "--profile" | "--target" | "--jobs" | "--bench-max-ms" | "--features" => i += 1,
             s if s == "--frozen"
                 || s == "--offline"
                 || s == "--watch"
                 || s == "--bench"
+                || s == "--all-features"
                 || s == "--doc" => {}
             s if !s.starts_with('-') => return &args[i],
             _ => {}
@@ -155,6 +166,7 @@ fn print_help() {
     println!("    --profile dev|release        C opt level (manifest [profile] default)");
     println!("    --target <triple>            use <triple>-gcc as the C driver");
     println!("    --jobs N                     fixture threads (test)");
+    println!("    --features a,b / --all-features  enable manifest features");
     println!("    --bench [--bench-max-ms N]   time fixture exes, bound them");
     println!("    valvet repl                  interactive session (definitions persist)");
     println!("    valvet -e 'expr'              evaluate a scriptlet and print its value");
@@ -320,7 +332,6 @@ fn apply_target(args: &[String]) -> Result<Vec<String>, i32> {
     out.drain(p..p + 2);
     Ok(out)
 }
-
 
 fn build_exe(path: &str, opts: &BuildOpts) -> Result<PathBuf, i32> {
     let quiet = opts.quiet;

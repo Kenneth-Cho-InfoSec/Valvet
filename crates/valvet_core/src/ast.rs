@@ -82,6 +82,9 @@ pub struct StructDecl {
     pub module: String,
     /// `pub` visibility (cross-module access requires `pub`; default-private).
     pub is_pub: bool,
+    /// `[cfg(feature = "...")]` gates (Batch 7, all must hold);
+    /// empty always compiles.
+    pub cfg: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +114,9 @@ pub struct EnumDecl {
     pub module: String,
     /// `pub` visibility (cross-module access requires `pub`; default-private).
     pub is_pub: bool,
+    /// `[cfg(feature = "...")]` gates (Batch 7, all must hold);
+    /// empty always compiles.
+    pub cfg: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +154,9 @@ pub struct FunDecl {
     pub module: String,
     /// `pub` visibility (cross-module calls require `pub`; default-private).
     pub is_pub: bool,
+    /// `[cfg(feature = "...")]` gates (Batch 7, all must hold);
+    /// empty always compiles.
+    pub cfg: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

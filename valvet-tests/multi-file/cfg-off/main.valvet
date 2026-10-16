@@ -1,0 +1,12 @@
+fun slow(): String {
+    return "slow";
+}
+
+[cfg(feature = "fast")]
+fun speed(): String {
+    return "fast";
+}
+
+fun main() {
+    println(slow())
+}

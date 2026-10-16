@@ -1,0 +1,6 @@
+[package]
+name = "cfgapp"
+version = "0.1.0"
+
+[features]
+fast = "fast path"

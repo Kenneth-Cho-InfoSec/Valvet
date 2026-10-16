@@ -1,0 +1,8 @@
+[cfg(feature = "fast")]
+fun speed(): String {
+    return "fast";
+}
+
+fun main() {
+    println(speed())
+}

@@ -280,11 +280,83 @@ impl Parser {
     // ---------- items ----------
 
     fn parse_item(&mut self) -> Option<Item> {
-        // attributes (deferred): skip `#[...]` with note
+        // Item attributes: only `[cfg(feature = "name")]` gates (Batch 7,
+        // all listed features must hold); anything else stays E0800.
+        let mut cfgs: Vec<String> = vec![];
         while matches!(self.cur(), Tok::LBracket) {
             // ambiguous with indexing; at item level treat as attribute
-            self.err("E0800", "attributes are not yet supported in Valvet 0.1.0");
-            self.skip_balanced(Tok::LBracket, Tok::RBracket);
+            let start = self.cur_span().start;
+            self.bump();
+            self.skip_nls();
+            let name = match self.cur().clone() {
+                Tok::Ident(n) => {
+                    self.bump();
+                    n
+                }
+                _ => {
+                    self.err("E0005", "expected an attribute name");
+                    self.skip_balanced(Tok::LBracket, Tok::RBracket);
+                    self.skip_nls();
+                    continue;
+                }
+            };
+            if name != "cfg" {
+                self.err_at(
+                    "E0800",
+                    Span::new(start, self.cur_span().end),
+                    format!("unknown attribute `{}` (only `cfg` is supported)", name),
+                );
+                self.skip_balanced(Tok::LBracket, Tok::RBracket);
+                self.skip_nls();
+                continue;
+            }
+            if !matches!(self.cur(), Tok::LParen) {
+                self.err("E0005", "expected `(feature = name)` after `cfg`");
+                self.skip_balanced(Tok::LBracket, Tok::RBracket);
+                self.skip_nls();
+                continue;
+            }
+            self.bump();
+            self.skip_nls();
+            let key = match self.cur().clone() {
+                Tok::Ident(k) => {
+                    self.bump();
+                    k
+                }
+                _ => {
+                    self.err("E0005", "expected `feature` in `cfg`");
+                    String::new()
+                }
+            };
+            if !matches!(self.cur(), Tok::Eq) {
+                self.err("E0005", "expected `=` in `cfg(feature = name)`");
+            } else {
+                self.bump();
+            }
+            self.skip_nls();
+            match self.cur().clone() {
+                Tok::StrLit(v) => {
+                    self.bump();
+                    if key == "feature" {
+                        cfgs.push(v);
+                    } else {
+                        self.err("E0005", "expected `feature` in `cfg`");
+                    }
+                }
+                _ => self.err("E0005", "expected a feature name string in `cfg`"),
+            }
+            self.skip_nls();
+            if !matches!(self.cur(), Tok::RParen) {
+                self.err("E0005", "expected `)` to close `cfg`");
+            } else {
+                self.bump();
+            }
+            self.skip_nls();
+            if !matches!(self.cur(), Tok::RBracket) {
+                self.err("E0005", "expected `]` to close the attribute");
+            } else {
+                self.bump();
+            }
             self.skip_nls();
         }
         let is_pub = matches!(self.cur(), Tok::Pub);
@@ -295,7 +367,7 @@ impl Parser {
             self.err("E0800", "`unsafe` is not yet supported in Valvet 0.1.0");
             self.bump();
         }
-        match self.cur().clone() {
+        let mut item = match self.cur().clone() {
             Tok::Fun => self.parse_fun(is_pub).map(Item::Fun),
             Tok::Struct => self.parse_struct(is_pub).map(Item::Struct),
             Tok::Enum => self.parse_enum(is_pub).map(Item::Enum),
@@ -342,7 +414,18 @@ impl Parser {
                 self.err("E0005", msg);
                 None
             }
+        };
+        if !cfgs.is_empty() {
+            match &mut item {
+                Some(Item::Fun(f)) => f.cfg = cfgs.clone(),
+                Some(Item::Struct(d)) => d.cfg = cfgs.clone(),
+                Some(Item::Enum(d)) => d.cfg = cfgs.clone(),
+                _ => {
+                    self.err("E0005", "`cfg` gates `fun`/`struct`/`enum` items only");
+                }
+            }
         }
+        item
     }
 
     /// `import a::b::load;`, `import a::b::load as ld;`,
@@ -548,6 +631,7 @@ impl Parser {
             span: Span::new(start, end),
             module: String::new(),
             is_pub,
+            cfg: vec![],
         })
     }
 
@@ -639,6 +723,7 @@ impl Parser {
             span: Span::new(start, end),
             module: String::new(),
             is_pub,
+            cfg: vec![],
         })
     }
 
@@ -716,6 +801,7 @@ impl Parser {
             span: Span::new(start, end),
             module: String::new(),
             is_pub,
+            cfg: vec![],
         })
     }
 
