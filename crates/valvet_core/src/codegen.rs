@@ -4811,6 +4811,11 @@ impl<'a> Gen<'a> {
                         // references, Unit); reaching here is a compiler bug.
                         _ => return Err(Ice("print of non-printable type".into())),
                     }
+                } else if name == "type_name" {
+                    // Batch 5: the checked type embeds as a string literal.
+                    let a = args.first().ok_or_else(|| Ice("type_name arity".into()))?;
+                    let t = self.ty_of(a.id);
+                    format!("vstr_from_c(\"{}\")", t.name())
                 } else if name == "to_string" {
                     // J1 total scalar conversions (sema checked the type).
                     let a = args.first().ok_or_else(|| Ice("to_string arity".into()))?;

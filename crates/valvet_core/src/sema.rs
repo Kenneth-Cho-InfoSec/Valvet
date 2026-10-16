@@ -2969,6 +2969,18 @@ impl Cx {
                 args: call_args,
             } => {
                 let rt = self.check_expr(receiver);
+                // W1005: every method borrows its receiver (pointer model),
+                // so calling one on a `.clone()` temporary is needless;
+                // borrow the original instead.
+                if !ty_has_error(&rt)
+                    && matches!(&receiver.kind, ExprKind::Method { method, .. } if method == "clone")
+                {
+                    self.warn(
+                        "W1005",
+                        receiver.span,
+                        "needless `.clone()`; methods borrow",
+                    );
+                }
                 match rt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
                         let elem = args[0].clone();
@@ -6315,6 +6327,21 @@ impl Cx {
             self.record_vec_inst(&Ty::Str);
             self.record_ty(&vt);
             return vt;
+        }
+        if name == "type_name" {
+            // Batch 5: the checked type as a string literal (zero runtime;
+            // codegen embeds `Ty::name()` directly).
+            if args.len() != 1 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`type_name` takes exactly 1 argument, found {}", args.len()),
+                    None,
+                );
+                return Ty::Str;
+            }
+            self.check_expr(&args[0]);
+            return Ty::Str;
         }
         if name == "to_string" {
             if args.len() != 1 {

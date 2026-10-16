@@ -1772,6 +1772,8 @@ impl<'a> Cx<'a> {
             ExprKind::Call { name, args } => {
                 let borrow_only = name == "print"
                     || name == "println"
+                    // Batch 5: `type_name` reads the checked type only.
+                    || name == "type_name"
                     // C1 functionals borrow their data (kernels clone what
                     // they keep; fold clones owned inits at the boundary).
                     // F1 `par_map` borrows the vec (fresh output vector).

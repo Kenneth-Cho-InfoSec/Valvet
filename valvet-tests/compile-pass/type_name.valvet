@@ -1,0 +1,12 @@
+fun go(): Int32 {
+val v: Vec<Int64> = vec![1 as Int64, 2 as Int64];
+println(type_name(v));
+println(type_name(Some(7 as Int64)));
+println(type_name(1.5));
+println(type_name("s"));
+println(v.len());
+return 0;
+}
+fun main() {
+println(go())
+}

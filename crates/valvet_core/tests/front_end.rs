@@ -1469,3 +1469,12 @@ fn destructure_desugar() {
         vec!["E0401"]
     );
 }
+
+#[test]
+fn introspection_builtin() {
+    check_ok("fun main() {\nval v: Vec<Int64> = vec![1 as Int64]\nprintln(type_name(v))\nprintln(v.len())\n}\n");
+    assert_eq!(
+        check_codes("fun main() {\nprintln(type_name())\n}\n"),
+        vec!["E0201"]
+    );
+}
