@@ -1,0 +1,35 @@
+import std::checked::add_i32;
+import std::checked::mul_i32;
+import std::checked::sub_i32;
+import std::checked::add_i64;
+import std::checked::sub_i64;
+import std::checked::mul_i64;
+fun s3(o: Option<Int32>): String {
+return match (o) { Some(n) -> "some", None -> "none", };
+}
+fun s8(o: Option<Int64>): String {
+return match (o) { Some(n) -> "some", None -> "none", };
+}
+fun go(): Int32 {
+val lo32 = (0 as Int32) - 2147483647 as Int32 - (1 as Int32);
+val hi64 = 9223372036854775807 as Int64;
+val lo64 = (0 as Int64) - 9223372036854775807 as Int64 - (1 as Int64);
+println(s3(add_i32(40 as Int32, 2 as Int32)));
+println(s3(add_i32(2147483647 as Int32, 1 as Int32)));
+println(s3(mul_i32(100000 as Int32, 100000 as Int32)));
+println(s3(mul_i32(46340 as Int32, 46340 as Int32)));
+println(s3(sub_i32(lo32, 1 as Int32)));
+println(s8(add_i64(hi64, 1 as Int64)));
+println(s8(sub_i64(lo64, 1 as Int64)));
+println(s8(sub_i64(0 as Int64, lo64)));
+println(s8(mul_i64(3037000499 as Int64, 3037000499 as Int64)));
+println(s8(mul_i64(3037000500 as Int64, 3037000500 as Int64)));
+println(s8(mul_i64(lo64, -1 as Int64)));
+println(s8(mul_i64(lo64, 0 as Int64)));
+println(s8(mul_i64(-2 as Int64, -3 as Int64)));
+println(s8(mul_i64(lo64, 2 as Int64)));
+return 0;
+}
+fun main() {
+println(go())
+}

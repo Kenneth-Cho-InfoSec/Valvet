@@ -1478,3 +1478,13 @@ fn introspection_builtin() {
         vec!["E0201"]
     );
 }
+
+#[test]
+fn numeric_helpers() {
+    // checked/missing live behind imports (fixture-covered); units need none.
+    check_ok("fun main() {\nval p: Float64 @USD = 1.0\nprintln(p)\n}\n");
+    assert_eq!(
+        check_codes("fun main() {\nval a: Float64 @USD = 1.0\nval b: Float64 @EUR = 1.0\nprintln(a + b)\n}\n"),
+        vec!["E0201"]
+    );
+}

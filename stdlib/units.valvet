@@ -28,7 +28,8 @@ module std.units;
 // Known derived/scaled units include: km, cm, mm, mile, ft, in,
 // kg, tonne, lb, oz, min, h, hr, day, ms, us, Hz, N, J, W, Pa,
 // V, C, eV, kcal, cal, percent, degC, degF, m/s, km/h, m/s^2,
-// m^2, m^3, L, mL, USD, EUR, JPY, GBP, bit, byte, kB, MB, GB.
+// m^2, m^3, L, mL, Wh, mph, USD, EUR, JPY, GBP, CHF, CAD,
+// bit, byte, kB, MB, GB.
 //
 // Compound units compose with `*`, `/`, and `^n`:
 // `@kg*m/s^2`, `@m/s`, `@m^2`, `@USD/hr`.

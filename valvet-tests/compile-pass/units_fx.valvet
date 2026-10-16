@@ -1,0 +1,14 @@
+fun go(): Int32 {
+val price: Float64 @USD = 100.0;
+println(price + 2.5);
+val rate: Float64 @EUR = 1.1;
+println(rate * 2.0);
+val e: Float64 @kWh = 1.0;
+println(e);
+val v: Float64 @mph = 60.0;
+println(v);
+return 0;
+}
+fun main() {
+println(go())
+}

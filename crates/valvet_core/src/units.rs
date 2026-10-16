@@ -170,6 +170,17 @@ fn resolve_name(name: &str) -> Option<(f64, BTreeMap<String, i32>)> {
         base("lb", 0.45359237, &[("kg", 1)]),
         base("L", 1e-3, &[("m", 3)]),
         base("rad", 1.0, &[]),
+        // Energy and speed aliases users actually write.
+        base("Wh", 3600.0, &[("kg", 1), ("m", 2), ("s", -2)]),
+        base("mph", 0.44704, &[("m", 1), ("s", -1)]),
+        // Currencies: one base dimension each, so mixing USD with EUR
+        // is E0201 (no implicit FX conversion exists to apply).
+        base("USD", 1.0, &[("USD", 1)]),
+        base("EUR", 1.0, &[("EUR", 1)]),
+        base("GBP", 1.0, &[("GBP", 1)]),
+        base("JPY", 1.0, &[("JPY", 1)]),
+        base("CHF", 1.0, &[("CHF", 1)]),
+        base("CAD", 1.0, &[("CAD", 1)]),
     ];
     for (n, v) in &table {
         if n == name {

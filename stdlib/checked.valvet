@@ -1,0 +1,85 @@
+// std::checked: overflow-checked integer arithmetic returning Option.
+// Wrapping is the default (`+`); these report `None` instead. Int32 paths
+// widen to Int64 (exact: any Int32 product fits); Int64 paths use
+// division-form pre-checks with exact MIN edge handling. Oracle: Python
+// exact ints (arbitrary precision) as the reference.
+module std.checked;
+
+fun i32_max(): Int64 {
+    return 2147483647 as Int64;
+}
+
+fun i32_min(): Int64 {
+    return (0 as Int64) - 2147483647 as Int64 - (1 as Int64);
+}
+
+pub fun add_i32(a: Int32, b: Int32): Option<Int32> {
+    val p = (a as Int64) + (b as Int64);
+    if (p > i32_max() || p < i32_min()) {
+        return None;
+    }
+    return Some(p as Int32);
+}
+
+pub fun sub_i32(a: Int32, b: Int32): Option<Int32> {
+    val p = (a as Int64) - (b as Int64);
+    if (p > i32_max() || p < i32_min()) {
+        return None;
+    }
+    return Some(p as Int32);
+}
+
+pub fun mul_i32(a: Int32, b: Int32): Option<Int32> {
+    val p = (a as Int64) * (b as Int64);
+    if (p > i32_max() || p < i32_min()) {
+        return None;
+    }
+    return Some(p as Int32);
+}
+
+fun i64_max(): Int64 {
+    return 9223372036854775807 as Int64;
+}
+
+fun i64_min(): Int64 {
+    return (0 as Int64) - 9223372036854775807 as Int64 - (1 as Int64);
+}
+
+pub fun add_i64(a: Int64, b: Int64): Option<Int64> {
+    if (b > (0 as Int64) && a > i64_max() - b) {
+        return None;
+    }
+    if (b < (0 as Int64) && a < i64_min() - b) {
+        return None;
+    }
+    return Some(a + b);
+}
+
+pub fun sub_i64(a: Int64, b: Int64): Option<Int64> {
+    if (b > (0 as Int64) && a < i64_min() + b) {
+        return None;
+    }
+    if (b < (0 as Int64) && a > i64_max() + b) {
+        return None;
+    }
+    return Some(a - b);
+}
+
+pub fun mul_i64(a: Int64, b: Int64): Option<Int64> {
+    if (a == (0 as Int64) || b == (0 as Int64)) {
+        return Some(0 as Int64);
+    }
+    if (a > (0 as Int64) && b > (0 as Int64) && a > i64_max() / b) {
+        return None;
+    }
+    if (a > (0 as Int64) && b < (0 as Int64) && b < i64_min() / a) {
+        return None;
+    }
+    if (a < (0 as Int64) && b > (0 as Int64) && a < i64_min() / b) {
+        return None;
+    }
+    if (a < (0 as Int64) && b < (0 as Int64) && a < (0 as Int64) - i64_max() / ((0 as Int64) - b)) {
+        return None;
+    }
+    return Some(a * b);
+}

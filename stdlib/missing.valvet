@@ -1,0 +1,52 @@
+// std::missing: Missing-propagating arithmetic over `Missing<Float64>`,
+// in the Julia `missing` style. Any missing input is a missing output;
+// division by zero is missing (never traps). Opt-in per call site:
+// plain `Float64` semantics never change silently.
+module std.missing;
+
+pub fun add_m(a: Missing<Float64>, b: Missing<Float64>): Missing<Float64> {
+    return match (a) {
+        Missing::Present(x) -> match (b) {
+            Missing::Present(y) -> Missing::Present(x + y),
+            Missing -> Missing,
+        },
+        Missing -> Missing,
+    };
+}
+
+pub fun sub_m(a: Missing<Float64>, b: Missing<Float64>): Missing<Float64> {
+    return match (a) {
+        Missing::Present(x) -> match (b) {
+            Missing::Present(y) -> Missing::Present(x - y),
+            Missing -> Missing,
+        },
+        Missing -> Missing,
+    };
+}
+
+pub fun mul_m(a: Missing<Float64>, b: Missing<Float64>): Missing<Float64> {
+    return match (a) {
+        Missing::Present(x) -> match (b) {
+            Missing::Present(y) -> Missing::Present(x * y),
+            Missing -> Missing,
+        },
+        Missing -> Missing,
+    };
+}
+
+pub fun div_m(a: Missing<Float64>, b: Missing<Float64>): Missing<Float64> {
+    return match (a) {
+        Missing::Present(x) -> match (b) {
+            Missing::Present(y) -> if (y == 0.0) { Missing::Missing } else { Missing::Present(x / y) },
+            Missing -> Missing,
+        },
+        Missing -> Missing,
+    };
+}
+
+pub fun neg_m(a: Missing<Float64>): Missing<Float64> {
+    return match (a) {
+        Missing::Present(x) -> Missing::Present(0.0 - x),
+        Missing -> Missing,
+    };
+}
