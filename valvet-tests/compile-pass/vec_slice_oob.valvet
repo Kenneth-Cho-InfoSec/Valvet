@@ -1,0 +1,8 @@
+fun go(): Int32 {
+val v: Vec<Int64> = vec![1 as Int64, 2 as Int64];
+println(v[0 as Int64:9 as Int64]);
+return 0;
+}
+fun main() {
+println(go())
+}

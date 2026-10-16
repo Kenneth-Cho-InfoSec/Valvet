@@ -2772,6 +2772,37 @@ impl<'a> Gen<'a> {
                 ));
             }
         }
+        // Batch 2: owned half-open slice plus in-place reversal, over any
+        // element type (owned elements clone out on slice; reversal swaps
+        // whole slots, so each buffer keeps exactly one owner).
+        let slice_clone = if self.type_needs_drop(&t) {
+            self.clone_call(&t, "v->data[i]")
+        } else {
+            "v->data[i]".to_string()
+        };
+        self.out.push_str(&format!(
+            concat!(
+                "static {ct} vvec_{iname}_slice({ct} *v, int64_t a, int64_t b) {{{ct} o = vvec_{iname}_new();",
+                "if (a < 0 || b < a || b > v->len) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}",
+                "for (int64_t i = a; i < b; ++i) {{ vvec_{iname}_push(&o, {gc}); }}",
+                "return o;}}\n"
+            ),
+            ct = ct,
+            iname = iname,
+            gc = slice_clone
+        ));
+        self.out.push_str(&format!(
+            concat!(
+                "static void vvec_{iname}_reverse({ct} *v) {{",
+                "for (int64_t i = 0, j = v->len - 1; i < j; ++i, --j) {{",
+                "{et} tmp = v->data[i]; v->data[i] = v->data[j]; v->data[j] = tmp;",
+                "}}}}"
+            ),
+            iname = iname,
+            ct = ct,
+            et = et
+        ));
+        self.out.push('\n');
         Ok(())
     }
 
@@ -3048,6 +3079,19 @@ impl<'a> Gen<'a> {
                 Ok(format!("vvec_{}_get({}, (int64_t)({}))", iname, rptr, v))
             }
             "clone" => Ok(format!("v_clone_{}({})", iname, r)),
+            "slice" => {
+                let lo = args.first().ok_or_else(|| Ice("slice arity".into()))?;
+                let hi = args.get(1).ok_or_else(|| Ice("slice arity".into()))?;
+                let sv = self.cur_move;
+                self.cur_move = false;
+                let l = self.emit_expr(lo)?;
+                let h = self.emit_expr(hi)?;
+                self.cur_move = sv;
+                Ok(format!(
+                    "vvec_{}_slice({}, (int64_t)({}), (int64_t)({}))",
+                    iname, rptr, l, h
+                ))
+            }
             "cast" => {
                 // Destination from the checked result type.
                 let (dst, diname) = match res_ty {
@@ -3230,6 +3274,62 @@ impl<'a> Gen<'a> {
                 };
                 self.out.push_str(&format!(
                     "static {vt} vfilter_{tin}({vt} *v, int (*f)({ct})) {{\n{vt} o = vvec_{tin}_new();\nfor (int64_t i = 0; i < v->len; ++i) {{\n{ct} a = {arg};\nif (f(a)) {{ vvec_{tin}_push(&o, {keep}); }}\n}}\nreturn o;\n}}\n"
+                ));
+            }
+            "map_inplace" => {
+                // Endofunction kernel: applies `f` through the receiver
+                // pointer (owned slots clone for the call; the old buffer
+                // frees before the new value installs).
+                let t = match tys {
+                    [t] => t.clone(),
+                    _ => return Err(bad()),
+                };
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let ct = self.cty(&t);
+                let arg = if self.type_needs_drop(&t) {
+                    self.clone_call(&t, "v->data[i]")
+                } else {
+                    "v->data[i]".to_string()
+                };
+                let drop_old = if self.type_needs_drop(&t) {
+                    match &t {
+                        Ty::Str => "vstr_free(&v->data[i]);".to_string(),
+                        _ => format!("{};", self.drop_call(&t, "v->data[i]")),
+                    }
+                } else {
+                    String::new()
+                };
+                self.out.push_str(&format!(
+                    "static void vmap_inplace_{tin}({vt} *v, {ct} (*f)({ct})) {{\nfor (int64_t i = 0; i < v->len; ++i) {{{ct} a = {arg};{ct} b = f(a);{drop_old}v->data[i] = b;}}\n}}\n"
+                ));
+            }
+            "filter_inplace" => {
+                // Compaction kernel: kept slots shift down (pointer exchange
+                // keeps one owner); dropped owned slots free; moved-from
+                // sources zero so later drops skip them.
+                let t = match tys {
+                    [t] => t.clone(),
+                    _ => return Err(bad()),
+                };
+                let vt = ctype_inst("Vec", std::slice::from_ref(&t));
+                let tin = vt.strip_prefix('V').unwrap_or(&vt).to_string();
+                let ct = self.cty(&t);
+                let arg = if self.type_needs_drop(&t) {
+                    self.clone_call(&t, "v->data[i]")
+                } else {
+                    "v->data[i]".to_string()
+                };
+                let drop_old = if self.type_needs_drop(&t) {
+                    match &t {
+                        Ty::Str => "vstr_free(&v->data[i]);".to_string(),
+                        _ => format!("{};", self.drop_call(&t, "v->data[i]")),
+                    }
+                } else {
+                    String::new()
+                };
+                self.out.push_str(&format!(
+                    "static void vfilter_inplace_{tin}({vt} *v, int (*f)({ct})) {{\nint64_t w = 0;\nfor (int64_t i = 0; i < v->len; ++i) {{{ct} a = {arg};if (f(a)) {{ v->data[w] = v->data[i]; if (w != i) {{ memset(&v->data[i], 0, sizeof({ct})); }} ++w; }} else {{ {drop_old}memset(&v->data[i], 0, sizeof({ct})); }}}}\nv->len = w;}}\n"
                 ));
             }
             "fold" => {
@@ -5666,7 +5766,8 @@ impl<'a> Gen<'a> {
                         self.consume(&v);
                         format!("vvec_{}_push({}, {})", iname, rptr, v)
                     }
-                    "pop" | "get" | "clone" | "cast" | "add_scalar" | "add" | "mul" | "dot" => {
+                    "pop" | "get" | "clone" | "cast" | "add_scalar" | "add" | "mul" | "dot"
+                    | "slice" => {
                         let rt = self.ty_of(e.id);
                         self.emit_vec_method(method, &elem_ty, &iname, &r, args, &rt)?
                     }
@@ -5692,6 +5793,21 @@ impl<'a> Gen<'a> {
                     // Receiver borrows through the pointer model like push.
                     "sort" => format!("vvec_{}_sort({})", iname, rptr),
                     "order" => format!("vvec_{}_order({})", iname, rptr),
+                    "reverse_inplace" => format!("vvec_{}_reverse({})", iname, rptr),
+                    "filter_inplace" => {
+                        let pred = args
+                            .first()
+                            .ok_or_else(|| Ice("filter_inplace arity".into()))?;
+                        let fsym = self.functional_sym(pred, 1, std::slice::from_ref(&elem_ty))?;
+                        format!("vfilter_inplace_{}({}, {})", iname, rptr, fsym)
+                    }
+                    "map_inplace" => {
+                        let f = args
+                            .first()
+                            .ok_or_else(|| Ice("map_inplace arity".into()))?;
+                        let fsym = self.functional_sym(f, 1, std::slice::from_ref(&elem_ty))?;
+                        format!("(vmap_inplace_{}({}, {}), 0)", iname, rptr, fsym)
+                    }
                     _ => return Err(Ice("unknown Vec method".into())),
                 }
             }

@@ -1,0 +1,25 @@
+fun dbl(x: Int64): Int64 {
+return x * (2 as Int64);
+}
+fun big(x: Int64): Bool {
+return x > (2 as Int64);
+}
+fun go(): Int32 {
+val v: Vec<Int64> = vec![1 as Int64, 2 as Int64, 3 as Int64, 4 as Int64, 5 as Int64];
+println(v[1 as Int64:4 as Int64]);
+println(v[0 as Int64:0 as Int64]);
+v.reverse_inplace();
+println(v);
+v.map_inplace(dbl);
+println(v);
+v.filter_inplace(big);
+println(v);
+val w: Vec<String> = vec!["a", "bb", "ccc"];
+println(w[1 as Int64:3 as Int64]);
+w.reverse_inplace();
+println(w);
+return 0;
+}
+fun main() {
+println(go())
+}

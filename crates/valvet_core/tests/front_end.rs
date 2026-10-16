@@ -1448,3 +1448,15 @@ fn overload_dispatch_and_errors() {
         vec!["E0201"]
     );
 }
+
+#[test]
+fn slice_and_inplace_verbs() {
+    check_ok("fun main() {\nval v: Vec<Int64> = vec![1 as Int64, 2 as Int64]\nprintln(v[0 as Int64:2 as Int64])\n}\n");
+    check_ok("fun f(x: Int64): Int64 {\nreturn x\n}\nfun main() {\nval v: Vec<Int64> = vec![1 as Int64]\nv.map_inplace(f)\n}\n");
+    assert_eq!(
+        check_codes(
+            "fun main() {\nval v: Vec<Int64> = vec![1 as Int64]\nprintln(v[\"a\":2 as Int64])\n}\n"
+        ),
+        vec!["E0201"]
+    );
+}

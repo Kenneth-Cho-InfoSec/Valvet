@@ -4919,11 +4919,126 @@ impl Cx {
                     }
                 }
             }
+            "slice" => {
+                // `v[lo:hi]` desugars here: half-open owned copy over any
+                // element type; out-of-range bounds trap like indexing.
+                if args.len() != 2 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`slice` takes exactly 2 arguments, found {}", args.len()),
+                        None,
+                    );
+                    return vec_of(elem.clone());
+                }
+                for a in args {
+                    let at = self.check_expr(a);
+                    if at != Ty::Int64 && at != Ty::Int32 && !ty_has_error(&at) {
+                        self.err(
+                            "E0201",
+                            a.span,
+                            format!("`slice` expects Int bounds, found {}", at.name()),
+                            None,
+                        );
+                    }
+                }
+                let t = vec_of(elem.clone());
+                self.record_vec_inst(elem);
+                t
+            }
+            "reverse_inplace" => {
+                // In-place reversal over any element type (pointer model,
+                // like `sort`); returns Unit so the binding stays usable.
+                if !args.is_empty() {
+                    self.err("E0201", span, "`reverse_inplace` takes no arguments", None);
+                }
+                Ty::Unit
+            }
+            "filter_inplace" => {
+                // In-place retention over a named Bool predicate (same
+                // named-fn rule as `filter`); returns Unit.
+                if args.len() != 1 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "`filter_inplace` takes exactly 1 argument, found {}",
+                            args.len()
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let Some((ps, r)) =
+                    self.fun_value_sig(&args[0], "filter_inplace", 1, std::slice::from_ref(elem))
+                else {
+                    return Ty::Error;
+                };
+                if ps.iter().any(ty_has_error) || ty_has_error(&r) {
+                    return Ty::Error;
+                }
+                if ps.len() != 1 || ps[0] != *elem || r != Ty::Bool {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!(
+                            "`filter_inplace` needs a 1-argument Bool function over {}, found ({}) -> {}",
+                            elem.name(),
+                            ps.iter().map(|t| t.name()).collect::<Vec<_>>().join(", "),
+                            r.name()
+                        ),
+                        None,
+                    );
+                    return Ty::Error;
+                }
+                self.record_fun_kernel("filter_inplace", vec![elem.clone()]);
+                Ty::Unit
+            }
+            "map_inplace" => {
+                // Endofunction method: `f: T -> T` applied through the
+                // receiver pointer (like `sort`); returns Unit.
+                if args.len() != 1 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "`map_inplace` takes exactly 1 argument, found {}",
+                            args.len()
+                        ),
+                        None,
+                    );
+                    return Ty::Unit;
+                }
+                let Some((ps, r)) =
+                    self.fun_value_sig(&args[0], "map_inplace", 1, std::slice::from_ref(elem))
+                else {
+                    return Ty::Error;
+                };
+                if ps.iter().any(ty_has_error) || ty_has_error(&r) {
+                    return Ty::Error;
+                }
+                if ps.len() != 1 || ps[0] != *elem || r != *elem {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!(
+                            "`map_inplace` function must take and return {} (found ({}) -> {})",
+                            elem.name(),
+                            ps.iter().map(|t| t.name()).collect::<Vec<_>>().join(", "),
+                            r.name()
+                        ),
+                        None,
+                    );
+                    return Ty::Error;
+                }
+                self.record_fun_kernel("map_inplace", vec![elem.clone()]);
+                Ty::Unit
+            }
             _ => {
                 self.err(
                     "E0401",
                     method_span,
-                    format!("unknown method `{}` (available on Vec: len, push, pop, get, clone, cast, add_scalar, add, mul, dot, shuffle, sample, sort, order)", method),
+                    format!("unknown method `{}` (available on Vec: len, push, pop, get, clone, cast, add_scalar, add, mul, dot, shuffle, sample, sort, order, slice, reverse_inplace, filter_inplace, map_inplace)", method),
                     Some("map/filter/mask take closures or slices (deferred)".into()),
                 );
                 Ty::Error
@@ -5353,7 +5468,9 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[1], "map", 1, std::slice::from_ref(&t)) else {
+                let Some((ps, r)) =
+                    self.fun_value_sig(&args[1], "map", 1, std::slice::from_ref(&t))
+                else {
                     return Ty::Error;
                 };
                 if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -5434,7 +5551,9 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[1], "filter", 1, std::slice::from_ref(&t)) else {
+                let Some((ps, r)) =
+                    self.fun_value_sig(&args[1], "filter", 1, std::slice::from_ref(&t))
+                else {
                     return Ty::Error;
                 };
                 if ps.iter().any(ty_has_error) || ty_has_error(&r) {
@@ -5584,7 +5703,8 @@ impl Cx {
                     );
                     return Ty::Error;
                 }
-                let Some((ps, r)) = self.fun_value_sig(&args[2], "split_apply", 1, std::slice::from_ref(&vt))
+                let Some((ps, r)) =
+                    self.fun_value_sig(&args[2], "split_apply", 1, std::slice::from_ref(&vt))
                 else {
                     return Ty::Error;
                 };
@@ -6870,11 +6990,7 @@ impl Cx {
             args,
             pt,
             rt,
-            pdims: self
-                .param_dims
-                .get(&fid)
-                .cloned()
-                .unwrap_or_default(),
+            pdims: self.param_dims.get(&fid).cloned().unwrap_or_default(),
             ret_dim: self
                 .dims
                 .get(&fid)
@@ -7027,11 +7143,7 @@ impl Cx {
             args,
             pt,
             rt,
-            pdims: self
-                .param_dims
-                .get(&winner)
-                .cloned()
-                .unwrap_or_default(),
+            pdims: self.param_dims.get(&winner).cloned().unwrap_or_default(),
             ret_dim: self
                 .dims
                 .get(&winner)

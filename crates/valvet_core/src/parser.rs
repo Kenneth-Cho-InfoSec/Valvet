@@ -2759,6 +2759,8 @@ impl Parser {
                 Tok::LBracket => {
                     // `base[idx]` element access (J1); `base[^k]` indexes
                     // from the end (A6): `base[base.len() - (k as Int64)]`.
+                    // `base[lo:hi]` slices (Batch 2): desugared to the
+                    // `slice` method so no new AST/ownership paths apply.
                     self.bump();
                     self.skip_nls();
                     let from_end = matches!(self.cur(), Tok::Caret);
@@ -2768,6 +2770,33 @@ impl Parser {
                     }
                     let idx = self.parse_expr()?;
                     self.skip_nls();
+                    if matches!(self.cur(), Tok::Colon) {
+                        if from_end {
+                            self.err("E0005", "cannot mix `^` with slice bounds");
+                            return None;
+                        }
+                        self.bump();
+                        self.skip_nls();
+                        let hi = self.parse_expr()?;
+                        self.skip_nls();
+                        if !matches!(self.cur(), Tok::RBracket) {
+                            self.err("E0005", "expected `]` after slice expression");
+                            return None;
+                        }
+                        self.bump();
+                        let end = self.prev_span().end;
+                        e = Expr {
+                            id: self.fresh(),
+                            span: Span::new(e.span.start, end),
+                            kind: ExprKind::Method {
+                                receiver: Box::new(e),
+                                method: "slice".to_string(),
+                                method_span: Span::new(idx.span.start, end),
+                                args: vec![idx, hi],
+                            },
+                        };
+                        continue;
+                    }
                     if !matches!(self.cur(), Tok::RBracket) {
                         self.err("E0005", "expected `]` after index expression");
                         return None;
