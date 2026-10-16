@@ -149,6 +149,119 @@ fn read_manifest(root: &Path) -> Result<Option<crate::manifest::Manifest>, Strin
         .map_err(|m| format!("bad manifest: {}", m))
 }
 
+fn offline() -> bool {
+    std::env::var("VALVET_OFFLINE").is_ok_and(|v| v != "0" && !v.is_empty())
+}
+
+fn git_run(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    if let Some(d) = dir {
+        cmd.arg("-C").arg(d);
+    }
+    for a in args {
+        cmd.arg(a);
+    }
+    let out = cmd
+        .output()
+        .map_err(|_| "git not found (needed for git dependencies)".to_string())?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            format!("git {} failed", args.join(" "))
+        } else {
+            err
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Latest tag hash under `url` matching `req` (`v`-prefix tolerated).
+fn git_tag_hash(url: &str, req: &str) -> Result<(String, String), String> {
+    let out = git_run(None, &["ls-remote", "--tags", url])?;
+    let mut best: Option<([u64; 3], String, String)> = None;
+    for line in out.lines() {
+        let mut it = line.split_whitespace();
+        let (hash, name) = match (it.next(), it.next()) {
+            (Some(h), Some(n)) => (h, n),
+            _ => continue,
+        };
+        let tag = match name.strip_prefix("refs/tags/") {
+            Some(t) => t,
+            None => continue,
+        };
+        if tag.ends_with("^{}") {
+            continue;
+        }
+        let v = tag.strip_prefix('v').unwrap_or(tag);
+        if !crate::manifest::matches_req(v, req) {
+            continue;
+        }
+        let parts = match crate::manifest::ver_parts(v) {
+            Some(p) => p,
+            None => continue,
+        };
+        if best.as_ref().is_none_or(|(p, _, _)| parts > *p) {
+            best = Some((parts, v.to_string(), hash.to_string()));
+        }
+    }
+    best.map(|(_, v, h)| (v, h))
+        .ok_or_else(|| format!("no tag under {} matches {}", url, req))
+}
+
+/// Materialize one dependency directory: path join or git cache checkout.
+fn resolve_dep_dir(root: &Path, dep: &crate::manifest::Dep) -> Result<PathBuf, String> {
+    if let Some(path) = &dep.path {
+        return Ok(root.join(path));
+    }
+    let url = dep.git.as_deref().unwrap_or_default();
+    let dir = crate::manifest::git_cache_dir(url).ok_or_else(|| "HOME is not set".to_string())?;
+    // Offline with a warm cache reuses the checkout's HEAD (the
+    // manifest read plus bound check below still apply).
+    let commit = if offline() && dir.join(".git").exists() {
+        git_run(Some(&dir), &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string()
+    } else if let Some(rev) = &dep.rev {
+        rev.clone()
+    } else if dep.req.is_empty() {
+        return Err(format!(
+            "dependency `{}` needs `rev` or `version` with `git`",
+            dep.name
+        ));
+    } else {
+        if offline() {
+            return Err(format!(
+                "dependency `{}` needs network (offline and no rev pinned)",
+                dep.name
+            ));
+        }
+        git_tag_hash(url, &dep.req).map(|(_, h)| h)?
+    };
+    if !dir.join(".git").exists() {
+        if offline() {
+            return Err(format!("dependency `{}` not cached (offline)", dep.name));
+        }
+        if let Some(parent) = dir.parent() {
+            std::fs::create_dir_all(parent).map_err(|_| "cannot create git cache".to_string())?;
+        }
+        git_run(
+            None,
+            &["clone", "--depth", "1", url, &dir.display().to_string()],
+        )?;
+    } else if !offline() {
+        git_run(Some(&dir), &["fetch", "origin"])?;
+    }
+    // The commit must exist locally (pinned revs fail loudly when absent;
+    // shallow clones may lack newer tags, so retry with a direct fetch).
+    if git_run(Some(&dir), &["cat-file", "-e", &commit]).is_err() {
+        git_run(Some(&dir), &["fetch", "origin", &commit])?;
+        git_run(Some(&dir), &["cat-file", "-e", &commit])?;
+    }
+    git_run(Some(&dir), &["checkout", "--detach", &commit])?;
+    Ok(dir)
+}
+
 pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
     let root = entry
         .parent()
@@ -176,7 +289,14 @@ pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
         }
         Ok(Some(m)) => {
             for dep in &m.deps {
-                let dir = root.join(&dep.path);
+                let dir = match resolve_dep_dir(&root, dep) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        l.errs
+                            .push(Diagnostic::error("E0701", crate::source::Span::empty(0), e));
+                        continue;
+                    }
+                };
                 let dman = match std::fs::read_to_string(dir.join("valvet.toml")) {
                     Ok(t) => t,
                     Err(_) => {
@@ -210,7 +330,10 @@ pub fn load(entry: &Path) -> (Crate, Vec<Diagnostic>) {
                     ));
                     continue;
                 }
-                if !crate::manifest::matches_req(&dm.version, &dep.req) {
+                // Pinned revs without a bound are trusted as-is.
+                if !(dep.req.is_empty() && dep.rev.is_some())
+                    && !crate::manifest::matches_req(&dm.version, &dep.req)
+                {
                     l.errs.push(Diagnostic::error(
                         "E0701",
                         crate::source::Span::empty(0),

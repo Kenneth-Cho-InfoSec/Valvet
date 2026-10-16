@@ -19,6 +19,18 @@ fn run(args: Vec<String>) -> i32 {
         println!("valvet {}", VERSION);
         return 0;
     }
+    // `--offline` is a driver flag only before the script `--`
+    // separator (after it, it belongs to the script).
+    let dash = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    if args[..dash].contains(&"--offline".to_string()) {
+        std::env::set_var("VALVET_OFFLINE", "1");
+    }
+    let args: Vec<String> = args
+        .into_iter()
+        .enumerate()
+        .filter(|(i, a)| *i >= dash || a != "--offline")
+        .map(|(_, a)| a)
+        .collect();
     match args[0].as_str() {
         "check" => cmd_check(get_path(&args)),
         "build" => cmd_build(
@@ -51,6 +63,10 @@ fn run(args: Vec<String>) -> i32 {
         "tree" => cmd_tree(get_path(&args)),
         "metadata" => cmd_metadata(get_path(&args)),
         "verify" => cmd_verify(get_path(&args)),
+        "package" => cmd_package(get_path(&args)),
+        "install" => cmd_install(get_path(&args)),
+        "vendor" => cmd_vendor(get_path(&args)),
+        "update" => cmd_update(get_path(&args)),
         "test" => {
             if args.iter().any(|a| a == "--doc") {
                 let dir = args.get(1).filter(|s| *s != "--doc").map(|s| s.as_str());
@@ -99,6 +115,11 @@ fn print_help() {
     println!("    valvet tree <file>           show the import dependency tree");
     println!("    valvet metadata <file>      print crate metadata as JSON");
     println!("    valvet verify <file>         recompute lock and cache digests");
+    println!("    valvet package <file>        zip entry tree plus manifest and lock");
+    println!("    valvet install <file>        build and copy the binary to ~/.local/bin");
+    println!("    valvet vendor <file>         copy manifest deps under vendor/");
+    println!("    valvet update <file>         refresh valvet.lock against bounds");
+    println!("    --offline                      no network; use caches or fail");
     println!("    valvet repl                  interactive session (definitions persist)");
     println!("    valvet -e 'expr'              evaluate a scriptlet and print its value");
     println!("    valvet --version             display version");
@@ -263,6 +284,302 @@ fn build_exe(path: &str, quiet: bool, frozen: bool) -> Result<PathBuf, i32> {
     // Memoize only successful builds (a failed link must rebuild next time).
     let _ = std::fs::write(&sidecar, format!("{}\n{}\n", digest, c_hex));
     Ok(exe)
+}
+
+/// CRC-32 (IEEE, table built at runtime): stored-zip integrity.
+fn crc32(data: &[u8]) -> u32 {
+    let mut table = [0u32; 256];
+    for (i, slot) in table.iter_mut().enumerate() {
+        let mut c = i as u32;
+        for _ in 0..8 {
+            c = if c & 1 == 1 {
+                0xEDB88320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+        *slot = c;
+    }
+    let mut crc = 0xFFFFFFFFu32;
+    for b in data {
+        crc = table[((crc ^ (*b as u32)) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    crc ^ 0xFFFFFFFF
+}
+
+fn le16(v: u16, out: &mut Vec<u8>) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn le32(v: u32, out: &mut Vec<u8>) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+/// Stored (uncompressed) zip writer: deterministic (fixed 1980 timestamps),
+/// no external tools. Returns the archive bytes.
+fn zip_store(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut out = vec![];
+    let mut central = vec![];
+    for (name, data) in files {
+        let nb = name.as_bytes();
+        let crc = crc32(data);
+        let len = data.len() as u32;
+        let off = out.len() as u32;
+        out.extend_from_slice(&[0x50, 0x4B, 0x03, 0x04]);
+        le16(20, &mut out);
+        le16(0, &mut out);
+        le16(0, &mut out);
+        le16(0, &mut out);
+        le16(0, &mut out);
+        le32(crc, &mut out);
+        le32(len, &mut out);
+        le32(len, &mut out);
+        le16(nb.len() as u16, &mut out);
+        le16(0, &mut out);
+        out.extend_from_slice(nb);
+        out.extend_from_slice(data);
+        central.extend_from_slice(&[0x50, 0x4B, 0x01, 0x02]);
+        le16(20, &mut central);
+        le16(20, &mut central);
+        le16(0, &mut central);
+        le16(0, &mut central);
+        le16(0, &mut central);
+        le16(0, &mut central);
+        le32(crc, &mut central);
+        le32(len, &mut central);
+        le32(len, &mut central);
+        le16(nb.len() as u16, &mut central);
+        le16(0, &mut central);
+        le16(0, &mut central);
+        le16(0, &mut central);
+        le16(0, &mut central);
+        le32(0, &mut central);
+        le32(off, &mut central);
+        central.extend_from_slice(nb);
+    }
+    let coff = out.len() as u32;
+    let clen = central.len() as u32;
+    out.extend_from_slice(&central);
+    out.extend_from_slice(&[0x50, 0x4B, 0x05, 0x06]);
+    le16(0, &mut out);
+    le16(0, &mut out);
+    le16(files.len() as u16, &mut out);
+    le16(files.len() as u16, &mut out);
+    le32(clen, &mut out);
+    le32(coff, &mut out);
+    le16(0, &mut out);
+    out
+}
+
+/// `valvet package`: build (refreshing the lock), then zip the entry tree
+/// sources plus manifest and lock. Dep files outside the root ride along
+/// under `external/<n>/` so the archive is self-contained.
+fn cmd_package(path: &str) -> i32 {
+    let exe = match build_exe(path, false, false) {
+        Ok(e) => e,
+        Err(c) => return c,
+    };
+    let _ = exe;
+    let checked = match pipeline::front_end_file(Path::new(path)) {
+        Ok(c) => c,
+        Err(fd) => {
+            eprintln!("{}", fd.render());
+            return 1;
+        }
+    };
+    let root = Path::new(path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut files: Vec<(String, Vec<u8>)> = vec![];
+    let mut ext = 0u32;
+    let mut seen: Vec<String> = vec![];
+    let mut paths: Vec<String> = checked.files.iter().map(|f| f.name.clone()).collect();
+    paths.sort();
+    for name in paths {
+        let data = match std::fs::read(&name) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        // Archive name: entry-relative paths stay put; absolute paths
+        // (caches, other trees) ride under `external/<n>/` so machine
+        // layout never leaks into the archive.
+        let arc = if Path::new(&name).is_absolute() {
+            let b = Path::new(&name)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("file");
+            ext += 1;
+            format!("external/{}/{}", ext, b)
+        } else {
+            match Path::new(&name).strip_prefix(&root) {
+                Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+                _ => name.clone(),
+            }
+        };
+        if seen.contains(&arc) {
+            continue;
+        }
+        seen.push(arc.clone());
+        files.push((arc, data));
+    }
+    for extra in ["valvet.toml", "valvet.lock"] {
+        let p = root.join(extra);
+        if let Ok(d) = std::fs::read(&p) {
+            if !seen.contains(&extra.to_string()) {
+                files.push((extra.to_string(), d));
+            }
+        }
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("a");
+    let archive = root.join(format!("{}-package.zip", stem));
+    match std::fs::write(&archive, zip_store(&files)) {
+        Ok(_) => {
+            println!("packaged {} ({} files)", archive.display(), files.len());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: cannot write `{}`: {}", archive.display(), e);
+            1
+        }
+    }
+}
+
+/// `valvet install`: release-style build, then copy the binary into
+/// `~/.local/bin` (created as needed).
+fn cmd_install(path: &str) -> i32 {
+    let exe = match build_exe(path, false, false) {
+        Ok(e) => e,
+        Err(c) => return c,
+    };
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => {
+            eprintln!("error: HOME is not set");
+            return 1;
+        }
+    };
+    let dir = PathBuf::from(home).join(".local/bin");
+    if std::fs::create_dir_all(&dir).is_err() {
+        eprintln!("error: cannot create `{}`", dir.display());
+        return 1;
+    }
+    let dest = dir.join(exe.file_name().unwrap_or_default());
+    match std::fs::copy(&exe, &dest) {
+        Ok(_) => {
+            println!("installed {}", dest.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: cannot install: {}", e);
+            1
+        }
+    }
+}
+
+fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let (s, d) = (e.path(), dst.join(e.file_name()));
+        if e.file_type()?.is_dir() {
+            copy_tree(&s, &d)?;
+        } else {
+            std::fs::copy(&s, &d)?;
+        }
+    }
+    Ok(())
+}
+
+/// Read the entry manifest (errors are usage errors, not finds).
+fn entry_manifest(entry: &str) -> Result<valvet_core::manifest::Manifest, i32> {
+    let root = Path::new(entry)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let text = match std::fs::read_to_string(root.join("valvet.toml")) {
+        Ok(t) => t,
+        Err(_) => {
+            eprintln!("error: no valvet.toml beside `{}`", entry);
+            return Err(2);
+        }
+    };
+    valvet_core::manifest::parse(&text).map_err(|e| {
+        eprintln!("error: bad manifest: {}", e);
+        2
+    })
+}
+
+/// `valvet vendor`: copy manifest deps under `vendor/<name>/` and print
+/// the replacement `path` lines (stdlib needs no vendoring: the
+/// `VALVET_STDLIB` override already covers hermetic layouts).
+fn cmd_vendor(path: &str) -> i32 {
+    let m = match entry_manifest(path) {
+        Ok(m) => m,
+        Err(c) => return c,
+    };
+    let root = Path::new(path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    // Resolve through the front end so git deps materialize in cache.
+    match pipeline::front_end_file(Path::new(path)) {
+        Ok(_) => {}
+        Err(fd) => {
+            eprintln!("{}", fd.render());
+            return 1;
+        }
+    }
+    let dest = root.join("vendor");
+    for dep in &m.deps {
+        let src = match &dep.path {
+            Some(p) => root.join(p),
+            None => {
+                match valvet_core::manifest::git_cache_dir(&dep.git.clone().unwrap_or_default()) {
+                    Some(d) => d,
+                    None => {
+                        eprintln!("error: cannot locate git dep `{}`", dep.name);
+                        return 1;
+                    }
+                }
+            }
+        };
+        let dst = dest.join(&dep.name);
+        if copy_tree(&src, &dst).is_err() {
+            eprintln!("error: cannot vendor `{}`", dep.name);
+            return 1;
+        }
+        println!("{} = {{ path = \"vendor/{}\" }}", dep.name, dep.name);
+    }
+    println!("vendored {} dep(s) under {}", m.deps.len(), dest.display());
+    0
+}
+
+/// `valvet update`: refresh the lock against current bounds (path deps
+/// re-read versions; git-plus-version re-resolves its tag).
+fn cmd_update(path: &str) -> i32 {
+    let lock = {
+        let mut d = Path::new(path)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        if d.as_os_str().is_empty() {
+            d = PathBuf::from(".");
+        }
+        d.join("valvet.lock")
+    };
+    let _ = std::fs::remove_file(&lock);
+    match build_exe(path, false, false) {
+        Ok(_) => {
+            println!("updated {}", lock.display());
+            0
+        }
+        Err(c) => c,
+    }
 }
 
 /// Recompute every recorded digest (Nix-style verification, no daemon).
