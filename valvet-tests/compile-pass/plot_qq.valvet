@@ -1,0 +1,7 @@
+import std::plot::plot_qq;
+import std::plot::plot_svg;
+
+fun main() {
+    println(match (plot_svg(plot_qq(vec![1.0, 2.0, 3.0, 4.0, 5.0]))) { Ok(s) -> s, Err(e) -> e, });
+    println(match (plot_svg(plot_qq(vec![2.0, 4.0]))) { Ok(s) -> s, Err(e) -> e, });
+}

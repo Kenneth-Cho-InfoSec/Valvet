@@ -1,0 +1,12 @@
+import std::plot::heat_color;
+
+fun main() {
+    println(heat_color(0.0));
+    println(heat_color(0.25));
+    println(heat_color(0.5));
+    println(heat_color(0.75));
+    println(heat_color(1.0));
+    println(heat_color(0.0 - 0.5));
+    println(heat_color(1.5));
+    println(heat_color(0.0 / 0.0));
+}

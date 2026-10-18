@@ -1,0 +1,11 @@
+import std::plot::plot_density;
+import std::plot::plot_svg;
+
+fun main() {
+    val data: Vec<Float64> = vec![1.0, 2.0, 2.0, 3.0, 4.0, 8.0];
+    val auto = match (plot_svg(plot_density(data.clone(), 0.0))) { Ok(s) -> s, Err(e) -> e, };
+    val neg = match (plot_svg(plot_density(data, 0.0 - 1.0))) { Ok(s) -> s, Err(e) -> e, };
+    println(auto);
+    println(neg);
+    println(if (auto == neg) { "neg bandwidth falls back to auto" } else { "MISMATCH" });
+}

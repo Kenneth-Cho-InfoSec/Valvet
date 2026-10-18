@@ -3,8 +3,29 @@ module std.plot;
 import std::stats::quantile;
 import std::stats::MissingPolicy;
 import std::math::log;
+import std::math::sqrt;
+import std::math::exp;
+import std::math::pow;
+import std::dist::normal_quantile;
 import std::frame::DynamicFrame;
 import std::frame::frame_col;
+
+// Theme: colors, optional grid, and font size for one plot. Kept as a
+// value carried by the builder; `plot_theme` swaps it in.
+pub struct PlotTheme {
+    accent: String,
+    fg: String,
+    grid: Bool,
+    font_size: Int64,
+}
+
+pub fun plot_theme_default(): PlotTheme {
+    PlotTheme { accent: "#524ce9", fg: "black", grid: false, font_size: 10 as Int64 }
+}
+
+pub fun plot_theme_make(accent: String, fg: String, grid: Bool, font_size: Int64): PlotTheme {
+    PlotTheme { accent: accent, fg: fg, grid: grid, font_size: font_size }
+}
 
 pub struct PlotBuilder {
     kind: String,
@@ -15,10 +36,16 @@ pub struct PlotBuilder {
     title: String,
     width: Int64,
     height: Int64,
+    errs: Vec<Float64>,
+    bandwidth: Float64,
+    theme: PlotTheme,
+    grid_rows: Int64,
+    grid_cols: Int64,
 }
 
 pub fun plot_points(xs: Vec<Float64>, ys: Vec<Float64>): PlotBuilder {
     val labels: Vec<String> = vec![];
+    val errs: Vec<Float64> = vec![];
     PlotBuilder {
         kind: "points",
         xs: xs,
@@ -28,11 +55,17 @@ pub fun plot_points(xs: Vec<Float64>, ys: Vec<Float64>): PlotBuilder {
         title: "",
         width: 400 as Int64,
         height: 300 as Int64,
+        errs: errs,
+        bandwidth: 0.0,
+        theme: plot_theme_default(),
+        grid_rows: 0 as Int64,
+        grid_cols: 0 as Int64,
     }
 }
 
 pub fun plot_line(xs: Vec<Float64>, ys: Vec<Float64>): PlotBuilder {
     val labels: Vec<String> = vec![];
+    val errs: Vec<Float64> = vec![];
     PlotBuilder {
         kind: "line",
         xs: xs,
@@ -42,11 +75,17 @@ pub fun plot_line(xs: Vec<Float64>, ys: Vec<Float64>): PlotBuilder {
         title: "",
         width: 400 as Int64,
         height: 300 as Int64,
+        errs: errs,
+        bandwidth: 0.0,
+        theme: plot_theme_default(),
+        grid_rows: 0 as Int64,
+        grid_cols: 0 as Int64,
     }
 }
 
 pub fun plot_bar(labels: Vec<String>, vals: Vec<Float64>): PlotBuilder {
     val xs: Vec<Float64> = vec![];
+    val errs: Vec<Float64> = vec![];
     PlotBuilder {
         kind: "bar",
         xs: xs,
@@ -56,11 +95,17 @@ pub fun plot_bar(labels: Vec<String>, vals: Vec<Float64>): PlotBuilder {
         title: "",
         width: 400 as Int64,
         height: 300 as Int64,
+        errs: errs,
+        bandwidth: 0.0,
+        theme: plot_theme_default(),
+        grid_rows: 0 as Int64,
+        grid_cols: 0 as Int64,
     }
 }
 
 pub fun plot_hist(vals: Vec<Float64>, bins: Int64): PlotBuilder {
     val labels: Vec<String> = vec![];
+    val errs: Vec<Float64> = vec![];
     PlotBuilder {
         kind: "hist",
         xs: vals.clone(),
@@ -70,11 +115,17 @@ pub fun plot_hist(vals: Vec<Float64>, bins: Int64): PlotBuilder {
         title: "",
         width: 400 as Int64,
         height: 300 as Int64,
+        errs: errs,
+        bandwidth: 0.0,
+        theme: plot_theme_default(),
+        grid_rows: 0 as Int64,
+        grid_cols: 0 as Int64,
     }
 }
 
 pub fun plot_box(vals: Vec<Float64>): PlotBuilder {
     val labels: Vec<String> = vec![];
+    val errs: Vec<Float64> = vec![];
     PlotBuilder {
         kind: "box",
         xs: vals.clone(),
@@ -84,6 +135,129 @@ pub fun plot_box(vals: Vec<Float64>): PlotBuilder {
         title: "",
         width: 400 as Int64,
         height: 300 as Int64,
+        errs: errs,
+        bandwidth: 0.0,
+        theme: plot_theme_default(),
+        grid_rows: 0 as Int64,
+        grid_cols: 0 as Int64,
+    }
+}
+
+pub fun plot_violin(vals: Vec<Float64>, bandwidth: Float64): PlotBuilder {
+    val labels: Vec<String> = vec![];
+    val ys: Vec<Float64> = vec![];
+    val errs: Vec<Float64> = vec![];
+    PlotBuilder {
+        kind: "violin",
+        xs: vals,
+        ys: ys,
+        labels: labels,
+        bins: 10 as Int64,
+        title: "",
+        width: 400 as Int64,
+        height: 300 as Int64,
+        errs: errs,
+        bandwidth: bandwidth,
+        theme: plot_theme_default(),
+        grid_rows: 0 as Int64,
+        grid_cols: 0 as Int64,
+    }
+}
+
+pub fun plot_density(vals: Vec<Float64>, bandwidth: Float64): PlotBuilder {
+    val labels: Vec<String> = vec![];
+    val ys: Vec<Float64> = vec![];
+    val errs: Vec<Float64> = vec![];
+    PlotBuilder {
+        kind: "density",
+        xs: vals,
+        ys: ys,
+        labels: labels,
+        bins: 10 as Int64,
+        title: "",
+        width: 400 as Int64,
+        height: 300 as Int64,
+        errs: errs,
+        bandwidth: bandwidth,
+        theme: plot_theme_default(),
+        grid_rows: 0 as Int64,
+        grid_cols: 0 as Int64,
+    }
+}
+
+pub fun plot_qq(vals: Vec<Float64>): PlotBuilder {
+    val labels: Vec<String> = vec![];
+    val ys: Vec<Float64> = vec![];
+    val errs: Vec<Float64> = vec![];
+    PlotBuilder {
+        kind: "qq",
+        xs: vals,
+        ys: ys,
+        labels: labels,
+        bins: 10 as Int64,
+        title: "",
+        width: 400 as Int64,
+        height: 300 as Int64,
+        errs: errs,
+        bandwidth: 0.0,
+        theme: plot_theme_default(),
+        grid_rows: 0 as Int64,
+        grid_cols: 0 as Int64,
+    }
+}
+
+// Heat cells are stored column-major in `xs`: cell (row i, col j) is
+// `xs[j * rows + i]`, row 0 at the bottom (the y axis points up).
+pub fun plot_heatmap(m: Mat): PlotBuilder {
+    val rows = m.rows()
+    val cols = m.cols()
+    var vals: Vec<Float64> = vec![];
+    var j = 0 as Int64;
+    while (j < cols) {
+        val col = m.mat_col(j);
+        var i = 0 as Int64;
+        while (i < rows) {
+            vals.push(col[i]);
+            i = i + (1 as Int64);
+        }
+        j = j + (1 as Int64);
+    }
+    val labels: Vec<String> = vec![];
+    val ys: Vec<Float64> = vec![];
+    val errs: Vec<Float64> = vec![];
+    PlotBuilder {
+        kind: "heatmap",
+        xs: vals,
+        ys: ys,
+        labels: labels,
+        bins: 10 as Int64,
+        title: "",
+        width: 400 as Int64,
+        height: 300 as Int64,
+        errs: errs,
+        bandwidth: 0.0,
+        theme: plot_theme_default(),
+        grid_rows: rows,
+        grid_cols: cols,
+    }
+}
+
+pub fun plot_errorbar(xs: Vec<Float64>, ys: Vec<Float64>, errs: Vec<Float64>): PlotBuilder {
+    val labels: Vec<String> = vec![];
+    PlotBuilder {
+        kind: "errorbar",
+        xs: xs,
+        ys: ys,
+        labels: labels,
+        bins: 10 as Int64,
+        title: "",
+        width: 400 as Int64,
+        height: 300 as Int64,
+        errs: errs,
+        bandwidth: 0.0,
+        theme: plot_theme_default(),
+        grid_rows: 0 as Int64,
+        grid_cols: 0 as Int64,
     }
 }
 
@@ -97,6 +271,11 @@ pub fun plot_title(p: PlotBuilder, t: String): PlotBuilder {
         title: t,
         width: p.width,
         height: p.height,
+        errs: p.errs.clone(),
+        bandwidth: p.bandwidth,
+        theme: plot_theme_make(p.theme.accent.clone(), p.theme.fg.clone(), p.theme.grid, p.theme.font_size),
+        grid_rows: p.grid_rows,
+        grid_cols: p.grid_cols,
     }
 }
 
@@ -110,6 +289,29 @@ pub fun plot_size(p: PlotBuilder, w: Int64, h: Int64): PlotBuilder {
         title: p.title.clone(),
         width: w,
         height: h,
+        errs: p.errs.clone(),
+        bandwidth: p.bandwidth,
+        theme: plot_theme_make(p.theme.accent.clone(), p.theme.fg.clone(), p.theme.grid, p.theme.font_size),
+        grid_rows: p.grid_rows,
+        grid_cols: p.grid_cols,
+    }
+}
+
+pub fun plot_theme(p: PlotBuilder, t: PlotTheme): PlotBuilder {
+    PlotBuilder {
+        kind: p.kind.clone(),
+        xs: p.xs.clone(),
+        ys: p.ys.clone(),
+        labels: p.labels.clone(),
+        bins: p.bins,
+        title: p.title.clone(),
+        width: p.width,
+        height: p.height,
+        errs: p.errs.clone(),
+        bandwidth: p.bandwidth,
+        theme: plot_theme_make(t.accent.clone(), t.fg.clone(), t.grid, t.font_size),
+        grid_rows: p.grid_rows,
+        grid_cols: p.grid_cols,
     }
 }
 
@@ -161,6 +363,224 @@ fun fmax(v: Vec<Float64>): Float64 {
     best
 }
 
+fun fmin2(a: Float64, b: Float64): Float64 {
+    if (a < b) {
+        return a;
+    }
+    b
+}
+
+fun has_nan(v: Vec<Float64>): Bool {
+    var i = 0 as Int64
+    var found = false
+    while (i < v.len()) {
+        if (v[i] != v[i]) {
+            found = true;
+        }
+        i += 1 as Int64
+    }
+    found
+}
+
+fun fmean(v: Vec<Float64>): Float64 {
+    var s = 0.0
+    var i = 0 as Int64
+    while (i < v.len()) {
+        s = s + v[i]
+        i += 1 as Int64
+    }
+    s / (v.len() as Float64)
+}
+
+// Sample standard deviation (ddof = 1); 0.0 below n = 2.
+fun fsd(v: Vec<Float64>): Float64 {
+    val n = v.len()
+    if (n < (2 as Int64)) {
+        return 0.0;
+    }
+    val m = fmean(v.clone())
+    var s = 0.0
+    var i = 0 as Int64
+    while (i < n) {
+        s = s + (v[i] - m) * (v[i] - m)
+        i += 1 as Int64
+    }
+    sqrt(s / ((n - (1 as Int64)) as Float64))
+}
+
+// Type-7 (R default, numpy `linear`) quantile of an ASCENDING-sorted vec.
+fun plot_quantile(s: Vec<Float64>, q: Float64): Float64 {
+    val n = s.len()
+    if (n == (0 as Int64)) {
+        return 0.0;
+    }
+    if (n == (1 as Int64)) {
+        return s[0];
+    }
+    val h = q * ((n - (1 as Int64)) as Float64)
+    val lo = h as Int64
+    val frac = h - (lo as Float64)
+    if (frac == 0.0) {
+        return s[lo];
+    }
+    s[lo] + frac * (s[lo + (1 as Int64)] - s[lo])
+}
+
+// Silverman's rule of thumb, floored at 1.0 so degenerate samples
+// (all-equal, n = 1) still give a usable kernel.
+pub fun kde_auto_bandwidth(vals: Vec<Float64>): Float64 {
+    val n = vals.len()
+    var h = 1.0
+    if (n >= (2 as Int64)) {
+        var s = vals.clone()
+        s.sort()
+        val iqr = plot_quantile(s.clone(), 0.75) - plot_quantile(s, 0.25)
+        val sd = fsd(vals.clone())
+        h = 0.9 * fmin2(sd, iqr / 1.34) * pow(n as Float64, 0.0 - 0.2)
+    }
+    if (is_nan_f(h) || h < 1.0) {
+        h = 1.0;
+    }
+    h
+}
+
+// Gaussian KDE at `x`; non-positive/non-finite bandwidth falls back to
+// the Silverman rule. Empty data gives NaN.
+pub fun kde_density(vals: Vec<Float64>, bandwidth: Float64, x: Float64): Float64 {
+    val n = vals.len()
+    if (n == (0 as Int64)) {
+        return 0.0 / 0.0;
+    }
+    var h = bandwidth
+    if (is_nan_f(h) || h <= 0.0) {
+        h = kde_auto_bandwidth(vals.clone())
+    }
+    var acc = 0.0
+    var i = 0 as Int64
+    while (i < n) {
+        val z = (x - vals[i]) / h
+        acc = acc + exp(0.0 - 0.5 * z * z)
+        i += 1 as Int64
+    }
+    acc / ((n as Float64) * h * 2.5066282746310002)
+}
+
+// Ascending z-scores of the data (ddof = 1). sd = 0 gives inf/NaN, so
+// `plot_qq` validates variance before drawing.
+pub fun qq_standardized(vals: Vec<Float64>): Vec<Float64> {
+    var s = vals.clone()
+    s.sort()
+    val m = fmean(vals.clone())
+    val sd = fsd(vals)
+    var out: Vec<Float64> = vec![]
+    var i = 0 as Int64
+    while (i < s.len()) {
+        out.push((s[i] - m) / sd)
+        i += 1 as Int64
+    }
+    out
+}
+
+// Theoretical normal quantiles at (i + 0.5) / n, i = 0..n-1 (Blom).
+pub fun qq_theoretical(n: Int64): Vec<Float64> {
+    var out: Vec<Float64> = vec![]
+    var i = 0 as Int64
+    while (i < n) {
+        val p = ((i as Float64) + 0.5) / (n as Float64)
+        out.push(normal_quantile(p, 0.0, 1.0))
+        i += 1 as Int64
+    }
+    out
+}
+
+fun hex_digit(d: Int64): String {
+    if (d == (0 as Int64)) {
+        return "0";
+    }
+    if (d == (1 as Int64)) {
+        return "1";
+    }
+    if (d == (2 as Int64)) {
+        return "2";
+    }
+    if (d == (3 as Int64)) {
+        return "3";
+    }
+    if (d == (4 as Int64)) {
+        return "4";
+    }
+    if (d == (5 as Int64)) {
+        return "5";
+    }
+    if (d == (6 as Int64)) {
+        return "6";
+    }
+    if (d == (7 as Int64)) {
+        return "7";
+    }
+    if (d == (8 as Int64)) {
+        return "8";
+    }
+    if (d == (9 as Int64)) {
+        return "9";
+    }
+    if (d == (10 as Int64)) {
+        return "a";
+    }
+    if (d == (11 as Int64)) {
+        return "b";
+    }
+    if (d == (12 as Int64)) {
+        return "c";
+    }
+    if (d == (13 as Int64)) {
+        return "d";
+    }
+    if (d == (14 as Int64)) {
+        return "e";
+    }
+    "f"
+}
+
+fun hex2(v: Int64): String {
+    var x = v
+    if (x < (0 as Int64)) {
+        x = 0 as Int64;
+    }
+    if (x > (255 as Int64)) {
+        x = 255 as Int64;
+    }
+    val hi = x / (16 as Int64)
+    val lo = x - hi * (16 as Int64)
+    var s = ""
+    s = s + hex_digit(hi)
+    s = s + hex_digit(lo)
+    s
+}
+
+// White-to-accent-blue ramp on [0, 1]: t = 0 gives #ffffff, t = 1 gives
+// #2828ff; NaN and out-of-range clamp to the low end. +0.5 before the
+// integer cast is a deliberate rounding bias (documented, pinned).
+pub fun heat_color(t: Float64): String {
+    var c = t
+    if (is_nan_f(c)) {
+        c = 0.0;
+    }
+    if (c < 0.0) {
+        c = 0.0;
+    }
+    if (c > 1.0) {
+        c = 1.0;
+    }
+    val i = (c * 215.0 + 0.5) as Int64
+    val v = (255 as Int64) - i
+    var s = "#"
+    s = s + hex2(v)
+    s = s + hex2(v)
+    s = s + "ff"
+    s
+}
+
 fun xmap(x: Float64, lo: Float64, hi: Float64, w: Float64): Float64 {
     val pad = 40.0
     if (hi == lo) {
@@ -191,7 +611,7 @@ fun head(p: &PlotBuilder): String {
     s
 }
 
-fun frame_axes(xlo: Float64, xhi: Float64, ylo: Float64, yhi: Float64, w: Float64, h: Float64): String {
+fun frame_axes(p: &PlotBuilder, xlo: Float64, xhi: Float64, ylo: Float64, yhi: Float64, w: Float64, h: Float64): String {
     var s = "<line x1=\"";
     s = s + to_string(xmap(xlo, xlo, xhi, w));
     s = s + "\" y1=\"";
@@ -200,7 +620,9 @@ fun frame_axes(xlo: Float64, xhi: Float64, ylo: Float64, yhi: Float64, w: Float6
     s = s + to_string(xmap(xhi, xlo, xhi, w));
     s = s + "\" y2=\"";
     s = s + to_string(ymap(ylo, ylo, yhi, h));
-    s = s + "\" stroke=\"black\"/>";
+    s = s + "\" stroke=\"";
+    s = s + p.theme.fg.clone();
+    s = s + "\"/>";
     s = s + "<line x1=\"";
     s = s + to_string(xmap(xlo, xlo, xhi, w));
     s = s + "\" y1=\"";
@@ -209,19 +631,55 @@ fun frame_axes(xlo: Float64, xhi: Float64, ylo: Float64, yhi: Float64, w: Float6
     s = s + to_string(xmap(xlo, xlo, xhi, w));
     s = s + "\" y2=\"";
     s = s + to_string(ymap(yhi, ylo, yhi, h));
-    s = s + "\" stroke=\"black\"/>";
+    s = s + "\" stroke=\"";
+    s = s + p.theme.fg.clone();
+    s = s + "\"/>";
+    if (p.theme.grid) {
+        var gi = 1 as Int64
+        while (gi < (5 as Int64)) {
+            val gx = xlo + (xhi - xlo) * (gi as Float64) / 5.0
+            s = s + "<line x1=\"";
+            s = s + to_string(xmap(gx, xlo, xhi, w));
+            s = s + "\" y1=\"";
+            s = s + to_string(ymap(ylo, ylo, yhi, h));
+            s = s + "\" x2=\"";
+            s = s + to_string(xmap(gx, xlo, xhi, w));
+            s = s + "\" y2=\"";
+            s = s + to_string(ymap(yhi, ylo, yhi, h));
+            s = s + "\" stroke=\"#dddddd\"/>";
+            gi += 1 as Int64
+        }
+        var gj = 1 as Int64
+        while (gj < (5 as Int64)) {
+            val gy = ylo + (yhi - ylo) * (gj as Float64) / 5.0
+            s = s + "<line x1=\"";
+            s = s + to_string(xmap(xlo, xlo, xhi, w));
+            s = s + "\" y1=\"";
+            s = s + to_string(ymap(gy, ylo, yhi, h));
+            s = s + "\" x2=\"";
+            s = s + to_string(xmap(xhi, xlo, xhi, w));
+            s = s + "\" y2=\"";
+            s = s + to_string(ymap(gy, ylo, yhi, h));
+            s = s + "\" stroke=\"#dddddd\"/>";
+            gj += 1 as Int64
+        }
+    }
     s = s + "<text x=\"";
     s = s + to_string(xmap(xlo, xlo, xhi, w));
     s = s + "\" y=\"";
     s = s + to_string(ymap(ylo, ylo, yhi, h) + 14.0);
-    s = s + "\" font-size=\"10\">";
+    s = s + "\" font-size=\"";
+    s = s + to_string(p.theme.font_size);
+    s = s + "\">";
     s = s + to_string(xlo);
     s = s + "</text>";
     s = s + "<text x=\"";
     s = s + to_string(xmap(xhi, xlo, xhi, w) - 30.0);
     s = s + "\" y=\"";
     s = s + to_string(ymap(ylo, ylo, yhi, h) + 14.0);
-    s = s + "\" font-size=\"10\">";
+    s = s + "\" font-size=\"";
+    s = s + to_string(p.theme.font_size);
+    s = s + "\">";
     s = s + to_string(xhi);
     s = s + "</text>";
     s
@@ -234,14 +692,16 @@ fun draw_points(p: &PlotBuilder): String {
     val xhi = fmax(p.xs.clone())
     val ylo = fmin(p.ys.clone())
     val yhi = fmax(p.ys.clone())
-    var s = frame_axes(xlo, xhi, ylo, yhi, w, h);
+    var s = frame_axes(p, xlo, xhi, ylo, yhi, w, h);
     var i = 0 as Int64
     while (i < p.xs.len()) {
         s = s + "<circle cx=\"";
         s = s + to_string(xmap(p.xs[i], xlo, xhi, w));
         s = s + "\" cy=\"";
         s = s + to_string(ymap(p.ys[i], ylo, yhi, h));
-        s = s + "\" r=\"3\" fill=\"#524ce9\"/>";
+        s = s + "\" r=\"3\" fill=\"";
+        s = s + p.theme.accent.clone();
+        s = s + "\"/>";
         i += 1 as Int64
     }
     s
@@ -254,7 +714,7 @@ fun draw_line(p: &PlotBuilder): String {
     val xhi = fmax(p.xs.clone())
     val ylo = fmin(p.ys.clone())
     val yhi = fmax(p.ys.clone())
-    var s = frame_axes(xlo, xhi, ylo, yhi, w, h);
+    var s = frame_axes(p, xlo, xhi, ylo, yhi, w, h);
     var pts = "";
     var i = 0 as Int64
     while (i < p.xs.len()) {
@@ -268,7 +728,9 @@ fun draw_line(p: &PlotBuilder): String {
     }
     s = s + "<polyline points=\"";
     s = s + pts;
-    s = s + "\" fill=\"none\" stroke=\"#524ce9\" stroke-width=\"2\"/>";
+    s = s + "\" fill=\"none\" stroke=\"";
+    s = s + p.theme.accent.clone();
+    s = s + "\" stroke-width=\"2\"/>";
     s
 }
 
@@ -277,7 +739,7 @@ fun draw_bar(p: &PlotBuilder): String {
     val h = p.height as Float64
     val ylo = 0.0
     val yhi = fmax(p.ys.clone())
-    var s = frame_axes(0.0, p.labels.len() as Float64, ylo, yhi, w, h);
+    var s = frame_axes(p, 0.0, p.labels.len() as Float64, ylo, yhi, w, h);
     val n = p.labels.len()
     var i = 0 as Int64
     while (i < n) {
@@ -293,12 +755,16 @@ fun draw_bar(p: &PlotBuilder): String {
         s = s + to_string(bw);
         s = s + "\" height=\"";
         s = s + to_string(base - by);
-        s = s + "\" fill=\"#524ce9\"/>";
+        s = s + "\" fill=\"";
+        s = s + p.theme.accent.clone();
+        s = s + "\"/>";
         s = s + "<text x=\"";
         s = s + to_string(bx);
         s = s + "\" y=\"";
         s = s + to_string(base + 14.0);
-        s = s + "\" font-size=\"10\">";
+        s = s + "\" font-size=\"";
+        s = s + to_string(p.theme.font_size);
+        s = s + "\">";
         s = s + esc(p.labels[i]);
         s = s + "</text>";
         i += 1 as Int64
@@ -339,7 +805,7 @@ fun draw_hist(p: &PlotBuilder): String {
     }
     val w = p.width as Float64
     val h = p.height as Float64
-    var s = frame_axes(lo, hi, 0.0, top as Float64, w, h);
+    var s = frame_axes(p, lo, hi, 0.0, top as Float64, w, h);
     var j = 0 as Int64
     while (j < nb) {
         val bx = xmap(lo + (j as Float64) * wdt, lo, hi, w);
@@ -354,7 +820,9 @@ fun draw_hist(p: &PlotBuilder): String {
         s = s + to_string(bw);
         s = s + "\" height=\"";
         s = s + to_string(base - by);
-        s = s + "\" fill=\"#524ce9\"/>";
+        s = s + "\" fill=\"";
+        s = s + p.theme.accent.clone();
+        s = s + "\"/>";
         j += 1 as Int64
     }
     s
@@ -374,7 +842,7 @@ fun draw_box(p: &PlotBuilder): String {
     val h = p.height as Float64
     val lo = fmin(p.xs.clone())
     val hi = fmax(p.xs.clone())
-    var s = frame_axes(lo, hi, lo, hi, w, h);
+    var s = frame_axes(p, lo, hi, lo, hi, w, h);
     val cx = w / 2.0
     val y0 = ymap(lo, lo, hi, h);
     val y1 = ymap(q1, lo, hi, h);
@@ -389,14 +857,20 @@ fun draw_box(p: &PlotBuilder): String {
     s = s + to_string(cx);
     s = s + "\" y2=\"";
     s = s + to_string(y4);
-    s = s + "\" stroke=\"black\"/>";
+    s = s + "\" stroke=\"";
+    s = s + p.theme.fg.clone();
+    s = s + "\"/>";
     s = s + "<rect x=\"";
     s = s + to_string(cx - 30.0);
     s = s + "\" y=\"";
     s = s + to_string(y3);
     s = s + "\" width=\"60\" height=\"";
     s = s + to_string(y1 - y3);
-    s = s + "\" fill=\"#524ce9\" stroke=\"black\"/>";
+    s = s + "\" fill=\"";
+    s = s + p.theme.accent.clone();
+    s = s + "\" stroke=\"";
+    s = s + p.theme.fg.clone();
+    s = s + "\"/>";
     s = s + "<line x1=\"";
     s = s + to_string(cx - 30.0);
     s = s + "\" y1=\"";
@@ -409,15 +883,325 @@ fun draw_box(p: &PlotBuilder): String {
     s
 }
 
+// KDE evaluation grid shared by violin/density: 100 points from lo to
+// hi (all at lo when constant), densities, and the max for scaling.
+struct KdeGrid {
+    gx: Vec<Float64>,
+    gd: Vec<Float64>,
+    dmax: Float64,
+}
+
+fun kde_h(p: &PlotBuilder): Float64 {
+    var hb = p.bandwidth
+    if (is_nan_f(hb) || hb <= 0.0) {
+        hb = kde_auto_bandwidth(p.xs.clone());
+    }
+    hb
+}
+
+fun kde_grid(p: &PlotBuilder, hb: Float64, lo: Float64, hi: Float64): KdeGrid {
+    var gx: Vec<Float64> = vec![]
+    var gd: Vec<Float64> = vec![]
+    var dmax = 0.0
+    var i = 0 as Int64
+    while (i < (100 as Int64)) {
+        val g = if (hi == lo) { lo } else { lo + ((i as Float64) / 99.0) * (hi - lo) }
+        val d = kde_density(p.xs.clone(), hb, g)
+        gx.push(g)
+        gd.push(d)
+        if (d > dmax) {
+            dmax = d;
+        }
+        i += 1 as Int64
+    }
+    if (dmax <= 0.0) {
+        dmax = 1.0;
+    }
+    KdeGrid { gx: gx, gd: gd, dmax: dmax }
+}
+
+fun draw_violin(p: &PlotBuilder): String {
+    val w = p.width as Float64
+    val h = p.height as Float64
+    val lo = fmin(p.xs.clone())
+    val hi = fmax(p.xs.clone())
+    val grid = kde_grid(p, kde_h(p), lo, hi)
+    var s = frame_axes(p, lo, hi, lo, hi, w, h);
+    var pts = ""
+    var k = 0 as Int64
+    while (k < (100 as Int64)) {
+        if (k > (0 as Int64)) {
+            pts = pts + " ";
+        }
+        val half = (grid.gd[k] / grid.dmax) * 40.0
+        pts = pts + to_string((w / 2.0) + half)
+        pts = pts + ","
+        pts = pts + to_string(ymap(grid.gx[k], lo, hi, h))
+        k += 1 as Int64
+    }
+    var kk = 99 as Int64
+    while (kk >= (0 as Int64)) {
+        val half = (grid.gd[kk] / grid.dmax) * 40.0
+        pts = pts + " "
+        pts = pts + to_string((w / 2.0) - half)
+        pts = pts + ","
+        pts = pts + to_string(ymap(grid.gx[kk], lo, hi, h))
+        kk = kk - (1 as Int64)
+    }
+    s = s + "<polygon points=\""
+    s = s + pts
+    s = s + "\" fill=\""
+    s = s + p.theme.accent.clone()
+    s = s + "\" stroke=\""
+    s = s + p.theme.fg.clone()
+    s = s + "\" stroke-width=\"1\"/>"
+    s
+}
+
+fun draw_density(p: &PlotBuilder): String {
+    val w = p.width as Float64
+    val h = p.height as Float64
+    val lo = fmin(p.xs.clone())
+    val hi = fmax(p.xs.clone())
+    val grid = kde_grid(p, kde_h(p), lo, hi)
+    var s = frame_axes(p, lo, hi, 0.0, grid.dmax, w, h);
+    var pts = ""
+    var k = 0 as Int64
+    while (k < (100 as Int64)) {
+        if (k > (0 as Int64)) {
+            pts = pts + " ";
+        }
+        pts = pts + to_string(xmap(grid.gx[k], lo, hi, w))
+        pts = pts + ","
+        pts = pts + to_string(ymap(grid.gd[k], 0.0, grid.dmax, h))
+        k += 1 as Int64
+    }
+    s = s + "<polyline points=\""
+    s = s + pts
+    s = s + "\" fill=\"none\" stroke=\""
+    s = s + p.theme.accent.clone()
+    s = s + "\" stroke-width=\"2\"/>"
+    s
+}
+
+fun draw_qq(p: &PlotBuilder): String {
+    val z = qq_standardized(p.xs.clone())
+    val t = qq_theoretical(z.len())
+    val w = p.width as Float64
+    val h = p.height as Float64
+    val tlo = fmin(t.clone())
+    val thi = fmax(t.clone())
+    val zlo = fmin(z.clone())
+    val zhi = fmax(z.clone())
+    var s = frame_axes(p, tlo, thi, zlo, zhi, w, h);
+    var i = 0 as Int64
+    while (i < z.len()) {
+        s = s + "<circle cx=\""
+        s = s + to_string(xmap(t[i], tlo, thi, w))
+        s = s + "\" cy=\""
+        s = s + to_string(ymap(z[i], zlo, zhi, h))
+        s = s + "\" r=\"3\" fill=\""
+        s = s + p.theme.accent.clone()
+        s = s + "\"/>"
+        i += 1 as Int64
+    }
+    // Reference line through the type-7 quartiles of both axes.
+    val tq1 = plot_quantile(t.clone(), 0.25)
+    val tq3 = plot_quantile(t.clone(), 0.75)
+    val zq1 = plot_quantile(z.clone(), 0.25)
+    val zq3 = plot_quantile(z, 0.75)
+    s = s + "<line x1=\""
+    s = s + to_string(xmap(tq1, tlo, thi, w))
+    s = s + "\" y1=\""
+    s = s + to_string(ymap(zq1, zlo, zhi, h))
+    s = s + "\" x2=\""
+    s = s + to_string(xmap(tq3, tlo, thi, w))
+    s = s + "\" y2=\""
+    s = s + to_string(ymap(zq3, zlo, zhi, h))
+    s = s + "\" stroke=\""
+    s = s + p.theme.fg.clone()
+    s = s + "\" stroke-width=\"2\"/>"
+    s
+}
+
+fun draw_heatmap(p: &PlotBuilder): String {
+    val w = p.width as Float64
+    val h = p.height as Float64
+    val rows = p.grid_rows
+    val cols = p.grid_cols
+    val cw = cols as Float64
+    val rh = rows as Float64
+    var vmin = p.xs[0]
+    var vmax = p.xs[0]
+    var i = 0 as Int64
+    while (i < p.xs.len()) {
+        if (p.xs[i] < vmin) {
+            vmin = p.xs[i];
+        }
+        if (p.xs[i] > vmax) {
+            vmax = p.xs[i];
+        }
+        i += 1 as Int64
+    }
+    var s = frame_axes(p, 0.0, cw, 0.0, rh, w, h);
+    var ii = 0 as Int64
+    while (ii < rows) {
+        var jj = 0 as Int64
+        while (jj < cols) {
+            val v = p.xs[jj * rows + ii]
+            val t = if (vmax == vmin) { 0.5 } else { (v - vmin) / (vmax - vmin) }
+            val x0 = xmap(jj as Float64, 0.0, cw, w)
+            val x1 = xmap((jj + (1 as Int64)) as Float64, 0.0, cw, w)
+            val y0 = ymap(ii as Float64, 0.0, rh, h)
+            val y1 = ymap((ii + (1 as Int64)) as Float64, 0.0, rh, h)
+            s = s + "<rect x=\""
+            s = s + to_string(x0)
+            s = s + "\" y=\""
+            s = s + to_string(y1)
+            s = s + "\" width=\""
+            s = s + to_string(x1 - x0)
+            s = s + "\" height=\""
+            s = s + to_string(y0 - y1)
+            s = s + "\" fill=\""
+            s = s + heat_color(t)
+            s = s + "\"/>"
+            jj += 1 as Int64
+        }
+        ii += 1 as Int64
+    }
+    s
+}
+
+fun draw_errorbar(p: &PlotBuilder): String {
+    val w = p.width as Float64
+    val h = p.height as Float64
+    val xlo = fmin(p.xs.clone())
+    val xhi = fmax(p.xs.clone())
+    var ylo = p.ys[0] - p.errs[0]
+    var yhi = p.ys[0] + p.errs[0]
+    var i = 0 as Int64
+    while (i < p.ys.len()) {
+        val a = p.ys[i] - p.errs[i]
+        val b = p.ys[i] + p.errs[i]
+        if (a < ylo) {
+            ylo = a;
+        }
+        if (b > yhi) {
+            yhi = b;
+        }
+        i += 1 as Int64
+    }
+    var s = frame_axes(p, xlo, xhi, ylo, yhi, w, h);
+    val cap = 4.0
+    var k = 0 as Int64
+    while (k < p.xs.len()) {
+        val xp = xmap(p.xs[k], xlo, xhi, w)
+        val yt = ymap(p.ys[k] + p.errs[k], ylo, yhi, h)
+        val yb = ymap(p.ys[k] - p.errs[k], ylo, yhi, h)
+        s = s + "<line x1=\""
+        s = s + to_string(xp)
+        s = s + "\" y1=\""
+        s = s + to_string(yt)
+        s = s + "\" x2=\""
+        s = s + to_string(xp)
+        s = s + "\" y2=\""
+        s = s + to_string(yb)
+        s = s + "\" stroke=\""
+        s = s + p.theme.accent.clone()
+        s = s + "\" stroke-width=\"1.5\"/>"
+        s = s + "<line x1=\""
+        s = s + to_string(xp - cap)
+        s = s + "\" y1=\""
+        s = s + to_string(yt)
+        s = s + "\" x2=\""
+        s = s + to_string(xp + cap)
+        s = s + "\" y2=\""
+        s = s + to_string(yt)
+        s = s + "\" stroke=\""
+        s = s + p.theme.accent.clone()
+        s = s + "\"/>"
+        s = s + "<line x1=\""
+        s = s + to_string(xp - cap)
+        s = s + "\" y1=\""
+        s = s + to_string(yb)
+        s = s + "\" x2=\""
+        s = s + to_string(xp + cap)
+        s = s + "\" y2=\""
+        s = s + to_string(yb)
+        s = s + "\" stroke=\""
+        s = s + p.theme.accent.clone()
+        s = s + "\"/>"
+        k += 1 as Int64
+    }
+    s
+}
+
 pub fun plot_svg(p: PlotBuilder): Result<String, String> {
-    if (p.kind != "points" && p.kind != "line" && p.kind != "bar" && p.kind != "hist" && p.kind != "box") {
+    if (p.kind != "points" && p.kind != "line" && p.kind != "bar" && p.kind != "hist" && p.kind != "box" && p.kind != "violin" && p.kind != "density" && p.kind != "qq" && p.kind != "heatmap" && p.kind != "errorbar") {
         return Err("unknown plot kind");
     }
     if (p.kind == "bar") {
         if (p.labels.len() != p.ys.len() || p.ys.len() == (0 as Int64)) {
             return Err("bar needs matching non-empty labels and values");
         }
-    } else {
+    }
+    if (p.kind == "violin") {
+        if (p.xs.len() == (0 as Int64)) {
+            return Err("violin needs non-empty data");
+        }
+        if (has_nan(p.xs.clone())) {
+            return Err("plot data must not contain NaN");
+        }
+    }
+    if (p.kind == "density") {
+        if (p.xs.len() == (0 as Int64)) {
+            return Err("density needs non-empty data");
+        }
+        if (has_nan(p.xs.clone())) {
+            return Err("plot data must not contain NaN");
+        }
+    }
+    if (p.kind == "qq") {
+        if (p.xs.len() < (2 as Int64)) {
+            return Err("qq needs at least two values");
+        }
+        if (has_nan(p.xs.clone())) {
+            return Err("plot data must not contain NaN");
+        }
+        if (fsd(p.xs.clone()) == 0.0) {
+            return Err("qq needs varying data");
+        }
+    }
+    if (p.kind == "heatmap") {
+        if (p.grid_rows <= (0 as Int64) || p.grid_cols <= (0 as Int64)) {
+            return Err("heatmap needs positive rows and cols");
+        }
+        if (p.xs.len() != p.grid_rows * p.grid_cols) {
+            return Err("heatmap data must match rows times cols");
+        }
+        if (has_nan(p.xs.clone())) {
+            return Err("plot data must not contain NaN");
+        }
+    }
+    if (p.kind == "errorbar") {
+        if (p.xs.len() != p.ys.len() || p.ys.len() != p.errs.len() || p.xs.len() == (0 as Int64)) {
+            return Err("errorbar needs matching non-empty xs, ys, and errs");
+        }
+        val nx = has_nan(p.xs.clone());
+        val ny = has_nan(p.ys.clone());
+        val ne = has_nan(p.errs.clone());
+        if (nx || ny || ne) {
+            return Err("plot data must not contain NaN");
+        }
+        var ei = 0 as Int64
+        while (ei < p.errs.len()) {
+            if (p.errs[ei] < 0.0) {
+                return Err("errorbar needs non-negative errors");
+            }
+            ei += 1 as Int64
+        }
+    }
+    if (p.kind == "points" || p.kind == "line" || p.kind == "hist" || p.kind == "box") {
         if (p.xs.len() != p.ys.len() || p.xs.len() == (0 as Int64)) {
             return Err("plot needs matching non-empty x and y");
         }
@@ -440,6 +1224,21 @@ pub fun plot_svg(p: PlotBuilder): Result<String, String> {
     }
     if (p.kind == "box") {
         s = s + draw_box(&p);
+    }
+    if (p.kind == "violin") {
+        s = s + draw_violin(&p);
+    }
+    if (p.kind == "density") {
+        s = s + draw_density(&p);
+    }
+    if (p.kind == "qq") {
+        s = s + draw_qq(&p);
+    }
+    if (p.kind == "heatmap") {
+        s = s + draw_heatmap(&p);
+    }
+    if (p.kind == "errorbar") {
+        s = s + draw_errorbar(&p);
     }
     s = s + "</svg>";
     return Ok(s);
@@ -651,7 +1450,8 @@ pub fun plot_render(p: Plot): Result<String, String> {
             panels.push("");
         }
     }
-    val dummy = PlotBuilder { kind: "points", xs: vec![0.0], ys: vec![0.0], labels: vec![""], bins: 10 as Int64, title: ptitle_main, width: pw, height: ph * panels.len() };
+    val d_errs: Vec<Float64> = vec![];
+    val dummy = PlotBuilder { kind: "points", xs: vec![0.0], ys: vec![0.0], labels: vec![""], bins: 10 as Int64, title: ptitle_main, width: pw, height: ph * panels.len(), errs: d_errs, bandwidth: 0.0, theme: plot_theme_default(), grid_rows: 0 as Int64, grid_cols: 0 as Int64 };
     var st = head(&dummy);
     var pi = 0 as Int64;
     while (pi < panels.len()) {

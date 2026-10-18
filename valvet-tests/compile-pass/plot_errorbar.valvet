@@ -1,0 +1,7 @@
+import std::plot::plot_errorbar;
+import std::plot::plot_svg;
+
+fun main() {
+    println(match (plot_svg(plot_errorbar(vec![1.0, 2.0, 3.0], vec![2.0, 3.0, 2.5], vec![0.5, 0.2, 1.0]))) { Ok(s) -> s, Err(e) -> e, });
+    println(match (plot_svg(plot_errorbar(vec![4.0], vec![1.5], vec![0.0]))) { Ok(s) -> s, Err(e) -> e, });
+}

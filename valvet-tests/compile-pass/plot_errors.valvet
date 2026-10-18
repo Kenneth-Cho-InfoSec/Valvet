@@ -1,6 +1,13 @@
 import std::plot::plot_points;
 import std::plot::plot_hist;
 import std::plot::plot_svg;
+import std::plot::plot_violin;
+import std::plot::plot_density;
+import std::plot::plot_qq;
+import std::plot::plot_heatmap;
+import std::plot::plot_errorbar;
+import std::plot::PlotBuilder;
+import std::plot::plot_theme_default;
 
 fun main() {
     val ex: Vec<Float64> = vec![];
@@ -9,4 +16,26 @@ fun main() {
     println(match (plot_svg(plot_points(vec![1.0], vec![1.0, 2.0]))) { Ok(s) -> "unexpected", Err(e) -> e, });
     println(match (plot_svg(plot_hist(vec![1.0], 0 as Int64))) { Ok(s) -> "unexpected", Err(e) -> e, });
     println(match (write_file("/nope/x.svg", "hi")) { Ok(n) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_violin(vec![], 0.0))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_density(vec![], 0.0))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_density(vec![0.0 / 0.0], 0.0))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_qq(vec![1.0]))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_qq(vec![1.0, 0.0 / 0.0]))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_qq(vec![2.0, 2.0, 2.0]))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_heatmap(mat_zeros(0, 0)))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    val hm = match (mat_from_rows(vec![vec![0.0 / 0.0, 1.0]])) { Ok(v) -> v, Err(_) -> mat_zeros(0, 0), };
+    println(match (plot_svg(plot_heatmap(hm))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    val e0: Vec<Float64> = vec![];
+    val e1: Vec<Float64> = vec![];
+    println(match (plot_svg(plot_errorbar(e0, e1.clone(), e1.clone()))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_errorbar(vec![1.0], vec![2.0, 3.0], vec![0.5]))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_errorbar(vec![1.0], vec![2.0], vec![0.0 - 1.0]))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_errorbar(vec![1.0], vec![2.0], vec![0.0 / 0.0]))) { Ok(s) -> "unexpected", Err(e) -> e, });
+    val bxs: Vec<Float64> = vec![1.0];
+    val bys: Vec<Float64> = vec![];
+    val blabels: Vec<String> = vec![];
+    val berrs: Vec<Float64> = vec![];
+    val bad = PlotBuilder { kind: "heatmap", xs: bxs, ys: bys, labels: blabels, bins: 10 as Int64, title: "", width: 400 as Int64, height: 300 as Int64, errs: berrs, bandwidth: 0.0, theme: plot_theme_default(), grid_rows: 2 as Int64, grid_cols: 2 as Int64 };
+    println(match (plot_svg(bad)) { Ok(s) -> "unexpected", Err(e) -> e, });
+    println(match (plot_svg(plot_points(vec![1.0], vec![2.0]))) { Ok(_) -> "ok", Err(_) -> "unexpected", });
 }

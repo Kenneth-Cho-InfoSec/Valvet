@@ -323,7 +323,9 @@ match (v) {
 
 - Single C translation unit per program; target is the local machine.
 - File I/O (`read_file`/`write_file`), shell-out (`std::sys`, imp scripts
-  only), plots (SVG), and `.vv`/`.vvt` sources all exist as of 0.3.0.
+  only), plots (SVG), and `.vv`/`.vvt` sources all exist as of 0.3.0;
+  0.4.0 adds violin, density, QQ, heatmap, and error-bar plots plus
+  `PlotTheme` (accent/fg/grid/font size).
   Still deferred: closures, traits, generics beyond the builtins, user
   FFI, macros, lazy frames, and `Display` for user structs.
 - `docs/implementation/SPECIFICATION_GAPS.md` records resolved ambiguities.

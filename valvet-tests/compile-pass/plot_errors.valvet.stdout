@@ -2,3 +2,17 @@ plot needs matching non-empty x and y
 plot needs matching non-empty x and y
 hist needs positive bins
 cannot open file: /nope/x.svg
+violin needs non-empty data
+density needs non-empty data
+plot data must not contain NaN
+qq needs at least two values
+plot data must not contain NaN
+qq needs varying data
+heatmap needs positive rows and cols
+plot data must not contain NaN
+errorbar needs matching non-empty xs, ys, and errs
+errorbar needs matching non-empty xs, ys, and errs
+errorbar needs non-negative errors
+plot data must not contain NaN
+heatmap data must match rows times cols
+ok

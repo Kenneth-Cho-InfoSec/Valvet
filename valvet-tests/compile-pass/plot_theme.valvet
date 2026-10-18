@@ -1,0 +1,12 @@
+import std::plot::plot_points;
+import std::plot::plot_violin;
+import std::plot::plot_theme;
+import std::plot::plot_theme_make;
+import std::plot::plot_svg;
+
+fun main() {
+    val themed = plot_theme(plot_points(vec![1.0, 2.0, 3.0], vec![2.0, 4.0, 3.0]), plot_theme_make("#e11d48", "navy", true, 12 as Int64));
+    println(match (plot_svg(themed)) { Ok(s) -> s, Err(e) -> e, });
+    val themed_violin = plot_theme(plot_violin(vec![1.0, 2.0, 2.0], 1.0), plot_theme_make("#0f766e", "#334155", false, 9 as Int64));
+    println(match (plot_svg(themed_violin)) { Ok(s) -> s, Err(e) -> e, });
+}
