@@ -1,44 +1,147 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Valvet: a small, safe, compiled language for data work</title>
+<title>Valvet · A small, safe, compiled language for data work</title>
+<meta name="description" content="Valvet is a small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime. Frames, models, SQL, units, autodiff, and deterministic parallelism in one language.">
+<meta name="theme-color" content="#f7f3ff">
+<link rel="canonical" href="https://kenneth-cho-infosec.github.io/Valvet/">
+<meta property="og:title" content="Valvet · Data work, compiled">
+<meta property="og:description" content="A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://kenneth-cho-infosec.github.io/Valvet/">
+<meta property="og:site_name" content="Valvet">
+<meta property="og:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Valvet: Data work, compiled. A dark code window and lavender background.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Valvet · Data work, compiled">
+<meta name="twitter:description" content="A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.">
+<meta name="twitter:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
+<link rel="icon" href="assets/favicon.png" type="image/png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Valvet",
+  "applicationCategory": "DeveloperApplication",
+  "description": "A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.",
+  "url": "https://kenneth-cho-infosec.github.io/Valvet/",
+  "sameAs": ["https://github.com/Kenneth-Cho-InfoSec/valvet"]
+}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=11">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<noscript>
+<style>
+  .theme-toggle, .menu-toggle, .back-to-top, .copy-btn, .code-tabs, .pipeline-rail, .stdlib-toolbar, .docs-search, .filter-row, .toast { display: none !important; }
+  .code-panel[hidden], .stage-panel[hidden] { display: block !important; }
+  .stage-panel[hidden] { display: grid !important; }
+  .code-panel { margin-bottom: 18px; }
+  .stage-panel { margin-bottom: 18px; }
+  .docs-toc summary, .examples-toc summary { display: block !important; }
+</style>
+</noscript>
+<script>
+(function () {
+  document.documentElement.classList.add('js');
+  try {
+    var saved = localStorage.getItem('valvet-theme');
+    if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
+  } catch (error) {}
+})();
+</script>
 </head>
-<body>
-<nav class="top"><div class="wrap">
-  <a class="brand" href="index.html"><img src="assets/logo.png" alt="Valvet logo">The Valvet Programming Language</a>
-  <span class="spacer"></span>
-  <a class="link active" href="index.html">Home</a>
-  <a class="link" href="docs.html">Docs</a>
-  <a class="link" href="examples.html">Examples</a>
-  <a class="link" href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
-</div></nav>
+<body class="page-home">
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header" id="site-header">
+  <div class="container nav-shell">
+    <a class="brand" href="index.html" aria-label="Valvet home">
+      <img src="assets/logo-128.png" width="36" height="36" alt="">
+      <span class="brand-name">Valvet</span>
+      <span class="brand-version">0.3.0</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html#why">Why Valvet</a><a href="index.html#features">Features</a><a href="index.html#code">Code</a><a href="docs.html">Docs</a><a href="examples.html">Examples</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="icon-btn theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"/></svg>
+      </button>
+      <a class="btn btn-primary btn-small nav-install" href="index.html#install">Install</a>
+      <button class="icon-btn menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-menu">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobile-menu" hidden>
+    <nav class="container mobile-nav" aria-label="Mobile">
+      <a href="index.html#why">Why Valvet<span aria-hidden="true">↗</span></a>
+<a href="index.html#features">Features<span aria-hidden="true">↗</span></a>
+<a href="index.html#code">Code<span aria-hidden="true">↗</span></a>
+<a href="docs.html">Docs<span aria-hidden="true">↗</span></a>
+<a href="examples.html">Examples<span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub<span aria-hidden="true">↗</span></a>
+    </nav>
+    <div class="container mobile-menu-foot">
+      <a class="btn btn-primary" href="index.html#install">Install Valvet</a>
+      <p>Native binaries. No garbage collector. No runtime.</p>
+    </div>
+  </div>
+</header>
 
-<header class="hero"><div class="wrap">
-  <img class="logo" src="assets/logo.png" alt="Valvet logo">
-  <h1>Valvet</h1>
-  <p class="tag">A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.</p>
-  <a class="btn" href="docs.html">Get Started</a>
-  <a class="btn ghost" href="#install">Install</a>
-</div></header>
-
-<section class="block"><div class="wrap">
-<h2>Why Valvet</h2>
-<div class="grid3">
-  <div class="card"><h3>Safe</h3><p>Borrow-checked references, tracked ownership, and errors that never panic the compiler. Each diagnostic carries file, position, code, and help. Memory bugs that slip through testing in scripting languages are compile errors here.</p></div>
-  <div class="card"><h3>Fast</h3><p>Compiles through C11 to native binaries. Tight loops over vectors run at C speed with no interpreter and no collector pauses. A 3000-sweep model fit over real data finishes in a tenth of a second.</p></div>
-  <div class="card"><h3>Small</h3><p>One coherent core: vectors, structs, enums, pattern matching, modules. Programs read like the analysis they express, and there is little syntax to learn before you are productive.</p></div>
-</div>
-</div></section>
-
-<section class="block alt"><div class="wrap">
-<h2>Thirty seconds</h2>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun mean(v: Vec&lt;Float64&gt;): Float64 {
+<main id="main">
+  <section class="hero" id="top">
+    <div class="hero-backdrop" aria-hidden="true">
+      <div class="orb orb-a"></div>
+      <div class="orb orb-b"></div>
+      <div class="orb orb-c"></div>
+      <div class="hero-dots"></div>
+      <div class="hero-ring ring-a"></div>
+      <div class="hero-ring ring-b"></div>
+      <canvas class="particle-canvas" id="particles"></canvas>
+      <img class="hero-deer" src="assets/logo.png" alt="" width="512" height="512" loading="eager" decoding="async">
+    </div>
+    <div class="container hero-inner">
+      <div class="hero-copy">
+        <h1 class="hero-title">
+          <span class="hero-line"><span>Data work,</span></span>
+          <span class="hero-line"><span>compiled.</span></span>
+        </h1>
+        <p class="hero-lede">A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary btn-lg" href="#install">
+            Install Valvet
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+          <a class="btn btn-ghost btn-lg" href="docs.html">
+            Read the docs
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8"/></svg>
+          </a>
+        </div>
+        <ul class="hero-facts" aria-label="Valvet at a glance">
+          <li><strong>0</strong><span>runtime dependencies</span></li>
+          <li><strong>C11</strong><span>native output</span></li>
+          <li><strong>27</strong><span>stdlib modules</span></li>
+        </ul>
+      </div>
+      <div class="hero-visual" data-parallax>
+        <div class="hero-halo" aria-hidden="true"></div>
+        <div class="code-window hero-code" data-ui>
+          <div class="window-bar">
+            <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="window-file">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h7l5 5v13H6z"/><path d="M13 3v5h5"/></svg>
+              <code>mean.valvet</code>
+            </span>
+            <span class="window-mode">Valvet</span>
+          </div>
+          <pre class="code-pre hero-pre"><code class="language-valvet" data-static-highlight>fun mean(v: Vec&lt;Float64&gt;): Float64 {
     var total = 0.0
     for (x in v) {
         total += x
@@ -46,77 +149,735 @@
     total / (v.len() as Float64)
 }
 
-println(mean(vec![2.0, 4.0, 6.0, 8.0]))</pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">5</pre></div>
-</div></section>
+println(mean(vec![2.0, 4.0, 6.0, 8.0]))</code></pre>
+          <div class="window-output">
+            <span class="output-label">Output</span>
+            <code class="output-value">5</code>
+            <span class="output-note">native binary</span>
+          </div>
+          <div class="window-foot">
+            <span><i class="status-dot"></i>Compiled to C11</span>
+            <span>No GC</span>
+          </div>
+        </div>
+        <div class="float-card float-a" aria-hidden="true">
+          <span class="float-icon">
+            <svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>
+          </span>
+          <span><strong>Borrow checked</strong><small>every reference</small></span>
+        </div>
+        <div class="float-card float-b" aria-hidden="true">
+          <span class="float-icon">
+            <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>
+          </span>
+          <span><strong>0 runtime deps</strong><small>one native binary</small></span>
+        </div>
+      </div>
+    </div>
+    <div class="container hero-bottom">
+      <p class="hero-note">Open source. Written in Rust. Emits C11.</p>
+      <a class="scroll-cue" href="#why">Explore the language <span class="scroll-line" aria-hidden="true"></span></a>
+    </div>
+  </section>
 
-<section class="block"><div class="wrap">
-<h2>How programs run</h2>
-<div class="grid4">
-  <div class="card"><h3>1. Parse</h3><p>Source becomes an annotated syntax tree with exact spans.</p></div>
-  <div class="card"><h3>2. Check</h3><p>Types resolve, then the borrow checker approves every reference.</p></div>
-  <div class="card"><h3>3. Lower</h3><p>Checked code lowers to readable C11 with deterministic frees.</p></div>
-  <div class="card"><h3>4. Link</h3><p>A plain C compiler produces a dependency-free native binary.</p></div>
-</div>
-</div></section>
+  <section class="fact-band" aria-label="Valvet at a glance">
+    <div class="fact-track">
+      <div class="fact-row">
+        <span>Native binaries</span><i></i>
+        <span>No garbage collector</span><i></i>
+        <span>No runtime</span><i></i>
+        <span>27 stdlib modules</span><i></i>
+        <span>185 unit tests</span><i></i>
+        <span>258 / 258 fixtures</span><i></i>
+      </div>
+      <div class="fact-row" aria-hidden="true">
+        <span>Native binaries</span><i></i>
+        <span>No garbage collector</span><i></i>
+        <span>No runtime</span><i></i>
+        <span>27 stdlib modules</span><i></i>
+        <span>185 unit tests</span><i></i>
+        <span>258 / 258 fixtures</span><i></i>
+      </div>
+    </div>
+  </section>
 
-<section class="block alt"><div class="wrap">
-<h2>Proven on real analyses</h2>
-<div class="cards4">
-  <div class="card"><div class="num">16 / 16</div><p>Ordinary least squares statistics on R's <code class="inline">cars</code> dataset match a reference implementation to float rounding.</p></div>
-  <div class="card"><div class="num">15.04 / -0.232</div><p>Logistic regression on the Challenger O-ring data reproduces the published coefficients and risk curve.</p></div>
-  <div class="card"><div class="num">Bit-identical</div><p>PageRank power iteration matches its reference digit for digit; ranks sum to N as the paper claims.</p></div>
-  <div class="card"><div class="num">acc 1.0</div><p>Perceptron training converges exactly as theory predicts on separable data.</p></div>
-</div>
-</div></section>
+  <section class="section section-why" id="why">
+    <div class="container">
+      <div class="section-head split">
+        <div>
+          <h2>Safe. Fast. Small.</h2>
+        </div>
+        <p class="section-lede">Every part of Valvet serves the same goal: analysis that compiles to one native binary you can reason about. No interpreter. No collector. No runtime to deploy.</p>
+      </div>
+      <div class="why-grid">
+        <article class="feature-card why-safe reveal-up" data-tilt data-tilt-max="2.5">
+          <div class="card-copy">
+            <h3>Safe</h3>
+            <p>Borrow-checked references, tracked ownership, and errors that never panic the compiler. Each diagnostic carries file, position, code, and help.</p>
+          </div>
+          <div class="diagnostic-card" data-ui aria-label="Example compiler diagnostic">
+            <div class="diagnostic-head"><span class="diag-dot"></span><span>prog.valvet</span><span class="diag-code">E0205</span></div>
+            <pre><span class="diag-error">error[E0205]: cannot assign through this place</span>
+<span class="diag-dim">  (immutable binding or shared reference)</span>
+<span class="diag-loc">  --&gt; prog.valvet:3:5</span>
+<span class="diag-help">  help: use `var` bindings and `&amp;mut` for mutation</span></pre>
+          </div>
+          <p class="card-foot">Memory bugs that slip through testing in scripting languages are compile errors here.</p>
+        </article>
 
-<section class="block alt"><div class="wrap">
-<h2>New in 0.3.0</h2>
-<div class="grid4">
-  <div class="card"><h3>Models</h3><p>R-style formulas with treatment contrasts, <code class="inline">lm</code> and binomial <code class="inline">glm</code>, weighted fits, ANOVA, and regression diagnostics, every number oracled.</p></div>
-  <div class="card"><h3>SQL</h3><p>A SQL subset over frames: <code class="inline">SELECT</code> with <code class="inline">WHERE</code>, <code class="inline">GROUP BY</code>, <code class="inline">ORDER BY</code>, <code class="inline">LIMIT</code>, planned down to frame verbs.</p></div>
-  <div class="card"><h3>Inference</h3><p>Validation contracts, causal helpers (DiD, 2SLS, propensity, HC0), meta-analysis, Holm/BH adjustments, and exact gamma/Dirichlet samplers.</p></div>
-  <div class="card"><h3>Ergonomics</h3><p>Sources in <code class="inline">.valvet</code>, <code class="inline">.vv</code>, <code class="inline">.vvt</code>; <code class="inline">run --watch</code> re-runs on change; <code class="inline">fmt</code> normalizes whitespace.</p></div>
-</div>
-</div></section>
+        <article class="feature-card why-fast reveal-up" data-tilt data-tilt-max="2.5">
+          <div class="card-copy">
+            <h3>Fast</h3>
+            <p>Tight loops over vectors run at C speed, with no interpreter and no collector pauses.</p>
+          </div>
+          <div class="speed-visual" aria-label="A 3000 sweep model fit finishes in a tenth of a second">
+            <div class="speed-top">
+              <span class="speed-value">0.10<span>s</span></span>
+              <span class="speed-label">3000-sweep model fit<br><small>over real data</small></span>
+            </div>
+            <div class="speed-bars" aria-hidden="true">
+              <i style="--h: 28%"></i><i style="--h: 38%"></i><i style="--h: 34%"></i><i style="--h: 52%"></i><i style="--h: 47%"></i><i style="--h: 66%"></i><i style="--h: 61%"></i><i style="--h: 78%"></i><i style="--h: 72%"></i><i style="--h: 92%"></i>
+            </div>
+          </div>
+          <p class="card-foot">Compiles through C11 to native binaries. No interpreter, no collector pauses.</p>
+        </article>
 
-<section class="block alt"><div class="wrap">
-<h2>New in 0.2.0</h2>
-<div class="grid4">
-  <div class="card"><h3>Units</h3><p>Annotate numbers with <code class="inline">@m</code>, <code class="inline">@s</code>, <code class="inline">@km/h</code>. Dimensions check at compile time; compatible scales convert silently.</p></div>
-  <div class="card"><h3>Frames</h3><p>CSV in, grouped means and audited joins out. Missing cells stay explicit, and every join reports what matched.</p></div>
-  <div class="card"><h3>Autodiff</h3><p>Dual-number forward differentiation with a <code class="inline">seed</code> helper. Write the loss once, read the gradient.</p></div>
-  <div class="card"><h3>Parallel</h3><p><code class="inline">par_sum</code> splits vectors across threads deterministically. Same input, same bits, every thread count.</p></div>
-</div>
-</div></section>
+        <article class="feature-card why-small reveal-up">
+          <div class="card-copy">
+            <h3>Small</h3>
+            <p>One coherent core: vectors, structs, enums, pattern matching, modules. Programs read like the analysis they express, and there is little syntax to learn before you are productive.</p>
+            <ul class="syntax-list" aria-label="Core language constructs">
+              <li><code>Vec&lt;T&gt;</code></li>
+              <li><code>struct</code></li>
+              <li><code>enum</code></li>
+              <li><code>match</code></li>
+              <li><code>modules</code></li>
+              <li><code>units</code></li>
+            </ul>
+          </div>
+          <div class="code-window small-code" data-ui data-tilt data-tilt-max="1.5">
+            <div class="window-bar">
+              <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="window-file"><code>shapes.valvet</code></span>
+              <span class="window-mode">Valvet</span>
+            </div>
+            <pre class="code-pre"><code class="language-valvet">enum Shape {
+    Circle(Float64),
+    Rect(Float64, Float64),
+    Point,
+}
 
-<section class="block" id="install"><div class="wrap">
-<h2>Install</h2>
-<p>Prerequisites: stable Rust and a C compiler. Then:</p>
-<div class="code"><div class="chead"><span>Bash</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><div class="install"><span class="c"># clone the repo, then</span><br>cargo build --release<br>./target/release/valvet run hello.valvet</div></div>
-<p>Commands: <code class="inline">check</code>, <code class="inline">build</code>, <code class="inline">run</code>, <code class="inline">run --watch</code>, <code class="inline">fmt</code>, <code class="inline">test</code>, <code class="inline">new</code>, <code class="inline">repl</code>, <code class="inline">-e</code>. Programs are scripts by default: top-level statements run directly, and <code class="inline">mode exp;</code> keeps the strict classic entry. See the <a href="docs.html">docs</a> for the tour.</p>
-</div></section>
-
-<footer><div class="wrap">
-  Copyright 2026 Kenneth Cho. All rights reserved. Source: <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>.
-</div></footer>
-<script>
-document.querySelectorAll('.code').forEach(function (box) {
-  var btn = box.querySelector('.copy');
-  btn.addEventListener('click', function () {
-    var el = box.querySelector('pre, .install');
-    var txt = el ? el.innerText : '';
-    function done() { btn.classList.add('ok'); setTimeout(function () { btn.classList.remove('ok'); }, 1200); }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(txt).then(done, done);
-    } else {
-      var t = document.createElement('textarea');
-      t.value = txt; document.body.appendChild(t); t.select();
-      try { document.execCommand('copy'); } catch (e) {}
-      t.remove(); done();
+fun area(s: Shape): Float64 {
+    match (s) {
+        Shape::Circle(r) -&gt; 3.141592653589793 * r * r,
+        Shape::Rect(w, h) -&gt; w * h,
+        Shape::Point -&gt; 0.0,
     }
-  });
-});
-</script>
+}</code></pre>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-features" id="features">
+    <div class="container">
+      <div class="section-head split">
+        <div>
+          <h2>Built for data work.</h2>
+        </div>
+        <p class="section-lede">0.3.0 brings R-style models, SQL over frames, inference, causal tools, and reporting. 0.2.0 added units, frames, autodiff, and deterministic parallelism.</p>
+      </div>
+
+      <div class="bento">
+        <article class="bento-card bento-models reveal-up" data-tilt data-tilt-max="2">
+          <div class="bento-copy">
+            <h3>Formulas that become fits.</h3>
+            <p>R-style formulas with treatment contrasts, <code>lm</code> and binomial <code>glm</code>, weighted fits, ANOVA, and regression diagnostics, every number oracled.</p>
+          </div>
+          <div class="model-visual" data-ui aria-label="A regression line over sample points">
+            <div class="model-formula"><code><span>fit</span> = <span>lm</span>(y ~ x1 + x2)</code></div>
+            <svg viewBox="0 0 520 240" role="img" aria-label="Illustrative regression line with sample points">
+              <defs>
+                <linearGradient id="modelLine" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0" stop-color="#7c5cff"/>
+                  <stop offset="1" stop-color="#f0abfc"/>
+                </linearGradient>
+                <linearGradient id="modelFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#7c5cff" stop-opacity=".22"/>
+                  <stop offset="1" stop-color="#7c5cff" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <path d="M34 196 H492 M34 196 V26" class="chart-axis"/>
+              <path d="M34 174 C110 160 150 150 210 132 S330 100 396 74 S460 54 492 44 V196 H34 Z" fill="url(#modelFill)"/>
+              <path d="M34 174 C110 160 150 150 210 132 S330 100 396 74 S460 54 492 44" fill="none" stroke="url(#modelLine)" stroke-width="3" stroke-linecap="round"/>
+              <g class="chart-points">
+                <circle cx="70" cy="168" r="4"/><circle cx="104" cy="154" r="4"/><circle cx="136" cy="162" r="4"/><circle cx="168" cy="146" r="4"/><circle cx="202" cy="138" r="4"/><circle cx="236" cy="128" r="4"/><circle cx="270" cy="120" r="4"/><circle cx="304" cy="108" r="4"/><circle cx="338" cy="98" r="4"/><circle cx="372" cy="88" r="4"/><circle cx="406" cy="72" r="4"/><circle cx="440" cy="66" r="4"/><circle cx="474" cy="52" r="4"/>
+              </g>
+              <text x="54" y="42" class="chart-label">observed</text>
+              <text x="384" y="218" class="chart-label">fitted</text>
+            </svg>
+          </div>
+        </article>
+
+        <article class="bento-card bento-sql reveal-up" data-tilt data-tilt-max="2">
+          <div class="bento-copy">
+            <h3>Queries over frames.</h3>
+            <p>A SQL subset over frames: <code>SELECT</code> with <code>WHERE</code>, <code>GROUP BY</code>, <code>ORDER BY</code>, <code>LIMIT</code>, planned down to frame verbs.</p>
+          </div>
+          <div class="sql-visual" data-ui>
+            <pre><code class="language-valvet">SELECT region, SUM(sales)
+FROM f
+GROUP BY region
+ORDER BY region</code></pre>
+            <div class="sql-result">
+              <div><span><code>region</code></span><span><code>sum</code></span></div>
+              <div><span><code>east</code></span><span><code>40</code></span></div>
+              <div><span><code>west</code></span><span><code>60</code></span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="bento-card bento-inference reveal-up" data-tilt data-tilt-max="2">
+          <div class="bento-copy">
+            <h3>Uncertainty, made explicit.</h3>
+            <p>Validation contracts, causal helpers (DiD, 2SLS, propensity, HC0), meta-analysis, Holm/BH adjustments, and exact gamma/Dirichlet samplers.</p>
+          </div>
+          <div class="distribution-visual" aria-label="A normal distribution curve">
+            <svg viewBox="0 0 360 180" role="img" aria-label="Illustrative normal distribution with a shaded tail">
+              <defs>
+                <linearGradient id="distFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#a78bfa" stop-opacity=".5"/>
+                  <stop offset="1" stop-color="#a78bfa" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <path d="M20 150 H340" class="chart-axis"/>
+              <path d="M20 150 C78 150 86 52 180 40 C274 52 282 150 340 150" fill="url(#distFill)"/>
+              <path d="M20 150 C78 150 86 52 180 40 C274 52 282 150 340 150" fill="none" stroke="#a78bfa" stroke-width="2.5"/>
+              <path d="M244 88 C262 88 276 104 282 150 H206 C212 104 226 88 244 88Z" fill="#7c5cff" opacity=".28"/>
+              <text x="248" y="170" class="chart-label">p &lt; 0.05</text>
+            </svg>
+          </div>
+        </article>
+
+        <article class="bento-card bento-ergonomics reveal-up" data-tilt data-tilt-max="2">
+          <div class="bento-copy">
+            <h3>A toolchain that stays out of the way.</h3>
+            <p>Sources in <code>.valvet</code>, <code>.vv</code>, <code>.vvt</code>; <code>run --watch</code> re-runs on change; <code>fmt</code> normalizes whitespace.</p>
+          </div>
+          <div class="terminal-mini" data-ui>
+            <div class="terminal-bar"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span><code>~/analysis</code></span></div>
+            <pre><code class="language-bash">$ valvet run --watch mean.valvet
+mean = 5
+watching mean.valvet
+$ valvet fmt mean.valvet
+formatted mean.valvet</code></pre>
+          </div>
+        </article>
+      </div>
+
+      <div class="release-strip">
+        <div class="release-strip-head"><h3>The 0.2.0 foundation</h3></div>
+        <div class="release-items">
+          <div class="release-item"><h4>Units</h4><p>Annotate numbers with <code>@m</code>, <code>@s</code>, <code>@km/h</code>. Dimensions check at compile time; compatible scales convert silently.</p></div>
+          <div class="release-item"><h4>Frames</h4><p>CSV in, grouped means and audited joins out. Missing cells stay explicit, and every join reports what matched.</p></div>
+          <div class="release-item"><h4>Autodiff</h4><p>Dual-number forward differentiation with a <code>seed</code> helper. Write the loss once, read the gradient.</p></div>
+          <div class="release-item"><h4>Parallel</h4><p><code>par_sum</code> splits vectors across threads deterministically. Same input, same bits, every thread count.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-code" id="code">
+    <div class="section-glow" aria-hidden="true"></div>
+    <div class="container">
+      <div class="section-head split section-head-light">
+        <div>
+          <h2>Write the analysis.<br>Ship the binary.</h2>
+        </div>
+        <p class="section-lede">Every sample below runs as shown with <code>valvet run</code>. No wrapper, no imports for the basics, no runtime to initialize.</p>
+      </div>
+
+      <div class="showcase">
+        <div class="code-tabs" role="tablist" aria-label="Code examples">
+          <button class="code-tab is-active" type="button" role="tab" id="tab-mean" aria-selected="true" aria-controls="panel-mean" data-code-tab="mean">
+            <span class="tab-file"><code>mean.valvet</code></span>
+            <span class="tab-note">Vectors and a snapshot loop</span>
+          </button>
+          <button class="code-tab" type="button" role="tab" id="tab-match" aria-selected="false" aria-controls="panel-match" data-code-tab="match" tabindex="-1">
+            <span class="tab-file"><code>match.valvet</code></span>
+            <span class="tab-note">Exhaustive pattern matching</span>
+          </button>
+          <button class="code-tab" type="button" role="tab" id="tab-units" aria-selected="false" aria-controls="panel-units" data-code-tab="units" tabindex="-1">
+            <span class="tab-file"><code>units.valvet</code></span>
+            <span class="tab-note">Dimensions in the type</span>
+          </button>
+          <button class="code-tab" type="button" role="tab" id="tab-sql" aria-selected="false" aria-controls="panel-sql" data-code-tab="sql" tabindex="-1">
+            <span class="tab-file"><code>sql.valvet</code></span>
+            <span class="tab-note">SQL planned to frame verbs</span>
+          </button>
+          <div class="code-tab-cta">
+            <p>Every example is runnable.</p>
+            <a href="examples.html">Browse all 14 <span aria-hidden="true">→</span></a>
+          </div>
+        </div>
+
+        <div class="code-panels" data-ui>
+          <div class="code-panel is-active" id="panel-mean" role="tabpanel" aria-labelledby="tab-mean" data-code-panel="mean" data-type-code>
+            <div class="window-bar">
+              <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="window-file"><code>mean.valvet</code></span>
+              <button class="copy-btn" type="button" data-copy aria-label="Copy mean.valvet">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V5.5A1.5 1.5 0 0 1 9.5 4h9A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H16"/><rect x="4" y="8" width="12" height="12" rx="2"/></svg>
+                <span>Copy</span>
+              </button>
+            </div>
+            <pre class="code-pre"><code class="language-valvet">fun mean(v: Vec&lt;Float64&gt;): Float64 {
+    var total = 0.0
+    for (x in v) {
+        total += x
+    }
+    total / (v.len() as Float64)
+}
+
+println(mean(vec![2.0, 4.0, 6.0, 8.0]))</code></pre>
+            <div class="panel-output">
+              <span class="output-label">Output</span>
+              <pre><code class="language-text">5</code></pre>
+              <p>A growable heap vector, a snapshot loop that cannot alias the buffer, and one explicit cast.</p>
+            </div>
+          </div>
+
+          <div class="code-panel" id="panel-match" role="tabpanel" aria-labelledby="tab-match" data-code-panel="match" data-type-code hidden>
+            <div class="window-bar">
+              <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="window-file"><code>match.valvet</code></span>
+              <button class="copy-btn" type="button" data-copy aria-label="Copy match.valvet">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V5.5A1.5 1.5 0 0 1 9.5 4h9A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H16"/><rect x="4" y="8" width="12" height="12" rx="2"/></svg>
+                <span>Copy</span>
+              </button>
+            </div>
+            <pre class="code-pre"><code class="language-valvet">fun fib(n: Int32): Int32 {
+    if (n &lt; 2) { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+println(fib(10))
+val o: Option&lt;Int32&gt; = Some(7)
+println(match (o) { Some(x) -&gt; x * 2, None -&gt; 0, })</code></pre>
+            <div class="panel-output">
+              <span class="output-label">Output</span>
+              <pre><code class="language-text">55
+14</code></pre>
+              <p><code>match</code> on <code>Option</code> forces both cases onto the page. Forget an arm and the compiler rejects the program.</p>
+            </div>
+          </div>
+
+          <div class="code-panel" id="panel-units" role="tabpanel" aria-labelledby="tab-units" data-code-panel="units" data-type-code hidden>
+            <div class="window-bar">
+              <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="window-file"><code>units.valvet</code></span>
+              <button class="copy-btn" type="button" data-copy aria-label="Copy units.valvet">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V5.5A1.5 1.5 0 0 1 9.5 4h9A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H16"/><rect x="4" y="8" width="12" height="12" rx="2"/></svg>
+                <span>Copy</span>
+              </button>
+            </div>
+            <pre class="code-pre"><code class="language-valvet">fun speed(d: Float64 @m, t: Float64 @s): Float64 @m/s {
+    d / t
+}
+
+println(speed(100.0, 9.58))
+val v: Float64 @km/h = 72.0
+val w: Float64 @m/s = v
+println(w)</code></pre>
+            <div class="panel-output">
+              <span class="output-label">Output</span>
+              <pre><code class="language-text">10.438413361169102
+20</code></pre>
+              <p>Dimensions are part of the type. <code>@km/h</code> converts to <code>@m/s</code> on assignment.</p>
+            </div>
+          </div>
+
+          <div class="code-panel" id="panel-sql" role="tabpanel" aria-labelledby="tab-sql" data-code-panel="sql" data-type-code hidden>
+            <div class="window-bar">
+              <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="window-file"><code>sql.valvet</code></span>
+              <button class="copy-btn" type="button" data-copy aria-label="Copy sql.valvet">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V5.5A1.5 1.5 0 0 1 9.5 4h9A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H16"/><rect x="4" y="8" width="12" height="12" rx="2"/></svg>
+                <span>Copy</span>
+              </button>
+            </div>
+            <pre class="code-pre"><code class="language-valvet">import std::frame::DynamicFrame;
+import std::sql::sql;
+
+val f = DynamicFrame { names: vec!["region", "sales"], cols: vec![vec!["east", "west", "east", "west"], vec!["10", "20", "30", "40"]], nrows: 4 as Int64 };
+let Ok(q) = sql(&amp;f, "SELECT region, SUM(sales) FROM f GROUP BY region ORDER BY region") else {
+    println("bad query");
+    return 1;
+};
+println(q.cols[0 as Int64]);
+println(q.cols[1 as Int64]);</code></pre>
+            <div class="panel-output">
+              <span class="output-label">Output</span>
+              <pre><code class="language-text">[east, west]
+[40, 60]</code></pre>
+              <p>The query plans down to frame verbs, so results match the verb form exactly. Anything outside the subset is a compile-time error.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-pipeline" id="pipeline">
+    <div class="container">
+      <div class="section-head split">
+        <div>
+          <h2>Four stages.<br>One translation unit.</h2>
+        </div>
+        <p class="section-lede">The frontend checks everything before any C is emitted. The C compiler handles only the last mile.</p>
+      </div>
+
+      <div class="pipeline">
+        <div class="pipeline-rail" role="tablist" aria-label="Compiler stages">
+          <button class="stage-btn is-active" type="button" role="tab" id="stage-parse" aria-selected="true" aria-controls="stage-panel-parse" data-stage="parse">
+            <span class="stage-name">Parse</span>
+            <span class="stage-line"></span>
+          </button>
+          <button class="stage-btn" type="button" role="tab" id="stage-check" aria-selected="false" aria-controls="stage-panel-check" data-stage="check" tabindex="-1">
+            <span class="stage-name">Check</span>
+            <span class="stage-line"></span>
+          </button>
+          <button class="stage-btn" type="button" role="tab" id="stage-lower" aria-selected="false" aria-controls="stage-panel-lower" data-stage="lower" tabindex="-1">
+            <span class="stage-name">Lower</span>
+            <span class="stage-line"></span>
+          </button>
+          <button class="stage-btn" type="button" role="tab" id="stage-link" aria-selected="false" aria-controls="stage-panel-link" data-stage="link" tabindex="-1">
+            <span class="stage-name">Link</span>
+            <span class="stage-line"></span>
+          </button>
+        </div>
+
+        <div class="pipeline-panels">
+          <div class="stage-panel is-active" id="stage-panel-parse" role="tabpanel" aria-labelledby="stage-parse" data-stage-panel="parse">
+            <div class="stage-copy">
+              <h3>An annotated syntax tree, with exact spans.</h3>
+              <p>The parser keeps file, line, and column on every node. Nothing is guessed, and every later error can point to the character that caused it.</p>
+            </div>
+            <div class="stage-visual ast-visual" data-ui aria-label="Annotated syntax tree">
+              <div class="ast-root"><span class="ast-file"><code>source.valvet</code></span></div>
+              <ul class="ast-tree">
+                <li><span class="ast-node"><code>fun mean(v: Vec&lt;Float64&gt;): Float64</code></span>
+                  <ul>
+                    <li><span><code>var total = 0.0</code></span></li>
+                    <li><span><code>for (x in v) { total += x }</code></span></li>
+                    <li><span><code>total / (v.len() as Float64)</code></span></li>
+                  </ul>
+                </li>
+                <li><span class="ast-node"><code>println(mean(vec![2.0, 4.0, 6.0, 8.0]))</code></span></li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="stage-panel" id="stage-panel-check" role="tabpanel" aria-labelledby="stage-check" data-stage-panel="check" hidden>
+            <div class="stage-copy">
+              <h3>Every reference is approved before code exists.</h3>
+              <p>Types resolve, then the borrow checker approves every reference. Diagnostics carry a stable code and a fix, not just a line number.</p>
+            </div>
+            <div class="stage-visual check-visual">
+              <div class="diagnostic-card large" data-ui>
+                <div class="diagnostic-head"><span class="diag-dot"></span><span>prog.valvet</span><span class="diag-code">E0205</span></div>
+                <pre><span class="diag-error">error[E0205]: cannot assign through this place</span>
+<span class="diag-dim">  (immutable binding or shared reference)</span>
+<span class="diag-loc">  --&gt; prog.valvet:3:5</span>
+<span class="diag-help">  help: use `var` bindings and `&amp;mut` for mutation</span></pre>
+                <div class="check-chips"><span>file</span><span>position</span><span>code</span><span>help</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="stage-panel" id="stage-panel-lower" role="tabpanel" aria-labelledby="stage-lower" data-stage-panel="lower" hidden>
+            <div class="stage-copy">
+              <h3>Readable C, deterministic frees.</h3>
+              <p>Checked code lowers to C11. Owned values free at scope exit, and the generated file can be read by anyone who needs to audit the last mile.</p>
+            </div>
+            <div class="stage-visual lower-visual" data-ui>
+              <div class="window-bar">
+                <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="window-file"><code>sample.c · excerpt</code></span>
+                <span class="window-mode">C11</span>
+              </div>
+              <pre class="code-pre"><code class="language-c">static double v_mean_a1_fn(VVec_Float64 v_v) {
+    double v_total = 0.0;
+    VVec_Float64 _vt1 = v_clone_Vec_Float64(v_v);
+    ...
+    v_drop_Vec_Float64(&amp;_vt1);
+    return _vt3;
+}</code></pre>
+              <div class="lower-note"><span>Generated from <code>mean.valvet</code></span><span>deterministic frees</span></div>
+            </div>
+          </div>
+
+          <div class="stage-panel" id="stage-panel-link" role="tabpanel" aria-labelledby="stage-link" data-stage-panel="link" hidden>
+            <div class="stage-copy">
+              <h3>No runtime to install.</h3>
+              <p>A plain C compiler produces a dependency-free native binary. <code>check</code> needs only Rust; <code>build</code> and <code>run</code> add the C compiler.</p>
+            </div>
+            <div class="stage-visual link-visual" data-ui>
+              <div class="terminal-mini large">
+                <div class="terminal-bar"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span><code>~/valvet</code></span></div>
+                <pre><code class="language-bash">$ valvet build sample.valvet
+built target/valvet/sample
+$ ./target/valvet/sample
+5</code></pre>
+              </div>
+              <div class="binary-card">
+                <div class="binary-head"><span class="status-dot"></span><span>sample</span><span>native</span></div>
+                <div class="binary-meta"><span>16 KB</span><span>x86-64 Linux</span><span>no deps</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-proof" id="proof">
+    <div class="container">
+      <div class="section-head split">
+        <div>
+          <h2>Proven on<br>real analyses.</h2>
+        </div>
+        <p class="section-lede">Every number is compared against a reference implementation. These are the results, not projections.</p>
+      </div>
+      <div class="proof-grid">
+        <article class="proof-card reveal-up">
+          <div class="proof-figure"><span data-count="16" data-decimals="0">16</span><span class="proof-denom">/ 16</span></div>
+          <h3>OLS statistics</h3>
+          <p>Ordinary least squares statistics on R's <code>cars</code> dataset match a reference implementation to float rounding.</p>
+        </article>
+        <article class="proof-card reveal-up">
+          <div class="proof-figure proof-figure-small"><span data-count="15.04" data-decimals="2">15.04</span><span class="proof-sep">/</span><span data-count="-0.232" data-decimals="3">-0.232</span></div>
+          <h3>Logistic regression</h3>
+          <p>Logistic regression on the Challenger O-ring data reproduces the published coefficients and risk curve.</p>
+        </article>
+        <article class="proof-card reveal-up">
+          <div class="proof-figure proof-figure-text">Bit-identical</div>
+          <h3>PageRank</h3>
+          <p>PageRank power iteration matches its reference digit for digit; ranks sum to N as the paper claims.</p>
+        </article>
+        <article class="proof-card reveal-up">
+          <div class="proof-figure proof-figure-small"><span class="proof-prefix">acc</span><span data-count="1.0" data-decimals="1">1.0</span></div>
+          <h3>Perceptron</h3>
+          <p>Perceptron training converges exactly as theory predicts on separable data.</p>
+        </article>
+      </div>
+      <div class="test-gates reveal-up">
+        <div><strong>185</strong><span>unit tests</span></div>
+        <div><strong>258 / 258</strong><span>fixtures in debug and release</span></div>
+        <div><strong>ASan + UBSan</strong><span>clean output</span></div>
+        <div><strong>0</strong><span>compiler panics</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-stdlib" id="stdlib">
+    <div class="container">
+      <div class="section-head split">
+        <div>
+          <h2>Batteries,<br>not a framework.</h2>
+        </div>
+        <p class="section-lede">27 modules with explicit imports and no prelude. Frames, models, inference, SQL, plotting, and provenance ship as Valvet sources.</p>
+      </div>
+      <div class="stdlib-toolbar reveal-up">
+        <label for="module-filter">Filter modules</label>
+        <input id="module-filter" type="search" placeholder="Try frame, model, plot…" autocomplete="off" spellcheck="false">
+        <span class="module-count" data-module-count>27 modules</span>
+      </div>
+      <div class="module-groups">
+        <div class="module-group">
+          <h3>Data</h3>
+          <ul>
+            <li data-module><code>std::frame</code><span>Selection, joins, windows, pivots</span></li>
+            <li data-module><code>std::csv</code><span>CSV and flat JSON</span></li>
+            <li data-module><code>std::sql</code><span>SELECT over frames</span></li>
+            <li data-module><code>std::schema</code><span>Missing-aware typed parsing</span></li>
+            <li data-module><code>std::validate</code><span>Contracts with reports</span></li>
+            <li data-module><code>std::stats</code><span>Missing-aware means and sums</span></li>
+            <li data-module><code>std::dist</code><span>15+ distributions</span></li>
+            <li data-module><code>std::infer</code><span>t, chi-square, F, exact tests</span></li>
+            <li data-module><code>std::model</code><span>lm, glm, ANOVA, diagnostics</span></li>
+            <li data-module><code>std::select</code><span>Splits, k-fold, AIC/BIC</span></li>
+            <li data-module><code>std::causal</code><span>DiD, 2SLS, propensity, HC0</span></li>
+            <li data-module><code>std::meta</code><span>Effect sizes, meta-analysis, Holm/BH</span></li>
+            <li data-module><code>std::features</code><span>Scaling, polynomials, encoding</span></li>
+            <li data-module><code>std::synth</code><span>Typed random frames</span></li>
+          </ul>
+        </div>
+        <div class="module-group">
+          <h3>Tools</h3>
+          <ul>
+            <li data-module><code>std::report</code><span>LaTeX and HTML tables</span></li>
+            <li data-module><code>std::plot</code><span>Static SVG plots</span></li>
+            <li data-module><code>std::date</code><span>Civil-date arithmetic</span></li>
+            <li data-module><code>std::time</code><span>Timestamps and durations</span></li>
+            <li data-module><code>std::factor</code><span>Level and code helpers</span></li>
+          </ul>
+        </div>
+        <div class="module-group">
+          <h3>Core</h3>
+          <ul>
+            <li data-module><code>std::math</code><span>sqrt, exp, log, trig</span></li>
+            <li data-module><code>std::str</code><span>Split, trim, join, case</span></li>
+            <li data-module><code>std::re</code><span>Thompson-NFA regex</span></li>
+            <li data-module><code>std::complex</code><span>Complex numbers</span></li>
+            <li data-module><code>std::units</code><span>Known @unit definitions</span></li>
+            <li data-module><code>std::provenance</code><span>Hashes and transform logs</span></li>
+            <li data-module><code>std::autodiff</code><span>Dual-number gradients</span></li>
+            <li data-module><code>std::sys</code><span>Run, capture, environment</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-install" id="install">
+    <div class="container">
+      <div class="install-grid">
+        <div class="install-copy">
+          <h2>From clone<br>to native.</h2>
+          <p class="section-lede">Prerequisites: stable Rust and a C compiler. Then build the compiler and run a program.</p>
+          <div class="install-steps">
+            <div class="install-step">
+              <div><h3>Clone and build</h3><p>Rust builds the compiler. The C compiler handles only the last mile.</p></div>
+            </div>
+            <div class="install-step">
+              <div><h3>Run a program</h3><p>Top-level statements run directly. No wrapper, no runtime to initialize.</p></div>
+            </div>
+            <div class="install-step">
+              <div><h3>Read the tour</h3><p>Ownership, units, frames, SQL, models, and the CLI in one guide.</p></div>
+            </div>
+          </div>
+          <div class="install-actions">
+            <a class="btn btn-primary" href="docs.html">Read the docs</a>
+            <a class="btn btn-ghost" href="examples.html">Browse examples</a>
+          </div>
+        </div>
+        <div class="install-terminal" data-ui>
+          <div class="terminal-mini large">
+            <div class="terminal-bar">
+              <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span>bash</span>
+              <button class="copy-btn" type="button" data-copy aria-label="Copy install commands">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8V5.5A1.5 1.5 0 0 1 9.5 4h9A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H16"/><rect x="4" y="8" width="12" height="12" rx="2"/></svg>
+                <span>Copy</span>
+              </button>
+            </div>
+            <pre class="code-pre"><code class="language-bash">git clone https://github.com/Kenneth-Cho-InfoSec/valvet
+cd valvet
+cargo build --release
+./target/release/valvet run hello.valvet</code></pre>
+          </div>
+          <div class="hello-card">
+            <div class="hello-head"><span><code>hello.valvet</code></span><span class="status-dot"></span></div>
+            <pre><code class="language-valvet">println("hello, valvet")</code></pre>
+            <div class="hello-out"><span>Output</span><code>hello, valvet</code></div>
+          </div>
+          <div class="command-row" aria-label="Valvet CLI commands">
+            <code>check</code><code>build</code><code>run</code><code>run --watch</code><code>fmt</code><code>test</code><code>new</code><code>repl</code><code>-e</code>
+          </div>
+          <p class="install-note">Programs are scripts by default: top-level statements run directly, and <code>mode exp;</code> keeps the strict classic entry.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-cta" id="docs">
+    <div class="container">
+      <div class="cta-head">
+        <h2>Keep going.</h2>
+        <p>The full language, runnable examples, and the compiler source are one click away.</p>
+      </div>
+      <div class="cta-grid">
+        <a class="cta-card cta-docs" href="docs.html" data-tilt data-tilt-max="2">
+          <span class="cta-label">Documentation</span>
+          <h3>The complete language tour</h3>
+          <p>Values and types, ownership, modules, units, frames, autodiff, the standard library, and the CLI.</p>
+          <ul class="cta-topics">
+            <li>Values and types</li>
+            <li>Ownership</li>
+            <li>Modules</li>
+            <li>Units</li>
+            <li>Frames</li>
+            <li>SQL over frames</li>
+            <li>Models</li>
+            <li>CLI</li>
+          </ul>
+          <span class="cta-link">Read the docs <span aria-hidden="true">→</span></span>
+          <span class="cta-docs-mark" aria-hidden="true" data-ui>24</span>
+          <span class="cta-docs-caption">reference sections</span>
+        </a>
+        <div class="cta-side">
+          <a class="cta-card cta-small" href="examples.html" data-tilt data-tilt-max="2">
+            <span class="cta-label">Examples</span>
+            <h3>Fourteen programs that run</h3>
+            <p>From a mean and FizzBuzz to pattern matching, units, frames, and SQL over frames.</p>
+            <div class="cta-chips"><code>mean</code><code>fib</code><code>units</code><code>sql</code></div>
+            <span class="cta-link">Browse examples <span aria-hidden="true">→</span></span>
+          </a>
+          <a class="cta-card cta-small" href="https://github.com/Kenneth-Cho-InfoSec/valvet" data-tilt data-tilt-max="2">
+            <span class="cta-label">GitHub</span>
+            <h3>The compiler, in the open</h3>
+            <p>Source, issues, and the Rust code that parses, checks, borrows, and lowers to C11.</p>
+            <div class="cta-chips"><code>Rust</code><code>C11</code><code>27 modules</code></div>
+            <span class="cta-link">Open GitHub <span aria-hidden="true">↗</span></span>
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div class="footer-brand">
+      <a class="brand" href="index.html" aria-label="Valvet home">
+        <img src="assets/logo-128.png" width="40" height="40" alt="">
+        <span class="brand-name">Valvet</span>
+      </a>
+      <p>A small, safe, compiled language for data work.</p>
+      <p class="footer-note">Native binaries. No garbage collector. No runtime.</p>
+    </div>
+    <div class="footer-col">
+      <h2>Language</h2>
+      <a href="index.html#why">Why Valvet</a>
+      <a href="index.html#features">Features</a>
+      <a href="index.html#code">Code</a>
+      <a href="index.html#pipeline">How it runs</a>
+    </div>
+    <div class="footer-col">
+      <h2>Resources</h2>
+      <a href="docs.html">Documentation</a>
+      <a href="examples.html">Examples</a>
+      <a href="index.html#stdlib">Standard library</a>
+      <a href="index.html#install">Install</a>
+    </div>
+    <div class="footer-col">
+      <h2>Project</h2>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/blob/main/LICENSE">License</a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">Issues</a>
+    </div>
+  </div>
+  <div class="container footer-bottom">
+    <p>Copyright 2026 Kenneth Cho. All rights reserved.</p>
+    <p class="footer-built">Compiled through C11. Shipped as one binary.</p>
+  </div>
+  <div class="footer-wordmark" aria-hidden="true">VALVET</div>
+</footer>
+<div class="toast" role="status" aria-live="polite"></div>
+<button class="back-to-top" type="button" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+</button>
+<script src="app.js" defer></script>
 </body>
 </html>

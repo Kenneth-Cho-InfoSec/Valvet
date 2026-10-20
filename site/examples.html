@@ -1,74 +1,241 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Valvet Examples</title>
+<title>Examples · Valvet</title>
+<meta name="description" content="Runnable Valvet programs: vectors, pattern matching, units, frames, and SQL. Every output shown is the real program output.">
+<meta name="theme-color" content="#f7f3ff">
+<link rel="canonical" href="https://kenneth-cho-infosec.github.io/Valvet/examples.html">
+<meta property="og:title" content="Examples · Valvet">
+<meta property="og:description" content="Runnable Valvet programs: vectors, pattern matching, units, frames, and SQL. Every output shown is the real program output.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://kenneth-cho-infosec.github.io/Valvet/examples.html">
+<meta property="og:site_name" content="Valvet">
+<meta property="og:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Valvet: Data work, compiled. A dark code window and lavender background.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Examples · Valvet">
+<meta name="twitter:description" content="Runnable Valvet programs: vectors, pattern matching, units, frames, and SQL. Every output shown is the real program output.">
+<meta name="twitter:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
+<link rel="icon" href="assets/favicon.png" type="image/png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=11">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<noscript>
+<style>
+  .theme-toggle, .menu-toggle, .back-to-top, .copy-btn, .code-tabs, .pipeline-rail, .stdlib-toolbar, .docs-search, .filter-row, .toast { display: none !important; }
+  .code-panel[hidden], .stage-panel[hidden] { display: block !important; }
+  .stage-panel[hidden] { display: grid !important; }
+  .code-panel { margin-bottom: 18px; }
+  .stage-panel { margin-bottom: 18px; }
+  .docs-toc summary, .examples-toc summary { display: block !important; }
+</style>
+</noscript>
+<script>
+(function () {
+  document.documentElement.classList.add('js');
+  try {
+    var saved = localStorage.getItem('valvet-theme');
+    if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
+  } catch (error) {}
+})();
+</script>
 </head>
-<body>
-<nav class="top"><div class="wrap">
-  <a class="brand" href="index.html"><img src="assets/logo.png" alt="Valvet logo">The Valvet Programming Language</a>
-  <span class="spacer"></span>
-  <a class="link" href="index.html">Home</a>
-  <a class="link" href="docs.html">Docs</a>
-  <a class="link active" href="examples.html">Examples</a>
-  <a class="link" href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
-</div></nav>
+<body class="page-examples">
+<a class="skip-link" href="#main">Skip to content</a>
 
-<div class="wrap">
-<section class="block">
-<h2>Examples</h2>
-<p>Every sample below runs as shown with <code class="inline">valvet run</code>.</p>
-<h3>Hello</h3>
-<p>A complete Valvet program needs only statements and an output call: top-level code runs directly with no wrapper, no imports, and no runtime to initialize. The compiler turns this into a dependency-free native binary.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>println("hello, valvet") <span class="cm">// top-level statements run directly</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">hello, valvet</pre></div>
-<h3>Fibonacci and pattern matching</h3>
-<p>Recursion works as expected, and <code class="inline">match</code> on <code class="inline">Option</code> forces both cases onto the page. Forget an arm or mix up the types and the compiler rejects the program before it ever runs. That guarantee is what makes refactoring fearless: add a variant anywhere and every match in the codebase must answer for it.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun fib(n: Int32): Int32 { <span class="cm">// recursive Fibonacci, Int32 in and out</span>
-    if (n &lt; 2) { n } else { fib(n - 1) + fib(n - 2) } <span class="cm">// base case returns n, else sum the two recursions</span>
+<header class="site-header" id="site-header">
+  <div class="container nav-shell">
+    <a class="brand" href="index.html" aria-label="Valvet home">
+      <img src="assets/logo-128.png" width="36" height="36" alt="">
+      <span class="brand-name">Valvet</span>
+      <span class="brand-version">0.3.0</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html#why">Why Valvet</a><a href="index.html#features">Features</a><a href="index.html#code">Code</a><a href="docs.html">Docs</a><a href="examples.html" class="is-active" aria-current="page">Examples</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="icon-btn theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"/></svg>
+      </button>
+      <a class="btn btn-primary btn-small nav-install" href="index.html#install">Install</a>
+      <button class="icon-btn menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-menu">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobile-menu" hidden>
+    <nav class="container mobile-nav" aria-label="Mobile">
+      <a href="index.html#why">Why Valvet<span aria-hidden="true">↗</span></a>
+<a href="index.html#features">Features<span aria-hidden="true">↗</span></a>
+<a href="index.html#code">Code<span aria-hidden="true">↗</span></a>
+<a href="docs.html">Docs<span aria-hidden="true">↗</span></a>
+<a href="examples.html">Examples<span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub<span aria-hidden="true">↗</span></a>
+    </nav>
+    <div class="container mobile-menu-foot">
+      <a class="btn btn-primary" href="index.html#install">Install Valvet</a>
+      <p>Native binaries. No garbage collector. No runtime.</p>
+    </div>
+  </div>
+</header>
+<main id="main">
+
+<div class="reading-progress" data-progress aria-hidden="true"></div>
+<section class="page-hero examples-hero">
+  <div class="container page-hero-inner">
+    <h1>Examples</h1>
+    <p class="page-lede">Every sample runs as shown with <code>valvet run</code>. Start with a mean, end with SQL over frames.</p>
+    <div class="page-meta"><span>14 programs</span><span>Every output verified</span><span>No runtime</span></div>
+  </div>
+</section>
+<div class="container examples-layout">
+  <aside class="examples-sidebar">
+    <nav class="toc-disclosure" aria-label="Examples">
+      <details class="examples-toc">
+        <summary>On this page<svg class="toc-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></summary>
+        <div class="toc-links">
+          <a href="#hello" data-example-link="hello" data-category="basics">Hello</a><a href="#fibonacci-and-pattern-matching" data-example-link="fibonacci-and-pattern-matching" data-category="basics">Fibonacci and pattern matching</a><a href="#mean-of-a-vector" data-example-link="mean-of-a-vector" data-category="basics">Mean of a vector</a><a href="#fizzbuzz" data-example-link="fizzbuzz" data-category="basics">FizzBuzz</a><a href="#newton-square-root" data-example-link="newton-square-root" data-category="basics">Newton square root</a><a href="#vector-dot-product" data-example-link="vector-dot-product" data-category="basics">Vector dot product</a><a href="#shapes-and-areas" data-example-link="shapes-and-areas" data-category="basics">Shapes and areas</a><a href="#loop-with-a-break-value" data-example-link="loop-with-a-break-value" data-category="basics">Loop with a break value</a><a href="#strings" data-example-link="strings" data-category="basics">Strings</a><a href="#least-squares-slope" data-example-link="least-squares-slope" data-category="data">Least-squares slope</a><a href="#script-and-explicit-modes" data-example-link="script-and-explicit-modes" data-category="language">Script and explicit modes</a><a href="#units-of-measure" data-example-link="units-of-measure" data-category="language">Units of measure</a><a href="#frames-and-grouping" data-example-link="frames-and-grouping" data-category="data">Frames and grouping</a><a href="#sql-over-frames" data-example-link="sql-over-frames" data-category="data">SQL over frames</a>
+        </div>
+      </details>
+    </nav>
+    <div class="sidebar-note">
+      <p>Want the rules behind the code?</p>
+      <a href="docs.html">Read the language guide <span aria-hidden="true">→</span></a>
+    </div>
+  </aside>
+  <div class="examples-content">
+    <div class="filter-row" role="group" aria-label="Filter examples">
+      <button class="filter-btn is-active" type="button" data-filter="all">All <span>14</span></button><button class="filter-btn" type="button" data-filter="basics">Basics <span>9</span></button><button class="filter-btn" type="button" data-filter="data">Data <span>3</span></button><button class="filter-btn" type="button" data-filter="language">Language <span>2</span></button>
+    </div>
+    <p class="sr-only" data-filter-status aria-live="polite">Showing all 14 examples</p>
+    <div class="examples-list">
+      
+<article class="example-card" id="hello" data-example-card data-category="basics">
+  <header class="example-head">
+    <h2>Hello</h2>
+    <span class="example-tag">Basics</span>
+  </header>
+  <p>A complete Valvet program needs only statements and an output call: top-level code runs directly with no wrapper, no imports, and no runtime to initialize. The compiler turns this into a dependency-free native binary.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">println("hello, valvet") // top-level statements run directly</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">hello, valvet</code></pre>
+</div>
+</article>
+<article class="example-card" id="fibonacci-and-pattern-matching" data-example-card data-category="basics">
+  <header class="example-head">
+    <h2>Fibonacci and pattern matching</h2>
+    <span class="example-tag">Basics</span>
+  </header>
+  <p>Recursion works as expected, and <code data-ui>match</code> on <code data-ui>Option</code> forces both cases onto the page. Forget an arm or mix up the types and the compiler rejects the program before it ever runs. That guarantee is what makes refactoring fearless: add a variant anywhere and every match in the codebase must answer for it.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">fun fib(n: Int32): Int32 { // recursive Fibonacci, Int32 in and out
+    if (n &lt; 2) { n } else { fib(n - 1) + fib(n - 2) } // base case returns n, else sum the two recursions
 }
 
-println(fib(10)) <span class="cm">// prints 55</span>
-val o: Option&lt;Int32&gt; = Some(7) <span class="cm">// optional int holding 7</span>
-println(match (o) { Some(x) -&gt; x * 2, None -&gt; 0, }) <span class="cm">// unwrap and double, or 0 when empty</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">55
-14</pre></div>
-<h3>Mean of a vector</h3>
-<p>The whole data routine in nine lines: a growable heap vector, a snapshot loop that cannot alias the buffer, and an explicit <code class="inline">as</code> conversion at the division. Nothing is hidden. The loop runs at C speed and the vector frees itself when <code class="inline">main</code> exits.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun mean(v: Vec&lt;Float64&gt;): Float64 { <span class="cm">// average of a float vector</span>
-    var total = 0.0 <span class="cm">// running sum, mutable</span>
-    for (x in v) { <span class="cm">// snapshot each element</span>
-        total += x <span class="cm">// add it to the sum</span>
+println(fib(10)) // prints 55
+val o: Option&lt;Int32&gt; = Some(7) // optional int holding 7
+println(match (o) { Some(x) -&gt; x * 2, None -&gt; 0, }) // unwrap and double, or 0 when empty</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">55
+14</code></pre>
+</div>
+</article>
+<article class="example-card" id="mean-of-a-vector" data-example-card data-category="basics">
+  <header class="example-head">
+    <h2>Mean of a vector</h2>
+    <span class="example-tag">Basics</span>
+  </header>
+  <p>The whole data routine in nine lines: a growable heap vector, a snapshot loop that cannot alias the buffer, and an explicit <code data-ui>as</code> conversion at the division. Nothing is hidden. The loop runs at C speed and the vector frees itself when <code data-ui>main</code> exits.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">fun mean(v: Vec&lt;Float64&gt;): Float64 { // average of a float vector
+    var total = 0.0 // running sum, mutable
+    for (x in v) { // snapshot each element
+        total += x // add it to the sum
     }
-    total / (v.len() as Float64) <span class="cm">// divide by length as float</span>
+    total / (v.len() as Float64) // divide by length as float
 }
 
-println(mean(vec![2.0, 4.0, 6.0, 8.0])) <span class="cm">// prints 5</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">5</pre></div>
-<h3>FizzBuzz</h3>
-<p>Control flow that reads top to bottom: <code class="inline">if</code> is an expression, so each branch produces the word directly instead of assigning through flags. Ranges include or exclude their end on demand (<code class="inline">1..=15</code>). The trailing semicolons keep printing calls in statement position inside branches.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>for (i in 1..=15) { <span class="cm">// inclusive range 1 to 15</span>
-        val w = if (i % 15 == 0) { <span class="cm">// divisible by 3 and 5</span>
+println(mean(vec![2.0, 4.0, 6.0, 8.0])) // prints 5</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">5</code></pre>
+</div>
+</article>
+<article class="example-card" id="fizzbuzz" data-example-card data-category="basics">
+  <header class="example-head">
+    <h2>FizzBuzz</h2>
+    <span class="example-tag">Basics</span>
+  </header>
+  <p>Control flow that reads top to bottom: <code data-ui>if</code> is an expression, so each branch produces the word directly instead of assigning through flags. Ranges include or exclude their end on demand (<code data-ui>1..=15</code>). The trailing semicolons keep printing calls in statement position inside branches.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">for (i in 1..=15) { // inclusive range 1 to 15
+        val w = if (i % 15 == 0) { // divisible by 3 and 5
             "FizzBuzz"
         } else {
-            if (i % 3 == 0) { <span class="cm">// divisible by 3 only</span>
+            if (i % 3 == 0) { // divisible by 3 only
                 "Fizz"
             } else {
-                if (i % 5 == 0) { "Buzz" } else { "other" } <span class="cm">// 5-only, else plain number</span>
+                if (i % 5 == 0) { "Buzz" } else { "other" } // 5-only, else plain number
             }
         }
-        if (w == "other") { <span class="cm">// no word matched</span>
-            println(i); <span class="cm">// print the number itself</span>
+        if (w == "other") { // no word matched
+            println(i); // print the number itself
         } else {
-            println(w); <span class="cm">// print the word</span>
+            println(w); // print the word
         }
-    }</pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">1
+    }</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">1
 2
 Fizz
 4
@@ -82,129 +249,335 @@ Buzz
 Fizz
 13
 14
-FizzBuzz</pre></div>
-<p>Calls that return nothing stay statements with a trailing <code class="inline">;</code> inside branches.</p>
-<h3>Newton square root</h3>
-<p>Twenty iterations of Newton updates with mutable state, converging to full Float64 precision. Numerical recipes live in plain user code (the standard library also ships <code class="inline">std::math</code> with sqrt, exp, log, and pow).</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun sqrt_newton(x: Float64): Float64 { <span class="cm">// Newton method square root</span>
-    var guess = x <span class="cm">// start from x itself</span>
-    var i = 0 <span class="cm">// iteration counter</span>
-    while (i &lt; 20) { <span class="cm">// fixed 20 refinement steps</span>
-        guess = (guess + x / guess) / 2.0 <span class="cm">// Newton update</span>
-        i += 1 <span class="cm">// next iteration</span>
+FizzBuzz</code></pre>
+</div>
+<p>Calls that return nothing stay statements with a trailing <code data-ui>;</code> inside branches.</p>
+</article>
+<article class="example-card" id="newton-square-root" data-example-card data-category="basics">
+  <header class="example-head">
+    <h2>Newton square root</h2>
+    <span class="example-tag">Basics</span>
+  </header>
+  <p>Twenty iterations of Newton updates with mutable state, converging to full Float64 precision. Numerical recipes live in plain user code (the standard library also ships <code data-ui>std::math</code> with sqrt, exp, log, and pow).</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">fun sqrt_newton(x: Float64): Float64 { // Newton method square root
+    var guess = x // start from x itself
+    var i = 0 // iteration counter
+    while (i &lt; 20) { // fixed 20 refinement steps
+        guess = (guess + x / guess) / 2.0 // Newton update
+        i += 1 // next iteration
     }
-    guess <span class="cm">// trailing expression is the return value</span>
+    guess // trailing expression is the return value
 }
 
-println(sqrt_newton(2.0)) <span class="cm">// prints sqrt(2)</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">1.4142135623730949</pre></div>
-<h3>Vector dot product</h3>
-<p>Kernels report failure as data, not exceptions: mismatched shapes come back as <code class="inline">Err</code> and the caller handles it in the same <code class="inline">match</code> it already uses everywhere else. Indexing with <code class="inline">get</code> is equally total, yielding <code class="inline">Some</code> or <code class="inline">None</code> instead of ever trapping.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>val a = vec![1.0, 2.0, 3.0] <span class="cm">// first vector, immutable</span>
-val b = vec![4.0, 5.0, 6.0] <span class="cm">// second vector</span>
-val d = match (a.dot(b)) { Ok(v) -&gt; v, Err(e) -&gt; -1.0, } <span class="cm">// dot returns Result, unwrap or -1 on shape error</span>
-println(d) <span class="cm">// prints 32</span>
-println(a.len()) <span class="cm">// element count as Int64</span>
-println(b.get(0)) <span class="cm">// safe read gives Some(4)</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">32
+println(sqrt_newton(2.0)) // prints sqrt(2)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">1.4142135623730949</code></pre>
+</div>
+</article>
+<article class="example-card" id="vector-dot-product" data-example-card data-category="basics">
+  <header class="example-head">
+    <h2>Vector dot product</h2>
+    <span class="example-tag">Basics</span>
+  </header>
+  <p>Kernels report failure as data, not exceptions: mismatched shapes come back as <code data-ui>Err</code> and the caller handles it in the same <code data-ui>match</code> it already uses everywhere else. Indexing with <code data-ui>get</code> is equally total, yielding <code data-ui>Some</code> or <code data-ui>None</code> instead of ever trapping.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">val a = vec![1.0, 2.0, 3.0] // first vector, immutable
+val b = vec![4.0, 5.0, 6.0] // second vector
+val d = match (a.dot(b)) { Ok(v) -&gt; v, Err(e) -&gt; -1.0, } // dot returns Result, unwrap or -1 on shape error
+println(d) // prints 32
+println(a.len()) // element count as Int64
+println(b.get(0)) // safe read gives Some(4)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">32
 3
-Some(4)</pre></div>
-<p><code class="inline">dot</code> reports shape mismatches as <code class="inline">Result</code>, so callers handle both cases.</p>
-<h3>Shapes and areas</h3>
-<p>An enum carries different payloads per variant, and one <code class="inline">match</code> dispatches on all of them with each payload already unwrapped and typed. This is the pattern behind every heterogeneous result in larger programs: one type, all cases visible, zero runtime type tests.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>enum Shape { Circle(Float64), Rect(Float64, Float64), Point } <span class="cm">// one type, three variants with payloads</span>
+Some(4)</code></pre>
+</div>
+<p><code data-ui>dot</code> reports shape mismatches as <code data-ui>Result</code>, so callers handle both cases.</p>
+</article>
+<article class="example-card" id="shapes-and-areas" data-example-card data-category="basics">
+  <header class="example-head">
+    <h2>Shapes and areas</h2>
+    <span class="example-tag">Basics</span>
+  </header>
+  <p>An enum carries different payloads per variant, and one <code data-ui>match</code> dispatches on all of them with each payload already unwrapped and typed. This is the pattern behind every heterogeneous result in larger programs: one type, all cases visible, zero runtime type tests.</p>
 
-fun area(s: Shape): Float64 { <span class="cm">// dispatch on variant</span>
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">enum Shape { Circle(Float64), Rect(Float64, Float64), Point } // one type, three variants with payloads
+
+fun area(s: Shape): Float64 { // dispatch on variant
     match (s) {
-        Shape::Circle(r) -&gt; 3.141592653589793 * r * r, <span class="cm">// pi r squared</span>
-        Shape::Rect(w, h) -&gt; w * h, <span class="cm">// width times height</span>
-        Shape::Point -&gt; 0.0, <span class="cm">// a point has no area</span>
+        Shape::Circle(r) -&gt; 3.141592653589793 * r * r, // pi r squared
+        Shape::Rect(w, h) -&gt; w * h, // width times height
+        Shape::Point -&gt; 0.0, // a point has no area
     }
 }
 
-println(area(Shape::Circle(1.0))) <span class="cm">// prints pi</span>
-println(area(Shape::Rect(3.0, 4.0))) <span class="cm">// prints 12</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">3.1415926535897931
-12</pre></div>
-<h3>Loop with a break value</h3>
-<p>A <code class="inline">loop</code> is an expression when it breaks with a value, so search-style code needs no result flag and no sentinel. The value flows straight into its binding with its type checked.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>var i = 0 <span class="cm">// loop counter, mutable</span>
-val v = loop { <span class="cm">// loop is an expression when it breaks with a value</span>
-    i += 1 <span class="cm">// count up</span>
-    if (i &gt;= 5) { <span class="cm">// stop condition</span>
-        break i * 10 <span class="cm">// exit loop, value 50 flows into v</span>
+println(area(Shape::Circle(1.0))) // prints pi
+println(area(Shape::Rect(3.0, 4.0))) // prints 12</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">3.1415926535897931
+12</code></pre>
+</div>
+</article>
+<article class="example-card" id="loop-with-a-break-value" data-example-card data-category="basics">
+  <header class="example-head">
+    <h2>Loop with a break value</h2>
+    <span class="example-tag">Basics</span>
+  </header>
+  <p>A <code data-ui>loop</code> is an expression when it breaks with a value, so search-style code needs no result flag and no sentinel. The value flows straight into its binding with its type checked.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">var i = 0 // loop counter, mutable
+val v = loop { // loop is an expression when it breaks with a value
+    i += 1 // count up
+    if (i &gt;= 5) { // stop condition
+        break i * 10 // exit loop, value 50 flows into v
     }
 }
-println(v) <span class="cm">// prints 50</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">50</pre></div>
-<h3>Strings</h3>
-<p>Strings are owned values with content equality and concatenation, freed deterministically like everything else. There is no null string and no separate string-builder type for the common cases.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>val who = "valvet" <span class="cm">// owned immutable string</span>
-println("hello, " + who) <span class="cm">// concatenation with +</span>
-println(who == "valvet") <span class="cm">// content equality, prints true</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">hello, valvet
-true</pre></div>
-<h3>Least-squares slope</h3>
-<p>The real thing in miniature: paired-column sums, the closed-form normal equations, and missing-safe indexing, using exactly the constructs the full 50-row ordinary least squares analysis uses. That analysis reproduces 16 out of 16 reference statistics, which is why this small version is worth trusting at scale.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>val x = vec![1.0, 2.0, 3.0, 4.0] <span class="cm">// predictor column</span>
-    val y = vec![2.0, 4.0, 5.0, 4.0] <span class="cm">// response column</span>
-    val n = x.len() as Int32 <span class="cm">// length as Int32 for the range</span>
-    val nf = n as Float64 <span class="cm">// length as Float64 for the math</span>
-    var sx = 0.0 <span class="cm">// sum of x</span>
-    var sy = 0.0 <span class="cm">// sum of y</span>
-    var sxx = 0.0 <span class="cm">// sum of x squared</span>
-    var sxy = 0.0 <span class="cm">// sum of x times y</span>
-    for (i in 0..n) { <span class="cm">// index over every row</span>
-        val a = match (x.get(i)) { Some(v) -&gt; v, None -&gt; 0.0, } <span class="cm">// safe read, default 0</span>
-        val b = match (y.get(i)) { Some(v) -&gt; v, None -&gt; 0.0, } <span class="cm">// safe read, default 0</span>
-        sx += a <span class="cm">// accumulate sums</span>
+println(v) // prints 50</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">50</code></pre>
+</div>
+</article>
+<article class="example-card" id="strings" data-example-card data-category="basics">
+  <header class="example-head">
+    <h2>Strings</h2>
+    <span class="example-tag">Basics</span>
+  </header>
+  <p>Strings are owned values with content equality and concatenation, freed deterministically like everything else. There is no null string and no separate string-builder type for the common cases.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">val who = "valvet" // owned immutable string
+println("hello, " + who) // concatenation with +
+println(who == "valvet") // content equality, prints true</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">hello, valvet
+true</code></pre>
+</div>
+</article>
+<article class="example-card" id="least-squares-slope" data-example-card data-category="data">
+  <header class="example-head">
+    <h2>Least-squares slope</h2>
+    <span class="example-tag">Data</span>
+  </header>
+  <p>The real thing in miniature: paired-column sums, the closed-form normal equations, and missing-safe indexing, using exactly the constructs the full 50-row ordinary least squares analysis uses. That analysis reproduces 16 out of 16 reference statistics, which is why this small version is worth trusting at scale.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">val x = vec![1.0, 2.0, 3.0, 4.0] // predictor column
+    val y = vec![2.0, 4.0, 5.0, 4.0] // response column
+    val n = x.len() as Int32 // length as Int32 for the range
+    val nf = n as Float64 // length as Float64 for the math
+    var sx = 0.0 // sum of x
+    var sy = 0.0 // sum of y
+    var sxx = 0.0 // sum of x squared
+    var sxy = 0.0 // sum of x times y
+    for (i in 0..n) { // index over every row
+        val a = match (x.get(i)) { Some(v) -&gt; v, None -&gt; 0.0, } // safe read, default 0
+        val b = match (y.get(i)) { Some(v) -&gt; v, None -&gt; 0.0, } // safe read, default 0
+        sx += a // accumulate sums
         sy += b
         sxx += a * a
         sxy += a * b
     }
-println((nf * sxy - sx * sy) / (nf * sxx - sx * sx)) <span class="cm">// closed-form slope, prints 0.7</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">0.69999999999999996</pre></div>
+println((nf * sxy - sx * sy) / (nf * sxx - sx * sx)) // closed-form slope, prints 0.7</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">0.69999999999999996</code></pre>
+</div>
 <p>Valvet prints full float precision: that is 0.7 in Float64.</p>
-<h3>Script and explicit modes</h3>
-<p>Every example above runs in the default <code class="inline">imp</code> mode: top-level statements run directly. The same program states the mode explicitly with a header that changes nothing. For the strict classic entry, declare <code class="inline">mode exp;</code> and write <code class="inline">fun main</code>; top-level statements there are E0604, as is mixing both forms in one file. Imported files always hold items, never statements, in either mode.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>println("hello, valvet") <span class="cm">// imp is the default: runs as shown</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">hello, valvet</pre></div>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>mode imp; <span class="cm">// explicit header, same behavior</span>
-println("hello, valvet")</pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">hello, valvet</pre></div>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>mode exp; <span class="cm">// strict classic entry</span>
+</article>
+<article class="example-card" id="script-and-explicit-modes" data-example-card data-category="language">
+  <header class="example-head">
+    <h2>Script and explicit modes</h2>
+    <span class="example-tag">Language</span>
+  </header>
+  <p>Every example above runs in the default <code data-ui>imp</code> mode: top-level statements run directly. The same program states the mode explicitly with a header that changes nothing. For the strict classic entry, declare <code data-ui>mode exp;</code> and write <code data-ui>fun main</code>; top-level statements there are E0604, as is mixing both forms in one file. Imported files always hold items, never statements, in either mode.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">println("hello, valvet") // imp is the default: runs as shown</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">hello, valvet</code></pre>
+</div>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">mode imp; // explicit header, same behavior
+println("hello, valvet")</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">hello, valvet</code></pre>
+</div>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">mode exp; // strict classic entry
 fun main() {
     println("hello, valvet")
-}</pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">hello, valvet</pre></div>
-<p>Statements under <code class="inline">mode exp</code> fail before anything runs:</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>mode exp;
-println("nope");</pre></div>
-<div class="code"><div class="chead"><span>Error</span></div><pre>error[E0604]: top-level statements need imp mode (this file declares `mode exp`) --&gt; hello.valvet:2:1</pre></div>
-<h3>Units of measure</h3>
-<p>Annotating a number with <code class="inline">@unit</code> makes its dimension part of the type. Compatible scales convert on assignment, and arithmetic composes dimensions, so unit mistakes become compile errors instead of wrong numbers.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>fun speed(d: Float64 @m, t: Float64 @s): Float64 @m/s { <span class="cm">// meters over seconds</span>
-    d / t <span class="cm">// division composes the dimension</span>
+}</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">hello, valvet</code></pre>
+</div>
+<p>Statements under <code data-ui>mode exp</code> fail before anything runs:</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">mode exp;
+println("nope");</code></pre>
+</div>
+
+<div class="code-card error-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Error</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Error">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">error[E0604]: top-level statements need imp mode (this file declares `mode exp`) --&gt; hello.valvet:2:1</code></pre>
+</div>
+</article>
+<article class="example-card" id="units-of-measure" data-example-card data-category="language">
+  <header class="example-head">
+    <h2>Units of measure</h2>
+    <span class="example-tag">Language</span>
+  </header>
+  <p>Annotating a number with <code data-ui>@unit</code> makes its dimension part of the type. Compatible scales convert on assignment, and arithmetic composes dimensions, so unit mistakes become compile errors instead of wrong numbers.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">fun speed(d: Float64 @m, t: Float64 @s): Float64 @m/s { // meters over seconds
+    d / t // division composes the dimension
 }
 
-println(speed(100.0, 9.58)) <span class="cm">// 100 m sprint record pace</span>
-val v: Float64 @km/h = 72.0 <span class="cm">// highway speed</span>
-val w: Float64 @m/s = v <span class="cm">// auto-scales to 20</span>
-println(w)</pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">10.438413361169102
-20</pre></div>
-<h3>Frames and grouping</h3>
-<p>The standard library turns CSV-shaped tables into data frames, then groups them with missing-aware statistics. <code class="inline">NA</code> cells are skipped, never silently zeroed, and group order follows first appearance.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>import std::csv::CsvTable; <span class="cm">// table type from the CSV module</span>
-import std::frame::frame_from_table; <span class="cm">// build a frame</span>
-import std::frame::frame_col; <span class="cm">// read a column back</span>
-import std::frame::frame_group_count; <span class="cm">// count rows per group</span>
-import std::frame::frame_group_sum; <span class="cm">// sum a column per group</span>
+println(speed(100.0, 9.58)) // 100 m sprint record pace
+val v: Float64 @km/h = 72.0 // highway speed
+val w: Float64 @m/s = v // auto-scales to 20
+println(w)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">10.438413361169102
+20</code></pre>
+</div>
+</article>
+<article class="example-card" id="frames-and-grouping" data-example-card data-category="data">
+  <header class="example-head">
+    <h2>Frames and grouping</h2>
+    <span class="example-tag">Data</span>
+  </header>
+  <p>The standard library turns CSV-shaped tables into data frames, then groups them with missing-aware statistics. <code data-ui>NA</code> cells are skipped, never silently zeroed, and group order follows first appearance.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">import std::csv::CsvTable; // table type from the CSV module
+import std::frame::frame_from_table; // build a frame
+import std::frame::frame_col; // read a column back
+import std::frame::frame_group_count; // count rows per group
+import std::frame::frame_group_sum; // sum a column per group
 
 val h = vec!["region", "sales"];
 val r0 = vec!["east", "10"];
 val r1 = vec!["west", "20"];
-val r2 = vec!["east", "NA"]; <span class="cm">// missing cell, skipped by sums</span>
+val r2 = vec!["east", "NA"]; // missing cell, skipped by sums
 val r3 = vec!["west", "40"];
 val t = CsvTable { header: h, rows: vec![r0, r1, r2, r3] };
 val f = frame_from_table(t);
@@ -213,47 +586,103 @@ val e: Vec&lt;String&gt; = vec![];
 println(match (frame_col(&amp;g, "region")) { Some(c) -&gt; c, None -&gt; e, });
 println(match (frame_col(&amp;g, "count")) { Some(c) -&gt; c, None -&gt; e, });
 val gs = frame_group_sum(&amp;f, "region", "sales");
-println(match (frame_col(&amp;gs, "sum")) { Some(c) -&gt; c, None -&gt; e, });</pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">[east, west]
+println(match (frame_col(&amp;gs, "sum")) { Some(c) -&gt; c, None -&gt; e, });</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">[east, west]
 [2, 2]
-[10, 60]</pre></div>
-<h3>SQL over frames</h3>
-<p>The same grouping through the 0.3.0 SQL subset: the query plans down to frame verbs, so results match the verb form exactly. Anything outside the subset is a compile-time <code class="inline">Err</code>, never a silent misread.</p>
-<div class="code"><div class="chead"><span>Input &middot; Valvet</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre>import std::frame::DynamicFrame; <span class="cm">// frame type</span>
-import std::sql::sql; <span class="cm">// the SQL subset</span>
+[10, 60]</code></pre>
+</div>
+</article>
+<article class="example-card" id="sql-over-frames" data-example-card data-category="data">
+  <header class="example-head">
+    <h2>SQL over frames</h2>
+    <span class="example-tag">Data</span>
+  </header>
+  <p>The same grouping through the 0.3.0 SQL subset: the query plans down to frame verbs, so results match the verb form exactly. Anything outside the subset is a compile-time <code data-ui>Err</code>, never a silent misread.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">import std::frame::DynamicFrame; // frame type
+import std::sql::sql; // the SQL subset
 
 val f = DynamicFrame { names: vec!["region", "sales"], cols: vec![vec!["east", "west", "east", "west"], vec!["10", "20", "30", "40"]], nrows: 4 as Int64 };
 let Ok(q) = sql(&amp;f, "SELECT region, SUM(sales) FROM f GROUP BY region ORDER BY region") else {
     println("bad query");
     return 1;
 };
-println(q.cols[0 as Int64]); <span class="cm">// group keys in first-appearance order</span>
-println(q.cols[1 as Int64]); <span class="cm">// per-group sums</span></pre></div>
-<div class="code"><div class="chead"><span>Output</span><button class="copy" title="Copy" aria-label="Copy code"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/></svg></button></div><pre class="out">[east, west]
-[40, 60]</pre></div>
-</section>
+println(q.cols[0 as Int64]); // group keys in first-appearance order
+println(q.cols[1 as Int64]); // per-group sums</code></pre>
 </div>
 
-<footer><div class="wrap">
-  Copyright 2026 Kenneth Cho. All rights reserved. Source: <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>.
-</div></footer>
-<script>
-document.querySelectorAll('.code').forEach(function (box) {
-  var btn = box.querySelector('.copy');
-  btn.addEventListener('click', function () {
-    var el = box.querySelector('pre, .install');
-    var txt = el ? el.innerText : '';
-    function done() { btn.classList.add('ok'); setTimeout(function () { btn.classList.remove('ok'); }, 1200); }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(txt).then(done, done);
-    } else {
-      var t = document.createElement('textarea');
-      t.value = txt; document.body.appendChild(t); t.select();
-      try { document.execCommand('copy'); } catch (e) {}
-      t.remove(); done();
-    }
-  });
-});
-</script>
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">[east, west]
+[40, 60]</code></pre>
+</div>
+<p>Copyright 2026 Kenneth Cho. All rights reserved. Source: <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>.</p>
+</article>
+    </div>
+    <div class="empty-state" data-empty-state hidden>
+      <p>No examples in this category.</p>
+      <button class="btn btn-ghost" type="button" data-filter="all">Show all examples</button>
+    </div>
+  </div>
+</div>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div class="footer-brand">
+      <a class="brand" href="index.html" aria-label="Valvet home">
+        <img src="assets/logo-128.png" width="40" height="40" alt="">
+        <span class="brand-name">Valvet</span>
+      </a>
+      <p>A small, safe, compiled language for data work.</p>
+      <p class="footer-note">Native binaries. No garbage collector. No runtime.</p>
+    </div>
+    <div class="footer-col">
+      <h2>Language</h2>
+      <a href="index.html#why">Why Valvet</a>
+      <a href="index.html#features">Features</a>
+      <a href="index.html#code">Code</a>
+      <a href="index.html#pipeline">How it runs</a>
+    </div>
+    <div class="footer-col">
+      <h2>Resources</h2>
+      <a href="docs.html">Documentation</a>
+      <a href="examples.html">Examples</a>
+      <a href="index.html#stdlib">Standard library</a>
+      <a href="index.html#install">Install</a>
+    </div>
+    <div class="footer-col">
+      <h2>Project</h2>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/blob/main/LICENSE">License</a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">Issues</a>
+    </div>
+  </div>
+  <div class="container footer-bottom">
+    <p>Copyright 2026 Kenneth Cho. All rights reserved.</p>
+    <p class="footer-built">Compiled through C11. Shipped as one binary.</p>
+  </div>
+  <div class="footer-wordmark" aria-hidden="true">VALVET</div>
+</footer>
+<div class="toast" role="status" aria-live="polite"></div>
+<button class="back-to-top" type="button" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+</button>
+<script src="app.js" defer></script>
 </body>
 </html>
