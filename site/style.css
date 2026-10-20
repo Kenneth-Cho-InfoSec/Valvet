@@ -3075,6 +3075,52 @@ html[data-theme="light"] .hello-card .tok-operator {
   padding-top: 4px;
 }
 
+/* ---------- Privacy page ---------- */
+
+.privacy-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  align-items: start;
+  gap: clamp(40px, 6vw, 80px);
+  padding-bottom: 100px;
+}
+
+.privacy-content {
+  min-width: 0;
+}
+
+.privacy-content .doc-section p,
+.privacy-content .doc-section ul {
+  max-width: 640px;
+}
+
+.privacy-content .doc-section a {
+  color: var(--accent-strong);
+}
+
+.privacy-aside {
+  position: sticky;
+  top: 96px;
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.privacy-aside .sidebar-note {
+  margin-top: 30px;
+}
+
+.privacy-aside .sidebar-note p {
+  text-align: justify;
+}
+
+.privacy-hero .page-meta {
+  display: block;
+  max-width: 590px;
+  line-height: 1.6;
+}
+
 .doc-section {
   margin-bottom: 60px;
   padding-bottom: 0;
@@ -3710,6 +3756,19 @@ html[data-theme="dark"] .filter-btn.is-active span {
   .docs-layout,
   .examples-layout {
     grid-template-columns: 1fr;
+  }
+
+  .privacy-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .privacy-aside {
+    display: none;
+  }
+
+  .privacy-content .doc-section p,
+  .privacy-content .doc-section ul {
+    max-width: 100%;
   }
 
   .docs-sidebar,
