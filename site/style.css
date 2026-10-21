@@ -620,19 +620,93 @@ html[data-theme="dark"] .hero-dots {
 
 .hero-deer {
   position: absolute;
-  right: -6vw;
-  bottom: -12vh;
-  width: 56vw;
-  max-width: 820px;
-  opacity: 0.06;
-  transform: rotate(-6deg);
-  filter: saturate(1.2);
-  mix-blend-mode: multiply;
+  right: auto;
+  left: calc(50% - 300px);
+  top: auto;
+  bottom: -1vh;
+  width: 30vw;
+  max-width: 432px;
+  height: auto;
+  color: #5b3bc4;
+  opacity: 0.2;
+  transform: rotate(-4deg);
+  transform-origin: 55% 60%;
 }
 
 html[data-theme="dark"] .hero-deer {
-  opacity: 0.11;
-  mix-blend-mode: screen;
+  color: #d8ccff;
+  opacity: 0.24;
+}
+
+.deer-float {
+  transform-box: fill-box;
+  transform-origin: 50% 60%;
+  animation: deerFloat 12s ease-in-out infinite alternate;
+}
+
+.deer-silhouette {
+  transform-box: fill-box;
+  transform-origin: 50% 60%;
+  animation: deerBreathe 8s ease-in-out infinite alternate;
+}
+
+.deer-tail {
+  transform-box: fill-box;
+  transform-origin: 8% 12%;
+  animation: deerTail 5.5s ease-in-out infinite alternate;
+}
+
+.deer-leg-front {
+  transform-box: fill-box;
+  transform-origin: 85% 8%;
+  animation: deerLegFront 7.5s ease-in-out infinite alternate;
+}
+
+.deer-leg-rear {
+  transform-box: fill-box;
+  transform-origin: 15% 8%;
+  animation: deerLegRear 8.5s ease-in-out infinite alternate;
+}
+
+.deer-spark {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: deerSparkPulse 3.4s ease-in-out infinite;
+  animation-delay: var(--d, 0s);
+}
+
+.deer-dust {
+  animation-duration: 4.8s;
+}
+
+@keyframes deerFloat {
+  from { transform: translate(-8px, 4px) rotate(-0.8deg); }
+  to { transform: translate(10px, -12px) rotate(1deg); }
+}
+
+@keyframes deerBreathe {
+  from { opacity: 0.78; }
+  to { opacity: 1; }
+}
+
+@keyframes deerTail {
+  from { transform: rotate(-7deg); }
+  to { transform: rotate(8deg); }
+}
+
+@keyframes deerLegFront {
+  from { transform: rotate(-1.4deg); }
+  to { transform: rotate(1.6deg); }
+}
+
+@keyframes deerLegRear {
+  from { transform: rotate(1.2deg); }
+  to { transform: rotate(-1.4deg); }
+}
+
+@keyframes deerSparkPulse {
+  0%, 100% { opacity: 0.18; transform: scale(0.7); }
+  50% { opacity: 0.9; transform: scale(1.25); }
 }
 
 .particle-canvas {
@@ -683,8 +757,8 @@ html[data-theme="dark"] .hero-deer {
   max-width: 55ch;
   margin-bottom: 30px;
   color: var(--muted);
-  font-size: clamp(1.03rem, 1.45vw, 1.22rem);
-  line-height: 1.65;
+  font-size: clamp(1.22rem, 1.75vw, 1.5rem);
+  line-height: 1.55;
   letter-spacing: -0.01em;
 }
 
@@ -3651,6 +3725,16 @@ html[data-theme="dark"] .filter-btn.is-active span {
     max-width: 760px;
   }
 
+  .hero-deer {
+    left: auto;
+    right: -6vw;
+    top: 96px;
+    bottom: auto;
+    width: 62vw;
+    max-width: 460px;
+    opacity: 0.18;
+  }
+
   .hero-title {
     max-width: 820px;
   }
@@ -4040,6 +4124,14 @@ html[data-theme="dark"] .filter-btn.is-active span {
     display: none;
   }
 
+  .hero-deer {
+    right: -2vw;
+    top: 92px;
+    width: 66vw;
+    max-width: 300px;
+    opacity: 0.19;
+  }
+
   .hero-title {
     font-size: clamp(2.55rem, 12.4vw, 3.4rem);
   }
@@ -4143,7 +4235,7 @@ html[data-theme="dark"] .filter-btn.is-active span {
 
 .hero-lede {
   color: var(--ink-soft);
-  font-size: clamp(1.125rem, 1.5vw, 1.25rem);
+  font-size: clamp(1.22rem, 1.75vw, 1.5rem);
 }
 
 .section-lede,
@@ -4225,8 +4317,8 @@ html[data-theme="dark"] .filter-btn.is-active span {
 
 @media (max-width: 760px) {
   .hero-lede {
-    font-size: 1.125rem;
-    line-height: 1.62;
+    font-size: 1.22rem;
+    line-height: 1.58;
   }
 
   .section-lede {
