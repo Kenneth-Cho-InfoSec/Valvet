@@ -61,24 +61,24 @@ pub fun cexp(a: &Complex): Complex {
 }
 
 fun cpow_pos(a: &Complex, n: Int64): Complex {
-    if (n == (0 as Int64)) {
+    if (n == 0) {
         return Complex { re: 1.0, im: 0.0 };
     }
-    if (n == (1 as Int64)) {
+    if (n == 1) {
         return Complex { re: a.re, im: a.im };
     }
-    val half = cpow_pos(a, n / (2 as Int64));
+    val half = cpow_pos(a, n / 2);
     val sq = cmul(&half, &half);
-    if (n % (2 as Int64) == (0 as Int64)) {
+    if (n % 2 == 0) {
         return sq;
     }
     return cmul(&sq, a);
 }
 
 pub fun cpow_int(a: &Complex, n: Int64): Complex {
-    if (n < (0 as Int64)) {
+    if (n < 0) {
         val one = cnew(1.0, 0.0);
-        val p = cpow_pos(a, (0 as Int64) - n);
+        val p = cpow_pos(a, 0 - n);
         return cdiv(&one, &p);
     }
     return cpow_pos(a, n);

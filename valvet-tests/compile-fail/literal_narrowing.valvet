@@ -1,0 +1,5 @@
+fun need32(x: Int32): Int32 { x }
+
+fun main() {
+    println(need32(2147483648));
+}

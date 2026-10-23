@@ -1,5 +1,118 @@
 module std.math;
 
+struct WvSqrtDD {
+    hi: Float64,
+    lo: Float64,
+}
+
+fun wv_sqrt_two_sum(a: Float64, b: Float64): WvSqrtDD {
+    val s = a + b
+    val bb = s - a
+    val err = (a - (s - bb)) + (b - bb)
+    return WvSqrtDD { hi: s, lo: err }
+}
+
+fun wv_sqrt_two_prod(a: Float64, b: Float64): WvSqrtDD {
+    val p = a * b
+    val v = 134217729.0
+    val ca = v * a
+    val ahi = ca - (ca - a)
+    val alo = a - ahi
+    val cb = v * b
+    val bhi = cb - (cb - b)
+    val blo = b - bhi
+    val err = ((ahi * bhi - p) + ahi * blo + alo * bhi) + alo * blo
+    return WvSqrtDD { hi: p, lo: err }
+}
+
+fun wv_sqrt_binade(y: Float64): Float64 {
+    var s: Float64 = 1.0
+    if (y >= 1.0) {
+        while (s * 2.0 <= y) {
+            s = s * 2.0
+        }
+    } else {
+        while (s > y) {
+            s = s / 2.0
+        }
+    }
+    return s
+}
+
+fun wv_sqrt_dd_sub(a_hi: Float64, a_lo: Float64, b: Float64): Float64 {
+    val t1 = wv_sqrt_two_sum(a_hi, 0.0 - b)
+    val t2 = wv_sqrt_two_sum(t1.hi, a_lo)
+    if (t2.hi != 0.0) {
+        return t2.hi
+    }
+    return t2.lo + t1.lo
+}
+
+fun wv_sqrt_mant_even(y: Float64, step: Float64): Bool {
+    val m = (y / step) as Int64
+    return m % 2 == 0
+}
+
+// Correctly rounded sqrt: power-of-two seed, six Newton steps, then Dekker
+// two-product/two-sum refinement to choose the exact rounding. The previous
+// Newton-only loop exited on an absolute step tolerance and could be one ulp
+// off, which matters in convergence tests and residual denominators.
+fun wv_sqrt_cr(x: Float64): Float64 {
+    var y: Float64 = 1.0
+    while (y * y > x * 4.0) {
+        y = y / 2.0
+    }
+    while (y * y * 4.0 <= x) {
+        y = y * 2.0
+    }
+    var i: Int32 = 0
+    while (i < 6) {
+        y = 0.5 * (y + x / y)
+        i = i + 1
+    }
+    val s = wv_sqrt_binade(y)
+    val step = s * 2.220446049250313e-16
+    val p = wv_sqrt_two_prod(y, y)
+    val t1 = wv_sqrt_two_sum(x, 0.0 - p.hi)
+    val t2 = wv_sqrt_two_sum(t1.hi, 0.0 - p.lo)
+    val ahi = t2.hi
+    val alo = t2.lo + t1.lo
+    if (ahi >= 0.0) {
+        if (ahi == 0.0 && alo == 0.0) {
+            return y
+        }
+        val b = y * step + step * step / 4.0
+        val d = wv_sqrt_dd_sub(ahi, alo, b)
+        if (d < 0.0) {
+            return y
+        }
+        if (d > 0.0) {
+            return y + step
+        }
+        if (wv_sqrt_mant_even(y, step)) {
+            return y
+        }
+        return y + step
+    }
+    var y_prev = y - step
+    if (y == s) {
+        y_prev = y - step / 2.0
+    }
+    val lo_step = y - y_prev
+    val b = y * lo_step - lo_step * lo_step / 4.0
+    val d = wv_sqrt_dd_sub(0.0 - ahi, 0.0 - alo, b)
+    if (d < 0.0) {
+        return y
+    }
+    if (d > 0.0) {
+        return y_prev
+    }
+    if (wv_sqrt_mant_even(y, step)) {
+        return y
+    }
+    return y_prev
+}
+
 pub fun sqrt(x: Float64): Float64 {
     if (x < 0.0) {
         return 0.0 / 0.0;
@@ -7,7 +120,6 @@ pub fun sqrt(x: Float64): Float64 {
     if (x == 0.0) {
         return 0.0;
     }
-    // Non-finite inputs skip Newton (which would spin or drift):
     // NaN propagates, +inf is its own root.
     if (x != x) {
         return x;
@@ -15,22 +127,258 @@ pub fun sqrt(x: Float64): Float64 {
     if (x >= 1.0 / 0.0) {
         return x;
     }
-    var guess = x
-    var i = 0
-    while (i < 1000) {
-        val next = (guess + x / guess) / 2.0
-        if (next == guess) {
-            return next;
-        }
-        val diff = next - guess
-        val adiff = if (diff < 0.0) { 0.0 - diff } else { diff }
-        if (adiff < 0.000000000001) {
-            return next;
-        }
-        guess = next
-        i += 1
+    // Scale subnormals into the normal range before the Newton refinement.
+    // Both factors are exact powers of two, so the final rounding is the
+    // rounding of the scaled square root; the result of a subnormal root is
+    // normal, so the inverse scale does not underflow.
+    if (x < 2.2250738585072014e-308) {
+        return wv_sqrt_cr(x * 4.149515568880993e180) * 4.909093465297727e-91;
     }
-    guess
+    if (x > 4.0e307) {
+        return wv_sqrt_cr(x * 2.409919865102884e-181) * 2.037035976334486e90;
+    }
+    wv_sqrt_cr(x)
+}
+
+fun wv_math_neg_zero(): Float64 {
+    return 0.0 * (0.0 - 1.0);
+}
+
+pub fun abs(x: Float64): Float64 {
+    if (x < 0.0) {
+        return 0.0 - x;
+    }
+    if (x == 0.0) {
+        return 0.0;
+    }
+    x
+}
+
+pub fun min(a: Float64, b: Float64): Float64 {
+    if (a != a) {
+        return a;
+    }
+    if (b != b) {
+        return b;
+    }
+    if (a < b) {
+        return a;
+    }
+    if (b < a) {
+        return b;
+    }
+    // Equal values: pick the negative zero when both are zero.
+    if (a == 0.0 && b == 0.0) {
+        if ((1.0 / a) < 0.0) {
+            return a;
+        }
+        if ((1.0 / b) < 0.0) {
+            return b;
+        }
+    }
+    a
+}
+
+pub fun max(a: Float64, b: Float64): Float64 {
+    if (a != a) {
+        return a;
+    }
+    if (b != b) {
+        return b;
+    }
+    if (a > b) {
+        return a;
+    }
+    if (b > a) {
+        return b;
+    }
+    // Equal values: pick the positive zero when both are zero.
+    if (a == 0.0 && b == 0.0) {
+        if ((1.0 / a) > 0.0) {
+            return a;
+        }
+        if ((1.0 / b) > 0.0) {
+            return b;
+        }
+    }
+    a
+}
+
+pub fun clamp(x: Float64, lo: Float64, hi: Float64): Float64 {
+    if (lo > hi) {
+        return 0.0 / 0.0;
+    }
+    max(lo, min(x, hi))
+}
+
+pub fun floor(x: Float64): Float64 {
+    if (x != x || x >= 1.0 / 0.0 || x <= 0.0 - 1.0 / 0.0) {
+        return x;
+    }
+    if (x == 0.0) {
+        return x;
+    }
+    if (x >= 4503599627370496.0 || x <= 0.0 - 4503599627370496.0) {
+        return x;
+    }
+    var f = (x as Int64) as Float64;
+    if (f > x) {
+        f = f - 1.0;
+    }
+    f
+}
+
+pub fun ceil(x: Float64): Float64 {
+    if (x != x || x >= 1.0 / 0.0 || x <= 0.0 - 1.0 / 0.0) {
+        return x;
+    }
+    if (x == 0.0) {
+        return x;
+    }
+    if (x >= 4503599627370496.0 || x <= 0.0 - 4503599627370496.0) {
+        return x;
+    }
+    var f = (x as Int64) as Float64;
+    if (f < x) {
+        f = f + 1.0;
+    }
+    if (f == 0.0 && x < 0.0) {
+        return wv_math_neg_zero();
+    }
+    f
+}
+
+pub fun trunc(x: Float64): Float64 {
+    if (x != x || x >= 1.0 / 0.0 || x <= 0.0 - 1.0 / 0.0) {
+        return x;
+    }
+    if (x == 0.0) {
+        return x;
+    }
+    if (x >= 4503599627370496.0 || x <= 0.0 - 4503599627370496.0) {
+        return x;
+    }
+    val f = (x as Int64) as Float64;
+    if (f == 0.0 && x < 0.0) {
+        return wv_math_neg_zero();
+    }
+    f
+}
+
+pub fun round(x: Float64): Float64 {
+    if (x != x || x >= 1.0 / 0.0 || x <= 0.0 - 1.0 / 0.0) {
+        return x;
+    }
+    if (x == 0.0) {
+        return x;
+    }
+    if (x >= 4503599627370496.0 || x <= 0.0 - 4503599627370496.0) {
+        return x;
+    }
+    val f = floor(x);
+    val d = x - f;
+    var out = f;
+    if (d > 0.5) {
+        out = f + 1.0;
+    }
+    if (d == 0.5) {
+        if ((f as Int64) % 2 != 0) {
+            out = f + 1.0;
+        }
+    }
+    if (out == 0.0 && x < 0.0) {
+        return wv_math_neg_zero();
+    }
+    out
+}
+
+pub fun eps(x: Float64): Float64 {
+    if (x != x || x >= 1.0 / 0.0 || x <= 0.0 - 1.0 / 0.0) {
+        return x;
+    }
+    val ax = abs(x);
+    if (ax < 2.2250738585072014e-308) {
+        return 4.9406564584124654e-324;
+    }
+    wv_sqrt_binade(ax) * 2.220446049250313e-16
+}
+
+pub fun sinh(x: Float64): Float64 {
+    if (x == 0.0) {
+        return x;
+    }
+    (exp(x) - exp(0.0 - x)) / 2.0
+}
+
+pub fun cosh(x: Float64): Float64 {
+    (exp(x) + exp(0.0 - x)) / 2.0
+}
+
+pub fun tanh(x: Float64): Float64 {
+    if (x >= 20.0) {
+        return 1.0;
+    }
+    if (x <= 0.0 - 20.0) {
+        return 0.0 - 1.0;
+    }
+    val e = exp(2.0 * x);
+    (e - 1.0) / (e + 1.0)
+}
+
+pub fun asinh(x: Float64): Float64 {
+    if (x == 0.0) {
+        return x;
+    }
+    if (x < 0.0) {
+        return 0.0 - asinh(0.0 - x);
+    }
+    log(x + sqrt(x * x + 1.0))
+}
+
+pub fun acosh(x: Float64): Float64 {
+    if (x < 1.0) {
+        return 0.0 / 0.0;
+    }
+    if (x == 1.0) {
+        return 0.0;
+    }
+    log(x + sqrt(x * x - 1.0))
+}
+
+pub fun atanh(x: Float64): Float64 {
+    if (x == 0.0) {
+        return x;
+    }
+    if (x >= 1.0) {
+        return 1.0 / 0.0;
+    }
+    if (x <= 0.0 - 1.0) {
+        return 0.0 - 1.0 / 0.0;
+    }
+    0.5 * log((1.0 + x) / (1.0 - x))
+}
+
+pub fun pow_int(x: Float64, n: Int64): Float64 {
+    if (n == 0) {
+        return 1.0;
+    }
+    var e = n;
+    if (e < 0) {
+        e = 0 - e;
+    }
+    var base = x;
+    var out = 1.0
+    while (e > 0) {
+        if (e % 2 != 0) {
+            out = out * base;
+        }
+        base = base * base;
+        e = e / 2;
+    }
+    if (n < 0) {
+        return 1.0 / out;
+    }
+    out
 }
 
 pub fun exp(x: Float64): Float64 {

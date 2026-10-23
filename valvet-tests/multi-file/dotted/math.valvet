@@ -1,0 +1,5 @@
+module math;
+
+pub fun double(n: Int64): Int64 {
+    n * (2 as Int64)
+}

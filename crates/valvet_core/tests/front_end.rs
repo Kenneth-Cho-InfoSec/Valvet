@@ -649,9 +649,21 @@ fn import_braces_and_alias_parse() {
 }
 
 #[test]
-fn import_dotted_rejected() {
-    let codes = check_codes("import math.double;\nfun main() {\n print(1)\n}\n");
-    assert!(codes.contains(&"E0602"), "{:?}", codes);
+fn import_dotted_and_colon_paths_normalize() {
+    for text in [
+        "import std::math::sqrt;\nfun main() {\n print(1)\n}\n",
+        "import std.math::sqrt;\nfun main() {\n print(1)\n}\n",
+        "import std.math.sqrt;\nfun main() {\n print(1)\n}\n",
+    ] {
+        let s = src(text);
+        let prog = pipeline::parse_unit(&s).expect("parse");
+        assert_eq!(prog.imports.len(), 1);
+        assert_eq!(
+            prog.imports[0].path,
+            vec!["std".to_string(), "math".to_string()]
+        );
+        assert_eq!(prog.imports[0].items[0].name, "sqrt");
+    }
 }
 
 #[test]
@@ -1487,4 +1499,17 @@ fn numeric_helpers() {
         check_codes("fun main() {\nval a: Float64 @USD = 1.0\nval b: Float64 @EUR = 1.0\nprintln(a + b)\n}\n"),
         vec!["E0201"]
     );
+}
+
+#[test]
+fn literal_context_and_narrowing() {
+    check_ok(
+        "struct S { n: Int64 }\n\
+         fun f(x: Int64): Int64 { x }\n\
+         fun main() { var s = S { n: 0 as Int64 }; s.n = 6; println(f(7));\n\
+         var k: Int64 = 0; while (k < 3) { k = k + 1; } println(k == 3) }\n",
+    );
+    let codes =
+        check_codes("fun f(x: Int32): Int32 { x }\nfun main() { println(f(2147483648)) }\n");
+    assert!(codes.contains(&"E0201"), "{:?}", codes);
 }

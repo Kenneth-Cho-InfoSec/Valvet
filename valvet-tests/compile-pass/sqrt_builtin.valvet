@@ -1,0 +1,14 @@
+import std::math::sqrt;
+
+fun main() {
+    val nz = 0.0 * (0.0 - 1.0);
+    println(1.0 / sqrt(nz));
+    println(sqrt(0.0));
+    println(1.0 / sqrt(0.0 * (0.0 - 1.0)));
+    val n = sqrt(0.0 - 1.0);
+    println(n != n);
+    println(sqrt(4.0));
+    println(sqrt(5e-324));
+    println(sqrt(1.7976931348623157e308));
+    println(sqrt(1.0e308));
+}

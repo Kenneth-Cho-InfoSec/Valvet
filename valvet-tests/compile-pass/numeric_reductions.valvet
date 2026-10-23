@@ -1,0 +1,33 @@
+import std::numeric::zeros;
+import std::numeric::add;
+import std::numeric::sub;
+import std::numeric::sum;
+import std::numeric::mean;
+import std::numeric::min_vec;
+import std::numeric::max_vec;
+import std::numeric::sum_sq;
+import std::numeric::sd;
+
+fun main() {
+    val empty = zeros(0);
+    println(sum(&empty));
+    println(mean(&empty));
+    println(sum_sq(&empty, 2.0));
+    println(sd(&empty));
+    val x = vec![1.0, 2.0, 3.0, 4.0];
+    val y = vec![4.0, 3.0, 2.0, 1.0];
+    println(sum(&x));
+    println(mean(&x));
+    println(min_vec(&x));
+    println(max_vec(&x));
+    println(sum_sq(&x, 2.0));
+    println(sd(&x));
+    val a = add(&x, &y);
+    println(a[0]);
+    println(a[3]);
+    val s = sub(&x, &y);
+    println(s[0]);
+    println(s[3]);
+    val one = vec![2.5];
+    println(sd(&one));
+}

@@ -1,0 +1,4 @@
+fun main() {
+    val a = Vec<String>::with_capacity(1 as Int64);
+    a.resize(2 as Int64, "x");
+}

@@ -1,0 +1,9 @@
+import std::math::sqrt;
+
+fun main() {
+    println(sqrt(1e-323));
+    println(sqrt(6.013713131101e-311));
+    println(sqrt(2.225073858507201e-308));
+    println(sqrt(2.2250738585072014e-308));
+    println(sqrt(1.7976931348623157e308));
+}

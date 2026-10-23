@@ -1,0 +1,33 @@
+module std.linalg;
+
+import std::complex::Complex;
+import std::complex::csub;
+import std::complex::cmul;
+import std::complex::cdiv;
+
+pub struct CMat2 {
+    a: Complex,
+    b: Complex,
+    c: Complex,
+    d: Complex,
+}
+
+pub struct CVec2 {
+    x: Complex,
+    y: Complex,
+}
+
+pub fun solve2x2_complex(m: &CMat2, rhs: &CVec2): CVec2 {
+    val ad = cmul(&m.a, &m.d);
+    val bc = cmul(&m.b, &m.c);
+    val det = csub(&ad, &bc);
+    val dx = cmul(&m.d, &rhs.x);
+    val by = cmul(&m.b, &rhs.y);
+    val nx = csub(&dx, &by);
+    val x = cdiv(&nx, &det);
+    val ay = cmul(&m.a, &rhs.y);
+    val cx = cmul(&m.c, &rhs.x);
+    val ny = csub(&ay, &cx);
+    val y = cdiv(&ny, &det);
+    CVec2 { x: x, y: y }
+}

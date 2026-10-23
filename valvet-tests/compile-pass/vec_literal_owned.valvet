@@ -1,0 +1,7 @@
+fun main() {
+    val a = vec!["alpha", "beta", "gamma"];
+    println(a.len());
+    println(a[0]);
+    println(a[1]);
+    println(a[2]);
+}

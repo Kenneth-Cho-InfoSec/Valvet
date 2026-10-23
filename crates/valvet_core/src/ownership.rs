@@ -284,6 +284,12 @@ fn number_uses(
                         self.walk_expr(x);
                     }
                 }
+                ExprKind::VecRepeat { value, .. } => self.walk_expr(value),
+                ExprKind::AssocCall(call) => {
+                    for a in &call.args {
+                        self.walk_expr(a);
+                    }
+                }
                 ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) => {}
             }
         }
@@ -1283,6 +1289,12 @@ impl<'a> Cx<'a> {
                     Self::collect_ref_vars(x, cx, out);
                 }
             }
+            ExprKind::VecRepeat { value, .. } => Self::collect_ref_vars(value, cx, out),
+            ExprKind::AssocCall(call) => {
+                for a in &call.args {
+                    Self::collect_ref_vars(a, cx, out);
+                }
+            }
             ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) => {}
         }
     }
@@ -1360,6 +1372,32 @@ impl<'a> Cx<'a> {
     fn collect_place_refs(target: &Place, cx: &Cx, out: &mut Vec<String>) {
         // Places name variables but never yield borrow values in 0.1.0.
         let _ = (target, cx, out);
+    }
+
+    /// Whether a block always leaves via `return`, `break`, or `continue`.
+    /// Used to keep diverging `if` arms out of the move join; unreachable
+    /// statements are already reported by sema.
+    fn block_diverges(b: &Block) -> bool {
+        b.stmts.iter().any(Self::stmt_diverges)
+    }
+
+    fn stmt_diverges(s: &Stmt) -> bool {
+        match s {
+            Stmt::Return { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => true,
+            Stmt::If {
+                then_b,
+                else_b: Some(e),
+                ..
+            } => Self::block_diverges(then_b) && Self::block_diverges(e),
+            Stmt::If { else_b: None, .. } => false,
+            Stmt::Match { arms, .. } => {
+                !arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|a| a.guard.is_none() && Self::block_diverges(&a.body))
+            }
+            _ => false,
+        }
     }
 
     fn check_block(&mut self, b: &Block) {
@@ -1590,18 +1628,43 @@ impl<'a> Cx<'a> {
                 // then
                 self.check_block_scoped(then_b);
                 let moved_then = self.moved_snapshot();
+                let then_diverges = Self::block_diverges(then_b);
                 // restore, else
                 self.restore_snapshot(&before);
                 if let Some(e) = else_b {
                     self.check_block_scoped(e);
                 }
                 let moved_else = self.moved_snapshot();
-                // union (spans: first-found wins, matching bool behavior)
-                let mut union = moved_then.vars;
-                union.extend(moved_else.vars);
-                let mut uspans = moved_then.spans;
-                for (n, sp) in moved_else.spans {
-                    uspans.entry(n).or_insert(sp);
+                let else_diverges = else_b
+                    .as_ref()
+                    .map(|e| Self::block_diverges(e))
+                    .unwrap_or(false);
+                // Only arms that can fall through contribute moves to the
+                // statement after the `if`.  A branch that returns/breaks/
+                // continues has already diverged, so its moves are not live
+                // on the join path (Rust's path-sensitive move analysis).
+                let mut union = HashSet::new();
+                let mut uspans: HashMap<String, crate::source::Span> = HashMap::new();
+                if !then_diverges {
+                    union.extend(moved_then.vars.iter().cloned());
+                    for (n, sp) in &moved_then.spans {
+                        uspans.entry(n.clone()).or_insert(*sp);
+                    }
+                }
+                if else_b.is_some() {
+                    if !else_diverges {
+                        union.extend(moved_else.vars.iter().cloned());
+                        for (n, sp) in &moved_else.spans {
+                            uspans.entry(n.clone()).or_insert(*sp);
+                        }
+                    }
+                } else {
+                    // No `else`: the false path is the fall-through path and
+                    // carries the state from before the `if`.
+                    union.extend(before.vars.iter().cloned());
+                    for (n, sp) in &before.spans {
+                        uspans.entry(n.clone()).or_insert(*sp);
+                    }
                 }
                 self.restore_snapshot(&before);
                 self.apply_moved(&union, &uspans);
@@ -1958,6 +2021,12 @@ impl<'a> Cx<'a> {
                         &self.checked.enums,
                     );
                     self.check_expr(el, moves);
+                }
+            }
+            ExprKind::VecRepeat { value, .. } => self.check_expr(value, false),
+            ExprKind::AssocCall(call) => {
+                for a in &call.args {
+                    self.check_expr(a, false);
                 }
             }
             ExprKind::Method {

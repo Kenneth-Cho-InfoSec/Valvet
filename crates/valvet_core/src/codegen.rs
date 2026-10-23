@@ -34,6 +34,19 @@ static int64_t v_f2i64(double v) {
     return (int64_t)v;
 }
 
+static double vsqrt_builtin(double x) {
+    if (x != x || x == 1.0 / 0.0) return x;
+    if (x < 0.0) return 0.0 / 0.0;
+    if (x == 0.0) return x;
+    return sqrt(x);
+}
+
+static void *valloc_or_abort(size_t n) {
+    void *p = malloc(n);
+    if (!p) { fprintf(stderr, "alloc error\n"); abort(); }
+    return p;
+}
+
 typedef struct { char *s; int64_t len; } VStr;
 
 static VStr vstr_from_c(const char *c) {
@@ -1886,6 +1899,9 @@ impl<'a> Gen<'a> {
                 ));
                 self.out
                     .push_str(&format!("static int64_t vvec_{iname}_len({ct} *v);\n"));
+                self.out.push_str(&format!(
+                    "static {ct} vvec_{iname}_with_capacity(int64_t n);\nstatic int64_t vvec_{iname}_capacity({ct} *v);\nstatic void vvec_{iname}_reserve({ct} *v, int64_t n);\nstatic void vvec_{iname}_resize({ct} *v, int64_t n, {et} x);\nstatic void vvec_{iname}_fill({ct} *v, {et} x);\nstatic void vvec_{iname}_copy_from({ct} *v, {ct} *src);\n"
+                ));
                 if matches!(t, Ty::Float64 | Ty::Int32 | Ty::Int64) {
                     let vct = ct.clone();
                     let shape = Ty::Struct("ShapeError".to_string());
@@ -2494,11 +2510,39 @@ impl<'a> Gen<'a> {
         let oct = ctype_inst("Option", std::slice::from_ref(&t));
         let shape = Ty::Struct("ShapeError".to_string());
         let shape_ct = ctype_name("ShapeError");
+        let resize_tail = if self.type_needs_drop(&t) {
+            let drop = match &t {
+                Ty::Str => "vstr_free(&v->data[i]);".to_string(),
+                _ => format!("{};", self.drop_call(&t, "v->data[i]")),
+            };
+            format!("for (int64_t i = n; i < v->len; ++i) {{ {} }}", drop)
+        } else {
+            String::new()
+        };
+        let copy_elem = if self.type_needs_drop(&t) {
+            let drop = match &t {
+                Ty::Str => "vstr_free(&v->data[i]);".to_string(),
+                _ => format!("{};", self.drop_call(&t, "v->data[i]")),
+            };
+            let clone = match &t {
+                Ty::Str => "vstr_clone(src->data[i])".to_string(),
+                _ => self.clone_call(&t, "src->data[i]"),
+            };
+            format!("{} v->data[i] = {};", drop, clone)
+        } else {
+            "v->data[i] = src->data[i];".to_string()
+        };
         self.out.push_str(&format!(
             "static {ct} vvec_{iname}_new(void) {{ {ct} v = {{NULL, 0, 0}}; return v; }}\n",
             ct = ct,
             iname = iname
         ));
+        self.out.push_str(&format!(
+            "static {ct} vvec_{iname}_with_capacity(int64_t n) {{\n{ct} v = {{NULL, 0, 0}};\nif (n < 0) {{ fprintf(stderr, \"allocation size overflow\\n\"); abort(); }}\nif (n == 0) return v;\nif ((uint64_t)n > (uint64_t)SIZE_MAX / sizeof({et})) {{ fprintf(stderr, \"allocation size overflow\\n\"); abort(); }}\nv.data = ({et} *)valloc_or_abort((size_t)n * sizeof({et}));\nv.cap = n;\nreturn v;\n}}\nstatic int64_t vvec_{iname}_capacity({ct} *v) {{ return v->cap; }}\nstatic void vvec_{iname}_reserve({ct} *v, int64_t n) {{\nif (n < 0) {{ fprintf(stderr, \"allocation size overflow\\n\"); abort(); }}\nif (n <= v->cap - v->len) return;\nint64_t need = v->len + n;\nif (need < v->len) {{ fprintf(stderr, \"allocation size overflow\\n\"); abort(); }}\nif (v->cap > INT64_MAX / 2) {{ fprintf(stderr, \"allocation size overflow\\n\"); abort(); }}\nint64_t target = v->cap ? v->cap * 2 : 4;\nif (target < need) target = need;\nif ((uint64_t)target > (uint64_t)SIZE_MAX / sizeof({et})) {{ fprintf(stderr, \"allocation size overflow\\n\"); abort(); }}\n{et} *nd = ({et} *)realloc(v->data, (size_t)target * sizeof({et}));\nif (!nd) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nv->data = nd; v->cap = target;\n}}\nstatic void vvec_{iname}_resize({ct} *v, int64_t n, {et} x) {{\nif (n < 0) {{ fprintf(stderr, \"allocation size overflow\\n\"); abort(); }}\nif (n < v->len) {{\nDRESIZE_TAIL\nv->len = n;\nreturn;\n}}\nif (n > v->len) {{\nvvec_{iname}_reserve(v, n - v->len);\nfor (int64_t i = v->len; i < n; ++i) v->data[i] = x;\nv->len = n;\n}}\n}}\nstatic void vvec_{iname}_fill({ct} *v, {et} x) {{\nfor (int64_t i = 0; i < v->len; ++i) v->data[i] = x;\n}}\nstatic void vvec_{iname}_copy_from({ct} *v, {ct} *src) {{\nif (v == src) return;\nif (v->len < src->len) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\nfor (int64_t i = 0; i < src->len; ++i) {{\nCOPY_ELEM\n}}\n}}\n",
+            ct = ct,
+            iname = iname,
+            et = et
+        ).replace("DRESIZE_TAIL", &resize_tail).replace("COPY_ELEM", &copy_elem));
         self.out.push_str(&format!(
             "static void vvec_{iname}_push({ct} *v, {et} x) {{\nif (v->len == v->cap) {{\nint64_t ncap = v->cap ? v->cap * 2 : 4;\n{et} *nd = ({et} *)realloc(v->data, (size_t)ncap * sizeof({et}));\nif (!nd) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nv->data = nd; v->cap = ncap;\n}}\nv->data[v->len++] = x;\n}}\n",
             iname = iname,
@@ -3072,6 +3116,39 @@ impl<'a> Gen<'a> {
             Ok(v)
         };
         match method {
+            "capacity" => Ok(format!("vvec_{}_capacity({})", iname, rptr)),
+            "reserve" => {
+                let v = arg0(self)?;
+                Ok(format!(
+                    "vvec_{}_reserve({}, (int64_t)({}))",
+                    iname, rptr, v
+                ))
+            }
+            "resize" => {
+                let a = args.first().ok_or_else(|| Ice("resize arity".into()))?;
+                let b = args.get(1).ok_or_else(|| Ice("resize arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let n = self.emit_expr(a)?;
+                let v = self.emit_expr(b)?;
+                self.cur_move = saved;
+                Ok(format!(
+                    "vvec_{}_resize({}, (int64_t)({}), {})",
+                    iname, rptr, n, v
+                ))
+            }
+            "fill" => {
+                let v = arg0(self)?;
+                Ok(format!("vvec_{}_fill({}, {})", iname, rptr, v))
+            }
+            "copy_from" => {
+                let a = args.first().ok_or_else(|| Ice("copy_from arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let o = self.mat_str(a)?;
+                self.cur_move = saved;
+                Ok(format!("vvec_{}_copy_from({}, &{})", iname, rptr, o))
+            }
             "pop" => Ok(format!("vvec_{}_pop({})", iname, rptr)),
             "get" => {
                 let v = arg0(self)?;
@@ -4769,9 +4846,10 @@ impl<'a> Gen<'a> {
                 )
             }
             ExprKind::Call { name, args } => {
-                if name == "println" || name == "print" {
+                if name == "println" || name == "print" || name == "write" {
                     let a = args.first().ok_or_else(|| Ice("print arity".into()))?;
                     let t = self.ty_of(a.id);
+                    let prefix = if name == "write" { "vfmt" } else { "vprint" };
 
                     let saved = self.cur_move;
                     self.cur_move = false; // print borrows
@@ -4784,28 +4862,48 @@ impl<'a> Gen<'a> {
                     };
                     self.cur_move = saved;
                     match t {
-                        Ty::Int32 => format!("vprint_i32({})", inner),
-                        Ty::Int64 => format!("vprint_i64({})", inner),
-                        Ty::Float64 => format!("vprint_f64({})", inner),
-                        Ty::Bool => format!("vprint_bool({})", inner),
+                        Ty::Int32 => format!("{}_{}({})", prefix, "i32", inner),
+                        Ty::Int64 => format!("{}_{}({})", prefix, "i64", inner),
+                        Ty::Float64 => format!("{}_{}({})", prefix, "f64", inner),
+                        Ty::Bool => format!("{}_{}({})", prefix, "bool", inner),
                         // By value (borrow copy; callee never frees).
-                        Ty::Str => format!("vprint_str({})", inner),
+                        Ty::Str => format!("{}_{}({})", prefix, "str", inner),
                         // Composites (sema validated printability + recorded
                         // the instantiation for helper generation).
                         Ty::Generic { base, args }
                             if (base == "Vec" || base == "Option" || base == "Missing")
                                 && args.len() == 1 =>
                         {
-                            format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
+                            format!(
+                                "{}_{}({})",
+                                prefix,
+                                iname_of(&ctype_inst(&base, &args)),
+                                inner
+                            )
                         }
                         Ty::Generic { base, args } if base == "Mat" && args.is_empty() => {
-                            format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
+                            format!(
+                                "{}_{}({})",
+                                prefix,
+                                iname_of(&ctype_inst(&base, &args)),
+                                inner
+                            )
                         }
                         Ty::Generic { base, args } if base == "Factor" && args.is_empty() => {
-                            format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
+                            format!(
+                                "{}_{}({})",
+                                prefix,
+                                iname_of(&ctype_inst(&base, &args)),
+                                inner
+                            )
                         }
                         Ty::Generic { base, args } if base == "Result" && args.len() == 2 => {
-                            format!("vprint_{}({})", iname_of(&ctype_inst(&base, &args)), inner)
+                            format!(
+                                "{}_{}({})",
+                                prefix,
+                                iname_of(&ctype_inst(&base, &args)),
+                                inner
+                            )
                         }
                         // Anything else is rejected by sema (structs, enums,
                         // references, Unit); reaching here is a compiler bug.
@@ -4835,6 +4933,14 @@ impl<'a> Gen<'a> {
                         Ty::Str => format!("vstr_clone({})", inner),
                         _ => return Err(Ice("to_string of non-scalar".into())),
                     }
+                } else if name == "sqrt" {
+                    // Guarded square root over a borrowed Float64.
+                    let a = args.first().ok_or_else(|| Ice("sqrt arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let inner = self.emit_expr(a)?;
+                    self.cur_move = saved;
+                    format!("vsqrt_builtin({})", inner)
                 } else if name == "sin" || name == "cos" {
                     // Libm trig over borrowed Float64 (sema checked).
                     let a = args.first().ok_or_else(|| Ice("sin/cos arity".into()))?;
@@ -5142,6 +5248,29 @@ impl<'a> Gen<'a> {
                 } else {
                     self.emit_user_call(name, args)?
                 }
+            }
+            ExprKind::AssocCall(call) => {
+                let base = &call.base;
+                let type_args = &call.type_args;
+                let method = &call.method;
+                let args = &call.args;
+                if base != "Vec" || method != "with_capacity" || type_args.len() != 1 {
+                    return Err(Ice("unsupported associated call".into()));
+                }
+                let elem = &type_args[0];
+                let vct = ctype_inst("Vec", std::slice::from_ref(elem));
+                let iname = vct.strip_prefix('V').unwrap_or(&vct).to_string();
+                let narg = args
+                    .first()
+                    .ok_or_else(|| Ice("with_capacity arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let n = self.emit_expr(narg)?;
+                self.cur_move = saved;
+                self.new_tmp_ty(
+                    &vct,
+                    &format!("vvec_{}_with_capacity((int64_t)({}))", iname, n),
+                )
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 let lt = self.ty_of(lhs.id);
@@ -5660,7 +5789,6 @@ impl<'a> Gen<'a> {
                 succ
             }
             ExprKind::VecMacro { elems } => {
-                // Build by repeated push into a frame temp (transfers out).
                 let vt = self.ty_of(e.id);
                 let (elem_ty, vct) = match &vt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
@@ -5668,16 +5796,58 @@ impl<'a> Gen<'a> {
                     }
                     _ => return Err(Ice("vec! with non-Vec type".into())),
                 };
-                let iname = vct.strip_prefix('V').unwrap_or(&vct).to_string();
-                let tmp = self.new_tmp_ty(&vct, &format!("vvec_{}_new()", iname));
-                for el in elems {
+                let ect = self.cty(&elem_ty);
+                let n = elems.len();
+                let tmp = if n == 0 {
+                    self.new_tmp_ty(&vct, &format!("({}){{0}}", vct))
+                } else {
+                    let init = format!(
+                        "({}){{ .data = ({}*)valloc_or_abort((size_t){} * sizeof({})), .len = {}, .cap = {} }}",
+                        vct, ect, n, ect, n, n
+                    );
+                    self.new_tmp_ty(&vct, &init)
+                };
+                for (i, el) in elems.iter().enumerate() {
                     let saved = self.cur_move;
                     self.cur_move = self.moves(&elem_ty);
                     let v = self.mat_str(el)?;
                     self.cur_move = saved;
                     self.out
-                        .push_str(&format!("vvec_{}_push(&{}, {});\n", iname, tmp, v));
+                        .push_str(&format!("{}.data[{}] = {};\n", tmp, i, v));
                     self.consume(&v);
+                }
+                self.flush_nulls();
+                tmp
+            }
+            ExprKind::VecRepeat { value, len } => {
+                let vt = self.ty_of(e.id);
+                let (elem_ty, vct) = match &vt {
+                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                        (args[0].clone(), ctype_inst(base, args))
+                    }
+                    _ => return Err(Ice("vec![value; n] with non-Vec type".into())),
+                };
+                let ect = self.cty(&elem_ty);
+                let n = *len;
+                let tmp = if n == 0 {
+                    self.new_tmp_ty(&vct, &format!("({}){{0}}", vct))
+                } else {
+                    let init = format!(
+                        "({}){{ .data = ({}*)valloc_or_abort((size_t){} * sizeof({})), .len = {}, .cap = {} }}",
+                        vct, ect, n, ect, n, n
+                    );
+                    self.new_tmp_ty(&vct, &init)
+                };
+                if n > 0 {
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let v = self.mat_str(value)?;
+                    self.cur_move = saved;
+                    let etmp = self.new_tmp_ty(&ect, &v);
+                    self.out.push_str(&format!(
+                        "for (int64_t _vri = 0; _vri < {}; _vri++) {{ {}.data[_vri] = {}; }}\n",
+                        n, tmp, etmp
+                    ));
                 }
                 self.flush_nulls();
                 tmp
@@ -5772,7 +5942,7 @@ impl<'a> Gen<'a> {
                         format!("vvec_{}_push({}, {})", iname, rptr, v)
                     }
                     "pop" | "get" | "clone" | "cast" | "add_scalar" | "add" | "mul" | "dot"
-                    | "slice" => {
+                    | "slice" | "capacity" | "reserve" | "resize" | "fill" | "copy_from" => {
                         let rt = self.ty_of(e.id);
                         self.emit_vec_method(method, &elem_ty, &iname, &r, args, &rt)?
                     }
@@ -6817,6 +6987,30 @@ pub fn find_cc() -> Option<PathBuf> {
     None
 }
 
+/// C flags shared by the build path and the generated-C tests.
+pub fn cc_flags(profile: &str, lto: bool) -> Vec<String> {
+    let mut flags = vec!["-std=c11".to_string()];
+    if profile == "dev" {
+        flags.push("-O0".to_string());
+        flags.push("-g".to_string());
+        flags.push("-ffunction-sections".to_string());
+        flags.push("-fdata-sections".to_string());
+        flags.push("-Wl,--gc-sections".to_string());
+    } else {
+        flags.push("-O2".to_string());
+    }
+    if lto {
+        flags.push("-flto".to_string());
+    }
+    flags.extend([
+        "-fwrapv".to_string(),
+        "-pthread".to_string(),
+        "-fno-math-errno".to_string(),
+        "-ffp-contract=off".to_string(),
+    ]);
+    flags
+}
+
 /// Compile C source file to native executable. Returns stderr on failure.
 pub fn cc_build(c_file: &Path, exe: &Path) -> Result<(), String> {
     cc_build_profile(c_file, exe, "release", false)
@@ -6828,17 +7022,7 @@ pub fn cc_build(c_file: &Path, exe: &Path) -> Result<(), String> {
 pub fn cc_build_profile(c_file: &Path, exe: &Path, profile: &str, lto: bool) -> Result<(), String> {
     let cc = find_cc().ok_or_else(|| "no C compiler found (set VALVET_CC)".to_string())?;
     let mut cmd = Command::new(&cc);
-    cmd.arg("-std=c11");
-    if profile == "dev" {
-        cmd.arg("-O0").arg("-g");
-    } else {
-        cmd.arg("-O2");
-    }
-    if lto {
-        cmd.arg("-flto");
-    }
-    cmd.arg("-fwrapv")
-        .arg("-pthread")
+    cmd.args(cc_flags(profile, lto))
         .arg("-o")
         .arg(exe)
         .arg(c_file)

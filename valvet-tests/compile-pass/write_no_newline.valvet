@@ -1,0 +1,7 @@
+fun main() {
+    write("a");
+    write(5 as Int64);
+    write(true);
+    write(1.5);
+    println("");
+}

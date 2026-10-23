@@ -390,7 +390,9 @@ fn build_exe(path: &str, opts: &BuildOpts) -> Result<PathBuf, i32> {
     let c_hex = valvet_core::sha256::hex(c_src.as_bytes());
     if exe.exists() && cached.get(1).is_some_and(|c| *c == c_hex) {
         if !quiet {
-            println!("note: unchanged lowering; skipping link");
+            // This is a compiler note, not program output: keep stdout clean
+            // for `valvet run` pipelines and numeric oracles.
+            eprintln!("note: unchanged lowering; skipping link");
         }
         let _ = std::fs::write(&sidecar, format!("{}\n{}\n", digest, c_hex));
         return Ok(exe);

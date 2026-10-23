@@ -1,0 +1,10 @@
+import std::math::sqrt;
+
+fun main() {
+    println(sqrt(2.0) == 1.4142135623730951)
+    println(sqrt(3.0) == 1.7320508075688772)
+    println(sqrt(10.0) == 3.1622776601683795)
+    println(sqrt(0.1) == 0.31622776601683794)
+    println(sqrt(1.0e-300) == 1.0e-150)
+    println(sqrt(1.0e300) == 1.0e150)
+}

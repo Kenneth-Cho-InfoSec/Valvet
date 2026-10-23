@@ -406,6 +406,18 @@ pub struct MatchArm {
     pub span: Span,
 }
 
+/// Associated-function call payload. Kept behind a `Box` so adding this
+/// expression does not enlarge every `Expr`/`Stmt` in the AST.
+#[derive(Debug, Clone)]
+pub struct AssocCall {
+    pub base: String,
+    pub base_span: Span,
+    pub type_args: Vec<Ty>,
+    pub method: String,
+    pub method_span: Span,
+    pub args: Vec<Expr>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Int(i64),
@@ -488,6 +500,13 @@ pub enum ExprKind {
     VecMacro {
         elems: Vec<Expr>,
     },
+    /// `vec![value; n]` — repeat a copyable value exactly `n` times.
+    VecRepeat {
+        value: Box<Expr>,
+        len: usize,
+    },
+    /// `Vec<T>::with_capacity(n)` — associated constructor for a vector.
+    AssocCall(Box<AssocCall>),
     /// `recv.method(args)` — method call (J1: `Vec` and `String` methods).
     Method {
         receiver: Box<Expr>,

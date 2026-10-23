@@ -1,0 +1,11 @@
+fun main() {
+    val a = Vec<String>::with_capacity(3 as Int64);
+    a.push("a");
+    a.push("b");
+    a.push("c");
+    val b = vec!["x", "y", "z"];
+    a.copy_from(b);
+    println(a[0]);
+    println(a[1]);
+    println(a[2]);
+}

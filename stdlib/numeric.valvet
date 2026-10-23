@@ -1,0 +1,298 @@
+module std.numeric;
+
+import std::math::abs;
+import std::math::max;
+import std::math::sqrt;
+
+pub fun zeros(n: Int64): Vec<Float64> {
+    val v = Vec<Float64>::with_capacity(n);
+    v.resize(n, 0.0);
+    v
+}
+
+pub fun filled(n: Int64, x: Float64): Vec<Float64> {
+    val v = Vec<Float64>::with_capacity(n);
+    v.resize(n, x);
+    v
+}
+
+pub fun clone(v: &Vec<Float64>): Vec<Float64> {
+    (*v).clone()
+}
+
+pub fun copy_from(dst: &mut Vec<Float64>, src: &Vec<Float64>) {
+    (*dst).copy_from(*src);
+}
+
+pub fun fill(dst: &mut Vec<Float64>, x: Float64) {
+    (*dst).fill(x);
+}
+
+pub fun scale(a: Float64, x: &Vec<Float64>): Vec<Float64> {
+    val n = (*x).len();
+    var out = zeros(n);
+    var i = 0 as Int64
+    while (i < n) {
+        out[i] = a * (*x)[i];
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun scale_into(dst: &mut Vec<Float64>, a: Float64, x: &Vec<Float64>) {
+    val n = (*x).len();
+    var i = 0 as Int64
+    while (i < n) {
+        (*dst)[i] = a * (*x)[i];
+        i += 1 as Int64
+    }
+}
+
+pub fun axpy(a: Float64, x: &Vec<Float64>, b: Float64, y: &Vec<Float64>): Vec<Float64> {
+    val n = (*x).len();
+    var out = zeros(n);
+    var i = 0 as Int64
+    while (i < n) {
+        out[i] = a * (*x)[i] + b * (*y)[i];
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun axpy_into(dst: &mut Vec<Float64>, a: Float64, x: &Vec<Float64>, b: Float64, y: &Vec<Float64>) {
+    val n = (*x).len();
+    var i = 0 as Int64
+    while (i < n) {
+        (*dst)[i] = a * (*x)[i] + b * (*y)[i];
+        i += 1 as Int64
+    }
+}
+
+pub fun axpy3(a: Float64, x: &Vec<Float64>, b: Float64, y: &Vec<Float64>, c: Float64, z: &Vec<Float64>): Vec<Float64> {
+    val n = (*x).len();
+    var out = zeros(n);
+    var i = 0 as Int64
+    while (i < n) {
+        out[i] = (a * (*x)[i] + b * (*y)[i]) + c * (*z)[i];
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun axpy3_into(dst: &mut Vec<Float64>, a: Float64, x: &Vec<Float64>, b: Float64, y: &Vec<Float64>, c: Float64, z: &Vec<Float64>) {
+    val n = (*x).len();
+    var i = 0 as Int64
+    while (i < n) {
+        (*dst)[i] = (a * (*x)[i] + b * (*y)[i]) + c * (*z)[i];
+        i += 1 as Int64
+    }
+}
+
+pub fun axpy4(a: Float64, x: &Vec<Float64>, b: Float64, y: &Vec<Float64>, c: Float64, z: &Vec<Float64>, d: Float64, w: &Vec<Float64>): Vec<Float64> {
+    val n = (*x).len();
+    var out = zeros(n);
+    var i = 0 as Int64
+    while (i < n) {
+        out[i] = ((a * (*x)[i] + b * (*y)[i]) + c * (*z)[i]) + d * (*w)[i];
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun axpy4_into(dst: &mut Vec<Float64>, a: Float64, x: &Vec<Float64>, b: Float64, y: &Vec<Float64>, c: Float64, z: &Vec<Float64>, d: Float64, w: &Vec<Float64>) {
+    val n = (*x).len();
+    var i = 0 as Int64
+    while (i < n) {
+        (*dst)[i] = ((a * (*x)[i] + b * (*y)[i]) + c * (*z)[i]) + d * (*w)[i];
+        i += 1 as Int64
+    }
+}
+
+pub fun dot(x: &Vec<Float64>, y: &Vec<Float64>): Float64 {
+    var acc = 0.0
+    var i = 0 as Int64
+    val n = (*x).len();
+    while (i < n) {
+        acc = acc + (*x)[i] * (*y)[i];
+        i += 1 as Int64
+    }
+    acc
+}
+
+pub fun norm2(x: &Vec<Float64>): Float64 {
+    sqrt(dot(x, x))
+}
+
+pub fun rms(x: &Vec<Float64>): Float64 {
+    val n = (*x).len();
+    if (n == 0) {
+        return 0.0;
+    }
+    var acc = 0.0
+    var i = 0 as Int64
+    while (i < n) {
+        acc = acc + (*x)[i] * (*x)[i];
+        i += 1 as Int64
+    }
+    sqrt(acc / (n as Float64))
+}
+
+pub fun rms_parts(a: &Vec<Float64>, b: &Vec<Float64>): Float64 {
+    val na = (*a).len();
+    val nb = (*b).len();
+    if (na + nb == 0) {
+        return 0.0;
+    }
+    var acc = 0.0
+    var i = 0 as Int64
+    while (i < na) {
+        acc = acc + (*a)[i] * (*a)[i];
+        i += 1 as Int64
+    }
+    i = 0
+    while (i < nb) {
+        acc = acc + (*b)[i] * (*b)[i];
+        i += 1 as Int64
+    }
+    sqrt(acc / ((na + nb) as Float64))
+}
+
+pub fun scaled_residual(x: &Vec<Float64>, u0: &Vec<Float64>, u1: &Vec<Float64>, alpha: Float64, rho: Float64): Vec<Float64> {
+    val n = (*x).len();
+    var out = zeros(n);
+    var i = 0 as Int64
+    while (i < n) {
+        out[i] = (*x)[i] / (alpha + max(abs((*u0)[i]), abs((*u1)[i])) * rho);
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun scaled_residual2(x: &Vec<Float64>, u0a: &Vec<Float64>, u1a: &Vec<Float64>, u0b: &Vec<Float64>, u1b: &Vec<Float64>, alpha: Float64, rho: Float64): Vec<Float64> {
+    val na = (*u0a).len();
+    val nb = (*u0b).len();
+    val n = (*x).len();
+    var out = zeros(n);
+    var i = 0 as Int64
+    while (i < na) {
+        out[i] = (*x)[i] / (alpha + max(abs((*u0a)[i]), abs((*u1a)[i])) * rho);
+        i += 1 as Int64
+    }
+    i = 0
+    while (i < nb) {
+        out[na + i] = (*x)[na + i] / (alpha + max(abs((*u0b)[i]), abs((*u1b)[i])) * rho);
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun add(x: &Vec<Float64>, y: &Vec<Float64>): Vec<Float64> {
+    val n = (*x).len();
+    var out = zeros(n);
+    var i = 0 as Int64
+    while (i < n) {
+        out[i] = (*x)[i] + (*y)[i];
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun sub(x: &Vec<Float64>, y: &Vec<Float64>): Vec<Float64> {
+    val n = (*x).len();
+    var out = zeros(n);
+    var i = 0 as Int64
+    while (i < n) {
+        out[i] = (*x)[i] - (*y)[i];
+        i += 1 as Int64
+    }
+    out
+}
+
+pub fun sum(x: &Vec<Float64>): Float64 {
+    var acc = 0.0
+    var i = 0 as Int64
+    val n = (*x).len();
+    while (i < n) {
+        acc = acc + (*x)[i];
+        i += 1 as Int64
+    }
+    acc
+}
+
+pub fun mean(x: &Vec<Float64>): Float64 {
+    val n = (*x).len();
+    if (n == 0) {
+        return 0.0 / 0.0;
+    }
+    var acc = 0.0
+    var i = 0 as Int64
+    while (i < n) {
+        acc = acc + (*x)[i];
+        i += 1 as Int64
+    }
+    acc / (n as Float64)
+}
+
+pub fun min_vec(x: &Vec<Float64>): Float64 {
+    val n = (*x).len();
+    if (n == 0) {
+        return 0.0 / 0.0;
+    }
+    var m = (*x)[0]
+    var i = 1 as Int64
+    while (i < n) {
+        if ((*x)[i] < m) {
+            m = (*x)[i];
+        }
+        i += 1 as Int64
+    }
+    m
+}
+
+pub fun max_vec(x: &Vec<Float64>): Float64 {
+    val n = (*x).len();
+    if (n == 0) {
+        return 0.0 / 0.0;
+    }
+    var m = (*x)[0]
+    var i = 1 as Int64
+    while (i < n) {
+        if ((*x)[i] > m) {
+            m = (*x)[i];
+        }
+        i += 1 as Int64
+    }
+    m
+}
+
+pub fun sum_sq(x: &Vec<Float64>, c: Float64): Float64 {
+    var acc = 0.0
+    var i = 0 as Int64
+    val n = (*x).len();
+    while (i < n) {
+        acc = acc + ((*x)[i] - c) * ((*x)[i] - c);
+        i += 1 as Int64
+    }
+    acc
+}
+
+pub fun sd(x: &Vec<Float64>): Float64 {
+    val n = (*x).len();
+    if (n < 2) {
+        return 0.0;
+    }
+    var acc = 0.0
+    var i = 0 as Int64
+    while (i < n) {
+        acc = acc + (*x)[i];
+        i += 1 as Int64
+    }
+    val m = acc / (n as Float64);
+    var s = 0.0
+    i = 0
+    while (i < n) {
+        s = s + ((*x)[i] - m) * ((*x)[i] - m);
+        i += 1 as Int64
+    }
+    sqrt(s / ((n - 1) as Float64))
+}

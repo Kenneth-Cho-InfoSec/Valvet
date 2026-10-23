@@ -1,0 +1,23 @@
+struct State {
+    max_order: Int64,
+}
+
+fun need64(x: Int64): Int64 { x }
+fun needf(x: Float64): Float64 { x }
+
+fun main() {
+    var s = State { max_order: 0 as Int64 };
+    s.max_order = 6;
+    println(s.max_order);
+    println(need64(7));
+    println(needf(2));
+    var n: Int64 = 5;
+    n = 8;
+    println(n);
+    println(n == 8);
+    var k: Int64 = 0;
+    while (k < 3) {
+        k = k + 1;
+    }
+    println(k);
+}

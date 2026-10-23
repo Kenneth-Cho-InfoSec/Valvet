@@ -1079,6 +1079,12 @@ fn scan_expr(e: &crate::ast::Expr, saw_try: &mut bool, saw_ret_val: &mut bool) {
                 scan_expr(el, saw_try, saw_ret_val);
             }
         }
+        VecRepeat { value, .. } => scan_expr(value, saw_try, saw_ret_val),
+        AssocCall(call) => {
+            for a in &call.args {
+                scan_expr(a, saw_try, saw_ret_val);
+            }
+        }
         Method { receiver, args, .. } => {
             scan_expr(receiver, saw_try, saw_ret_val);
             for a in args {
@@ -1246,6 +1252,12 @@ fn renumber_expr(e: &mut crate::ast::Expr, next: &mut crate::ast::NodeId) {
         Int(_) | Float(_) | Bool(_) | Str(_) | Var(_) => {}
         Call { args, .. } | VecMacro { elems: args } | Variant { args, .. } => {
             for a in args {
+                renumber_expr(a, next);
+            }
+        }
+        VecRepeat { value, .. } => renumber_expr(value, next),
+        AssocCall(call) => {
+            for a in &mut call.args {
                 renumber_expr(a, next);
             }
         }

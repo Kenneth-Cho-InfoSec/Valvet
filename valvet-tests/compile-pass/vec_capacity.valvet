@@ -1,0 +1,23 @@
+fun main() {
+    val a = Vec<Float64>::with_capacity(3 as Int64);
+    println(a.len());
+    println(a.capacity());
+    a.reserve(2 as Int64);
+    println(a.capacity());
+    a.resize(4 as Int64, 2.5);
+    println(a.len());
+    println(a.capacity());
+    println(a[0]);
+    println(a[3]);
+    a.reserve(3 as Int64);
+    println(a.capacity());
+    a.fill(7.0);
+    println(a[2]);
+    a.resize(1 as Int64, 0.0);
+    println(a.len());
+    val b = vec![1.0, 2.0, 3.0];
+    a.resize(3 as Int64, 0.0);
+    a.copy_from(b);
+    println(a[0] + a[1] + a[2]);
+    println(a.capacity());
+}

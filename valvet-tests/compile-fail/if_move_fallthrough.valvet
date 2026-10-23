@@ -1,0 +1,11 @@
+fun consume(s: String) {
+    println(s)
+}
+
+fun main() {
+    val a = "hello"
+    if (1 > 0) {
+        consume(a)
+    }
+    println(a)
+}

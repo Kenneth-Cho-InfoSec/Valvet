@@ -1,0 +1,7 @@
+import std.math::sqrt;
+import std.math.sqrt as mysqrt;
+
+fun main() {
+    println(sqrt(9.0));
+    println(mysqrt(16.0));
+}

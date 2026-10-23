@@ -1,0 +1,23 @@
+import std::complex::Complex;
+import std::complex::cnew;
+import std::complex::cpow_int;
+
+fun main() {
+    val a = cnew(1.0, 2.0);
+    val p0 = cpow_int(&a, 0);
+    println(p0.re);
+    println(p0.im);
+    val p1 = cpow_int(&a, 1);
+    println(p1.re);
+    println(p1.im);
+    println(p1.re == a.re && p1.im == a.im);
+    val p2 = cpow_int(&a, 2);
+    println(p2.re);
+    println(p2.im);
+    val p3 = cpow_int(&a, 3);
+    println(p3.re);
+    println(p3.im);
+    val pn = cpow_int(&a, 0 - 1);
+    println(pn.re);
+    println(pn.im);
+}

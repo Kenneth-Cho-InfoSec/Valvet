@@ -1,0 +1,23 @@
+struct Box {
+    items: Vec<Float64>
+}
+
+fun pick(n: Int32, b: Box): Box {
+    var st = b
+    if (n == 1) {
+        return st
+    }
+    if (n == 2) {
+        st.items.push(3.0)
+        return st
+    }
+    st
+}
+
+fun main() {
+    val a = Box { items: vec![1.0, 2.0] }
+    val b = pick(2, a)
+    println(b.items.len())
+    val c = pick(3, b)
+    println(c.items.len())
+}

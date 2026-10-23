@@ -429,8 +429,8 @@ impl Parser {
     }
 
     /// `import a::b::load;`, `import a::b::load as ld;`,
-    /// `import a::b::{x, y as z};`. Dotted paths are E0602 (VR-002: dots only
-    /// in `module` decls); globs are E0800; `pub import` (re-export) is E0800.
+    /// `import a::b::{x, y as z};`. `::` and `.` are equivalent separators;
+    /// globs are E0800; `pub import` (re-export) is E0800.
     fn parse_import(&mut self, is_pub: bool) -> Option<ImportDecl> {
         let start = self.cur_span().start;
         self.bump(); // import
@@ -452,9 +452,9 @@ impl Parser {
                     return None;
                 }
             }
-            if matches!(self.cur(), Tok::ColonColon) {
+            if matches!(self.cur(), Tok::ColonColon | Tok::Dot) {
                 self.bump();
-                // `import a::b::{x, y};` — brace list after `::`.
+                // `import a::b::{x, y};` — brace list after a separator.
                 if matches!(self.cur(), Tok::LBrace) {
                     return self.parse_import_braces(start, path);
                 }
@@ -468,14 +468,6 @@ impl Parser {
                 continue;
             }
             break;
-        }
-        // Dots in imports are rejected (VR-002); suggest `::`.
-        if matches!(self.cur(), Tok::Dot) {
-            self.err(
-                "E0602",
-                "dotted import paths are rejected; use `::` separators (`import a::b::Item`)",
-            );
-            return None;
         }
         if path.len() < 2 {
             self.err(
@@ -3165,8 +3157,39 @@ impl Parser {
                                 self.bump();
                                 break;
                             }
-                            elems.push(self.parse_expr()?);
+                            let first = self.parse_expr()?;
                             self.skip_nls();
+                            if matches!(self.cur(), Tok::Semi) {
+                                self.bump();
+                                self.skip_nls();
+                                let count = match self.cur() {
+                                    Tok::IntLit(n) if *n >= 0 => {
+                                        let n = *n;
+                                        self.bump();
+                                        n
+                                    }
+                                    _ => {
+                                        self.err(
+                                            "E0005",
+                                            "expected a non-negative integer literal after `;` in `vec![value; n]`",
+                                        );
+                                        return None;
+                                    }
+                                };
+                                self.skip_nls();
+                                self.expect(Tok::RBracket, "expected `]` after `vec![value; n]`")?;
+                                let len = usize::try_from(count).ok()?;
+                                let end = self.prev_span().end;
+                                return Some(Expr {
+                                    id: self.fresh(),
+                                    span: Span::new(sp.start, end),
+                                    kind: ExprKind::VecRepeat {
+                                        value: Box::new(first),
+                                        len,
+                                    },
+                                });
+                            }
+                            elems.push(first);
                             match self.cur() {
                                 Tok::Comma => {
                                     self.bump();
@@ -3188,6 +3211,67 @@ impl Parser {
                     self.pos = save;
                 }
                 self.bump();
+                // `Vec<T>::with_capacity(n)` — associated constructor.  Only
+                // `Vec` is callable this way in 0.1.0; other associated
+                // calls remain parse errors until a real namespace exists.
+                if name == "Vec" && matches!(self.cur(), Tok::Lt) {
+                    self.bump();
+                    let mut type_args = vec![];
+                    loop {
+                        self.skip_nls();
+                        type_args.push(self.parse_type()?);
+                        self.skip_nls();
+                        match self.cur() {
+                            Tok::Comma => {
+                                self.bump();
+                            }
+                            Tok::Gt => {
+                                self.bump();
+                                break;
+                            }
+                            _ => {
+                                self.err("E0005", "expected `,` or `>` in `Vec<T>`");
+                                return None;
+                            }
+                        }
+                    }
+                    self.expect(Tok::ColonColon, "expected `::` after `Vec<T>`")?;
+                    let (method, mspan) = self.expect_ident("associated function name")?;
+                    self.expect(Tok::LParen, "expected `(` after associated function")?;
+                    let mut args = vec![];
+                    loop {
+                        self.skip_nls();
+                        if matches!(self.cur(), Tok::RParen) {
+                            self.bump();
+                            break;
+                        }
+                        args.push(self.parse_expr()?);
+                        self.skip_nls();
+                        match self.cur() {
+                            Tok::Comma => {
+                                self.bump();
+                            }
+                            Tok::RParen => {}
+                            _ => {
+                                self.err("E0005", "expected `,` or `)` in associated call");
+                                return None;
+                            }
+                        }
+                    }
+                    let end = self.prev_span().end;
+                    return Some(Expr {
+                        id: self.fresh(),
+                        span: Span::new(sp.start, end),
+                        kind: ExprKind::AssocCall(Box::new(AssocCall {
+                            base: name,
+                            base_span: sp,
+                            type_args,
+                            method,
+                            method_span: mspan,
+                            args,
+                        })),
+                    });
+                }
                 // `Type::Variant(args)` — enum variant construction.
                 if matches!(self.cur(), Tok::ColonColon) {
                     self.bump();

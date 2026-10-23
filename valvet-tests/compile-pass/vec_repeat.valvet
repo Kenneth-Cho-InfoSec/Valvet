@@ -1,0 +1,10 @@
+fun main() {
+    val a = vec![3; 5];
+    println(a.len());
+    println(a[0]);
+    println(a[4]);
+    val b = vec![1.5; 0];
+    println(b.len());
+    val c = vec![2.0; 2];
+    println(c[0] + c[1]);
+}

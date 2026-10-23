@@ -1,0 +1,32 @@
+import std::complex::Complex;
+import std::complex::cnew;
+import std::linalg::CMat2;
+import std::linalg::CVec2;
+import std::linalg::solve2x2_complex;
+
+fun main() {
+    val m = CMat2 {
+        a: cnew(1.0, 0.0),
+        b: cnew(2.0, 0.0),
+        c: cnew(3.0, 0.0),
+        d: cnew(4.0, 0.0),
+    };
+    val rhs = CVec2 { x: cnew(5.0, 0.0), y: cnew(6.0, 0.0) };
+    val out = solve2x2_complex(&m, &rhs);
+    println(out.x.re);
+    println(out.x.im);
+    println(out.y.re);
+    println(out.y.im);
+    val m2 = CMat2 {
+        a: cnew(1.0, 1.0),
+        b: cnew(0.0, 0.0),
+        c: cnew(0.0, 0.0),
+        d: cnew(1.0, 0.0 - 1.0),
+    };
+    val rhs2 = CVec2 { x: cnew(2.0, 0.0), y: cnew(3.0, 0.0) };
+    val out2 = solve2x2_complex(&m2, &rhs2);
+    println(out2.x.re);
+    println(out2.x.im);
+    println(out2.y.re);
+    println(out2.y.im);
+}

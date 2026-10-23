@@ -13,5 +13,8 @@ target/
 __pycache__/
 *.pyc
 
+# Design inspector screenshots and reports
+.taste-skill/
+
 # Reproducibility locks are build artifacts (written beside the entry)
 valvet.lock

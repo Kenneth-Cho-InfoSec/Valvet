@@ -466,6 +466,7 @@ fn expr_tree_has_return(e: &Expr) -> bool {
         ExprKind::Call { args, .. } | ExprKind::Variant { args, .. } => {
             args.iter().any(expr_tree_has_return)
         }
+        ExprKind::AssocCall(call) => call.args.iter().any(expr_tree_has_return),
         ExprKind::Binary { lhs, rhs, .. } => expr_tree_has_return(lhs) || expr_tree_has_return(rhs),
         ExprKind::Unary { expr, .. }
         | ExprKind::Cast { expr, .. }
@@ -503,6 +504,7 @@ fn expr_tree_has_return(e: &Expr) -> bool {
             fields.iter().any(|(_, _, f)| expr_tree_has_return(f))
         }
         ExprKind::VecMacro { elems, .. } => elems.iter().any(expr_tree_has_return),
+        ExprKind::VecRepeat { value, .. } => expr_tree_has_return(value),
         ExprKind::Method { receiver, args, .. } => {
             expr_tree_has_return(receiver) || args.iter().any(expr_tree_has_return)
         }
@@ -1454,6 +1456,10 @@ impl Cx {
             ExprKind::Call { args, .. } => {
                 args.iter().any(|a| self.contains_local_borrow(a, params))
             }
+            ExprKind::AssocCall(call) => call
+                .args
+                .iter()
+                .any(|a| self.contains_local_borrow(a, params)),
             ExprKind::Binary { lhs, rhs, .. } => {
                 self.contains_local_borrow(lhs, params) || self.contains_local_borrow(rhs, params)
             }
@@ -1522,6 +1528,7 @@ impl Cx {
             ExprKind::VecMacro { elems } => {
                 elems.iter().any(|x| self.contains_local_borrow(x, params))
             }
+            ExprKind::VecRepeat { value, .. } => self.contains_local_borrow(value, params),
             ExprKind::Method { receiver, args, .. } => {
                 self.contains_local_borrow(receiver, params)
                     || args.iter().any(|a| self.contains_local_borrow(a, params))
@@ -2373,11 +2380,18 @@ impl Cx {
     fn check_expr(&mut self, e: &Expr) -> Ty {
         let ty = match &e.kind {
             ExprKind::Int(v) => {
-                if *v > i32::MAX as i64 || *v < i32::MIN as i64 {
-                    // Unconstrained literal wider than Int32: infer Int64.
-                    Ty::Int64
-                } else {
-                    Ty::Int32
+                match &self.expected {
+                    Some(Ty::Int64) => Ty::Int64,
+                    Some(Ty::Int32) if *v <= i32::MAX as i64 && *v >= i32::MIN as i64 => Ty::Int32,
+                    Some(Ty::Float64) if (*v as f64) as i64 == *v => Ty::Float64,
+                    _ => {
+                        if *v > i32::MAX as i64 || *v < i32::MIN as i64 {
+                            // Unconstrained literal wider than Int32: infer Int64.
+                            Ty::Int64
+                        } else {
+                            Ty::Int32
+                        }
+                    }
                 }
             }
             ExprKind::Float(_) => Ty::Float64,
@@ -2420,9 +2434,100 @@ impl Cx {
                 self.types.insert(e.id, t.clone());
                 t
             }
+            ExprKind::AssocCall(call) => {
+                let base = &call.base;
+                let base_span = &call.base_span;
+                let type_args = &call.type_args;
+                let method = &call.method;
+                let method_span = &call.method_span;
+                let args = &call.args;
+                if base != "Vec" {
+                    self.err(
+                        "E0401",
+                        *base_span,
+                        format!("associated call `{}` is not supported", base),
+                        Some("only `Vec<T>::with_capacity(n)` is available".into()),
+                    );
+                    return Ty::Error;
+                }
+                if type_args.len() != 1 {
+                    self.err(
+                        "E0201",
+                        *base_span,
+                        format!(
+                            "`Vec` needs exactly one type argument, found {}",
+                            type_args.len()
+                        ),
+                        None,
+                    );
+                    return Ty::Error;
+                }
+                if method != "with_capacity" {
+                    self.err(
+                        "E0401",
+                        *method_span,
+                        format!("unknown associated function `Vec::{}`", method),
+                        Some("available: with_capacity".into()),
+                    );
+                    return Ty::Error;
+                }
+                if args.len() != 1 {
+                    self.err(
+                        "E0201",
+                        *method_span,
+                        "`Vec::with_capacity` takes exactly 1 argument",
+                        None,
+                    );
+                } else {
+                    let at = self.check_expr(&args[0]);
+                    if !matches!(at, Ty::Int32 | Ty::Int64) && !ty_has_error(&at) {
+                        self.err(
+                            "E0201",
+                            args[0].span,
+                            format!(
+                                "`Vec::with_capacity` expects an integer count, found {}",
+                                at.name()
+                            ),
+                            None,
+                        );
+                    }
+                }
+                let elem = type_args[0].clone();
+                self.record_vec_inst(&elem);
+                Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![elem],
+                }
+            }
             ExprKind::Binary { op, lhs, rhs } => {
-                let lt = self.check_expr(lhs);
-                let rt = self.check_expr(rhs);
+                // Comparisons infer a literal operand from the other side so
+                // `k < 3` with `k: Int64` does not require `3 as Int64`.
+                let is_cmp = matches!(
+                    op,
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                );
+                let (lt, rt) = if is_cmp {
+                    let saved_exp = self.expected.take();
+                    let lhs_lit = matches!(lhs.kind, ExprKind::Int(_) | ExprKind::Float(_));
+                    let rhs_lit = matches!(rhs.kind, ExprKind::Int(_) | ExprKind::Float(_));
+                    let pair = if lhs_lit && !rhs_lit {
+                        let rt = self.check_expr(rhs);
+                        let saved = self.expected.replace(rt.clone());
+                        let lt = self.check_expr(lhs);
+                        self.expected = saved;
+                        (lt, rt)
+                    } else {
+                        let lt = self.check_expr(lhs);
+                        let saved = self.expected.replace(lt.clone());
+                        let rt = self.check_expr(rhs);
+                        self.expected = saved;
+                        (lt, rt)
+                    };
+                    self.expected = saved_exp;
+                    pair
+                } else {
+                    (self.check_expr(lhs), self.check_expr(rhs))
+                };
                 let ld = self.dim_of(lhs.id);
                 let rd = self.dim_of(rhs.id);
                 self.check_binary(BinCheck {
@@ -2493,7 +2598,6 @@ impl Cx {
                 }
             }
             ExprKind::Assign { target, op, value } => {
-                let vt = self.check_expr(value);
                 // Only an outermost index carries a bounds check: an index
                 // under Field/Deref (e.g. `(*a)[t].red = v`) would reach
                 // codegen addressing without one, so reject it here with
@@ -2520,6 +2624,18 @@ impl Cx {
                                 Some("use `var` bindings and `&mut` for mutation".into()),
                             );
                         }
+                        // Plain assignment resolves the place first and gives
+                        // its type to the value, so `st.max_order = 6` can pick
+                        // Int64 without a source cast. Compound assignments keep
+                        // the ambient expectation (the operator supplies context).
+                        let vt = if *op == AssignOp::Set {
+                            let saved_exp = self.expected.replace(pt.clone());
+                            let t = self.check_expr(value);
+                            self.expected = saved_exp;
+                            t
+                        } else {
+                            self.check_expr(value)
+                        };
                         // Units: `Set` unifies the value with the place
                         // (literals pin; scales convert at codegen).
                         // Compound ops check dimensions per-operator below.
@@ -2872,6 +2988,52 @@ impl Cx {
                         Ty::Error
                     }
                 }
+            }
+            ExprKind::VecRepeat { value, len: _ } => {
+                let exp_elem: Option<Ty> = match &self.expected {
+                    Some(Ty::Generic { base, args }) if base == "Vec" && args.len() == 1 => {
+                        Some(args[0].clone())
+                    }
+                    _ => None,
+                };
+                let saved_exp = self.expected.clone();
+                if let Some(t) = exp_elem.clone() {
+                    self.expected = Some(t);
+                }
+                let t = self.check_expr(value);
+                self.expected = saved_exp;
+                if !ty_has_error(&t) && !is_copy_ty(&t, &self.structs, &self.enums) {
+                    self.err(
+                        "E0201",
+                        value.span,
+                        format!(
+                            "`vec![value; n]` requires a copyable element type, found {}",
+                            t.name()
+                        ),
+                        None,
+                    );
+                }
+                let vt = if let Some(exp) = exp_elem {
+                    if exp != t && !ty_has_error(&exp) && !ty_has_error(&t) {
+                        self.err(
+                            "E0201",
+                            value.span,
+                            format!("expected Vec<{}>, found Vec<{}>", exp.name(), t.name()),
+                            None,
+                        );
+                    }
+                    Ty::Generic {
+                        base: "Vec".to_string(),
+                        args: vec![exp],
+                    }
+                } else {
+                    Ty::Generic {
+                        base: "Vec".to_string(),
+                        args: vec![t],
+                    }
+                };
+                self.record_ty(&vt);
+                vt
             }
             ExprKind::VecMacro { elems } => {
                 // Element type from the annotation when present, else inferred
@@ -3310,7 +3472,12 @@ impl Cx {
             }
             ExprKind::Index { base, idx } => {
                 let bt = self.check_expr(base);
+                // An index is never typed by the surrounding expression;
+                // clear `expected` so `w[0]` in a Float64 assignment still
+                // infers the literal index as an integer.
+                let saved_exp = self.expected.take();
                 let it = self.check_expr(idx);
+                self.expected = saved_exp;
                 if ty_has_error(&bt) || ty_has_error(&it) {
                     return Ty::Error;
                 }
@@ -4677,6 +4844,106 @@ impl Cx {
                 }
                 Ty::Int64
             }
+            "capacity" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`capacity` takes no arguments", None);
+                }
+                Ty::Int64
+            }
+            "reserve" => {
+                if args.len() != 1 {
+                    self.err("E0201", span, "`reserve` takes exactly 1 argument", None);
+                    return Ty::Unit;
+                }
+                let at = self.check_expr(&args[0]);
+                if !matches!(at, Ty::Int32 | Ty::Int64) && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`reserve` expects an integer count, found {}", at.name()),
+                        None,
+                    );
+                }
+                Ty::Unit
+            }
+            "resize" => {
+                if args.len() != 2 {
+                    self.err("E0201", span, "`resize` takes exactly 2 arguments", None);
+                    return Ty::Unit;
+                }
+                let nat = self.check_expr(&args[0]);
+                if !matches!(nat, Ty::Int32 | Ty::Int64) && !ty_has_error(&nat) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`resize` expects an integer count, found {}", nat.name()),
+                        None,
+                    );
+                }
+                let vt = self.check_expr(&args[1]);
+                if !ty_has_error(&vt) && !is_copy_ty(elem, &self.structs, &self.enums) {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "`resize` requires a copyable element type, found Vec<{}>",
+                            elem.name()
+                        ),
+                        Some("use `copy_from` or rebuild the vector for owned elements".into()),
+                    );
+                } else if vt != *elem && !ty_has_error(&vt) && !ty_has_error(elem) {
+                    self.err(
+                        "E0201",
+                        args[1].span,
+                        format!("`resize` expects {}, found {}", elem.name(), vt.name()),
+                        None,
+                    );
+                }
+                Ty::Unit
+            }
+            "fill" => {
+                if args.len() != 1 {
+                    self.err("E0201", span, "`fill` takes exactly 1 argument", None);
+                    return Ty::Unit;
+                }
+                let vt = self.check_expr(&args[0]);
+                if !ty_has_error(&vt) && !is_copy_ty(elem, &self.structs, &self.enums) {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "`fill` requires a copyable element type, found Vec<{}>",
+                            elem.name()
+                        ),
+                        Some("use `copy_from` or rebuild the vector for owned elements".into()),
+                    );
+                } else if vt != *elem && !ty_has_error(&vt) && !ty_has_error(elem) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`fill` expects {}, found {}", elem.name(), vt.name()),
+                        None,
+                    );
+                }
+                Ty::Unit
+            }
+            "copy_from" => {
+                if args.len() != 1 {
+                    self.err("E0201", span, "`copy_from` takes exactly 1 argument", None);
+                    return Ty::Unit;
+                }
+                let at = self.check_expr(&args[0]);
+                let want = vec_of(elem.clone());
+                if at != want && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`copy_from` expects {}, found {}", want.name(), at.name()),
+                        None,
+                    );
+                }
+                Ty::Unit
+            }
             "push" => {
                 // In-place mutation through the vec slot (pointer model);
                 // returns Unit, so `v.push(x);` is a complete statement.
@@ -5068,7 +5335,7 @@ impl Cx {
                 self.err(
                     "E0401",
                     method_span,
-                    format!("unknown method `{}` (available on Vec: len, push, pop, get, clone, cast, add_scalar, add, mul, dot, shuffle, sample, sort, order, slice, reverse_inplace, filter_inplace, map_inplace)", method),
+                    format!("unknown method `{}` (available on Vec: len, capacity, reserve, resize, fill, copy_from, push, pop, get, clone, cast, add_scalar, add, mul, dot, shuffle, sample, sort, order, slice, reverse_inplace, filter_inplace, map_inplace)", method),
                     Some("map/filter/mask take closures or slices (deferred)".into()),
                 );
                 Ty::Error
@@ -6191,7 +6458,7 @@ impl Cx {
         // `println` is the 0.1.0 output builtin (builtin dispatch, same
         // mechanism as the old `print`); `print` remains as a deprecated
         // alias (W1002). Both borrow their argument.
-        if name == "println" || name == "print" {
+        if name == "println" || name == "print" || name == "write" {
             if name == "print" {
                 self.warn("W1002", span, "`print` is deprecated; use `println`");
             }
@@ -6697,6 +6964,29 @@ impl Cx {
             }
             self.record_ty(&want);
             return want;
+        } else if name == "sqrt" {
+            // Guarded hardware/libm square root. The runtime helper handles
+            // negative, zero, and non-finite values; the positive finite path
+            // is the correctly rounded IEEE operation.
+            if args.len() != 1 {
+                self.err(
+                    "E0201",
+                    span,
+                    format!("`sqrt` takes exactly 1 argument, found {}", args.len()),
+                    None,
+                );
+                return Ty::Error;
+            }
+            let at = self.check_expr(&args[0]);
+            if at != Ty::Float64 && !ty_has_error(&at) {
+                self.err(
+                    "E0201",
+                    args[0].span,
+                    format!("`sqrt` expects Float64, found {}", at.name()),
+                    None,
+                );
+            }
+            return Ty::Float64;
         } else if name == "sin" || name == "cos" {
             // Libm trig (exact, correctly rounded; non-finite per IEEE).
             if args.len() != 1 {
