@@ -3,6 +3,13 @@ use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::token::{Tok, Token};
 
+/// Maximum recursive-descent nesting for expressions, types, patterns,
+/// statements, blocks, and prefix operators. User input is untrusted: a
+/// depth budget turns a native stack overflow into a normal E0006. The
+/// value stays safe on the 2 MiB stacks Rust uses for test threads in
+/// debug builds, where parser frames are largest.
+const MAX_PARSE_DEPTH: u32 = 64;
+
 /// Recursive-descent parser + precedence climbing. Deferred constructs are
 /// lexed but rejected here with controlled E0800 (never silently accepted).
 pub struct Parser {
@@ -10,6 +17,8 @@ pub struct Parser {
     pos: usize,
     errs: Vec<Diagnostic>,
     next_id: NodeId,
+    /// Current recursive-descent nesting (see `with_depth`).
+    depth: u32,
     /// Counter for hygienic `$tN` temporaries in desugars (`$` is not an
     /// identifier character, so these cannot collide with user names).
     tmp: u32,
@@ -29,6 +38,7 @@ impl Parser {
             pos: 0,
             errs: vec![],
             next_id: 1,
+            depth: 0,
             tmp: 0,
             pending: vec![],
             no_struct: 0,
@@ -871,7 +881,83 @@ impl Parser {
         Some(e)
     }
 
+    /// Parse the integer rank in `Array<T, N>`.
+    fn parse_array_rank(&mut self) -> Option<usize> {
+        let rank = match self.cur().clone() {
+            Tok::IntLit(v) if (1..=8).contains(&v) => v as usize,
+            Tok::IntLit(v) => {
+                self.err(
+                    "E0201",
+                    format!("array rank must be between 1 and 8, found {}", v),
+                );
+                // Recover with a valid rank so the type parser can finish;
+                // front-end errors stop compilation before sema/codegen.
+                1
+            }
+            other => {
+                self.err(
+                    "E0005",
+                    format!("expected integer array rank, found {}", describe(&other)),
+                );
+                return None;
+            }
+        };
+        self.bump();
+        Some(rank)
+    }
+
+    /// Parse the `::method(args)` tail of an associated call after the base
+    /// and any type arguments have already been consumed.
+    fn parse_assoc_tail(
+        &mut self,
+        base: String,
+        base_span: Span,
+        type_args: Vec<Ty>,
+        start: usize,
+    ) -> Option<Expr> {
+        self.expect(Tok::ColonColon, "expected `::` after type arguments")?;
+        let (method, mspan) = self.expect_ident("associated function name")?;
+        self.expect(Tok::LParen, "expected `(` after associated function")?;
+        let mut args = vec![];
+        loop {
+            self.skip_nls();
+            if matches!(self.cur(), Tok::RParen) {
+                self.bump();
+                break;
+            }
+            args.push(self.parse_expr()?);
+            self.skip_nls();
+            match self.cur() {
+                Tok::Comma => {
+                    self.bump();
+                }
+                Tok::RParen => {}
+                _ => {
+                    self.err("E0005", "expected `,` or `)` in associated call");
+                    return None;
+                }
+            }
+        }
+        let end = self.prev_span().end;
+        Some(Expr {
+            id: self.fresh(),
+            span: Span::new(start, end),
+            kind: ExprKind::AssocCall(Box::new(AssocCall {
+                base,
+                base_span,
+                type_args,
+                method,
+                method_span: mspan,
+                args,
+            })),
+        })
+    }
+
     fn parse_type(&mut self) -> Option<Ty> {
+        self.with_depth(|p| p.parse_type_inner())
+    }
+
+    fn parse_type_inner(&mut self) -> Option<Ty> {
         self.skip_nls();
         // `&T`, `&mut T`, `&'a T`, `&'a mut T` (nesting rejected in sema).
         if matches!(self.cur(), Tok::Amp | Tok::AmpMut) {
@@ -911,10 +997,27 @@ impl Parser {
                     "String" => Ty::Str,
                     "Unit" => Ty::Unit,
                     // Nominal struct/enum types resolve in sema (unknown names are E0201 there).
-                    _ => Ty::Named(n),
+                    _ => Ty::Named(n.clone()),
                 };
                 let sp = self.cur_span();
                 self.bump();
+                // `Array<T, N>` carries a compile-time rank, so the second
+                // argument is an integer literal rather than a type.
+                if n == "Array" && matches!(self.cur(), Tok::Lt) {
+                    self.bump();
+                    self.skip_nls();
+                    let elem = self.parse_type()?;
+                    self.skip_nls();
+                    self.expect(Tok::Comma, "expected `,` between element type and rank")?;
+                    self.skip_nls();
+                    let rank = self.parse_array_rank()?;
+                    self.skip_nls();
+                    self.expect(Tok::Gt, "expected `>` after array rank")?;
+                    return Some(Ty::Generic {
+                        base: format!("Array{}", rank),
+                        args: vec![elem],
+                    });
+                }
                 // Generic application `Name<T, ...>` (only Option/Result/Vec
                 // reach sema; anything else is rejected there).
                 if matches!(self.cur(), Tok::Lt) {
@@ -1059,6 +1162,10 @@ impl Parser {
 
     /// Parse one pattern (no top-level `|`; `parse_match` handles arms).
     fn parse_pat(&mut self) -> Option<Pat> {
+        self.with_depth(|p| p.parse_pat_inner())
+    }
+
+    fn parse_pat_inner(&mut self) -> Option<Pat> {
         self.skip_nls();
         let head = self.parse_pat_atom()?;
         // `a | b` alternatives.
@@ -1246,6 +1353,10 @@ impl Parser {
     }
 
     fn parse_block(&mut self) -> Option<Block> {
+        self.with_depth(|p| p.parse_block_inner())
+    }
+
+    fn parse_block_inner(&mut self) -> Option<Block> {
         self.skip_nls();
         let start = self.cur_span().start;
         self.expect(Tok::LBrace, "expected `{` to begin block")?;
@@ -1372,11 +1483,11 @@ impl Parser {
                     span: e.span,
                 })
             }
-            ExprKind::Index { base, idx } => {
+            ExprKind::Index { base, indices } => {
                 let inner = Self::as_place(*base)?;
                 Some(Place::Index {
                     base: Box::new(inner),
-                    idx,
+                    indices,
                     span: e.span,
                 })
             }
@@ -1464,6 +1575,10 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Option<ParsedStmt> {
+        self.with_depth(|p| p.parse_stmt_inner())
+    }
+
+    fn parse_stmt_inner(&mut self) -> Option<ParsedStmt> {
         self.skip_nls();
         match self.cur().clone() {
             Tok::Let => {
@@ -2310,7 +2425,7 @@ impl Parser {
     // ---------- expressions (precedence climbing) ----------
 
     fn parse_expr(&mut self) -> Option<Expr> {
-        self.parse_pipe()
+        self.with_depth(|p| p.parse_pipe())
     }
 
     /// D1 pipe (loosest precedence, left-associative): `x |> f(args)`
@@ -2612,6 +2727,10 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Option<Expr> {
+        self.with_depth(|p| p.parse_unary_inner())
+    }
+
+    fn parse_unary_inner(&mut self) -> Option<Expr> {
         self.skip_nls();
         match self.cur() {
             Tok::Minus => {
@@ -2945,8 +3064,9 @@ impl Parser {
                 Tok::LBracket => {
                     // `base[idx]` element access (J1); `base[^k]` indexes
                     // from the end (A6): `base[base.len() - (k as Int64)]`.
-                    // `base[lo:hi]` slices (Batch 2): desugared to the
-                    // `slice` method so no new AST/ownership paths apply.
+                    // `base[i, j]` reads a `Mat` element (MAT-01). `base[lo:hi]`
+                    // slices (Batch 2): desugared to the `slice` method so no
+                    // new AST/ownership paths apply.
                     self.bump();
                     self.skip_nls();
                     let from_end = matches!(self.cur(), Tok::Caret);
@@ -2954,7 +3074,7 @@ impl Parser {
                         self.bump();
                         self.skip_nls();
                     }
-                    let idx = self.parse_expr()?;
+                    let first = self.parse_expr()?;
                     self.skip_nls();
                     if matches!(self.cur(), Tok::Colon) {
                         if from_end {
@@ -2977,19 +3097,35 @@ impl Parser {
                             kind: ExprKind::Method {
                                 receiver: Box::new(e),
                                 method: "slice".to_string(),
-                                method_span: Span::new(idx.span.start, end),
-                                args: vec![idx, hi],
+                                method_span: Span::new(first.span.start, end),
+                                args: vec![first, hi],
                             },
                         };
                         continue;
                     }
+                    let mut raw_indices = vec![first];
+                    loop {
+                        self.skip_nls();
+                        if !matches!(self.cur(), Tok::Comma) {
+                            break;
+                        }
+                        if from_end {
+                            self.err("E0005", "`^` indexing accepts exactly one index");
+                            return None;
+                        }
+                        self.bump();
+                        self.skip_nls();
+                        raw_indices.push(self.parse_expr()?);
+                    }
+                    self.skip_nls();
                     if !matches!(self.cur(), Tok::RBracket) {
                         self.err("E0005", "expected `]` after index expression");
                         return None;
                     }
                     self.bump();
                     let end = self.prev_span().end;
-                    let idx = if from_end {
+                    let indices = if from_end {
+                        let idx = raw_indices.pop().expect("one index");
                         let kspan = idx.span;
                         let as_i64 = Expr {
                             id: self.fresh(),
@@ -3011,16 +3147,16 @@ impl Parser {
                                 args: vec![],
                             },
                         };
-                        self.binary(BinOp::Sub, len, as_i64)
+                        vec![self.binary(BinOp::Sub, len, as_i64)]
                     } else {
-                        idx
+                        raw_indices
                     };
                     e = Expr {
                         id: self.fresh(),
                         span: Span::new(e.span.start, end),
                         kind: ExprKind::Index {
                             base: Box::new(e),
-                            idx: Box::new(idx),
+                            indices,
                         },
                     };
                 }
@@ -3211,66 +3347,50 @@ impl Parser {
                     self.pos = save;
                 }
                 self.bump();
-                // `Vec<T>::with_capacity(n)` — associated constructor.  Only
-                // `Vec` is callable this way in 0.1.0; other associated
+                // `Vec<T>::with_capacity(n)`, `ArrayD<T>::...`, and
+                // `Array<T, N>::...` associated constructors. Other associated
                 // calls remain parse errors until a real namespace exists.
-                if name == "Vec" && matches!(self.cur(), Tok::Lt) {
+                if matches!(name.as_str(), "Vec" | "ArrayD" | "Array")
+                    && matches!(self.cur(), Tok::Lt)
+                {
                     self.bump();
                     let mut type_args = vec![];
-                    loop {
+                    let assoc_base = if name == "Array" {
                         self.skip_nls();
                         type_args.push(self.parse_type()?);
                         self.skip_nls();
-                        match self.cur() {
-                            Tok::Comma => {
-                                self.bump();
-                            }
-                            Tok::Gt => {
-                                self.bump();
-                                break;
-                            }
-                            _ => {
-                                self.err("E0005", "expected `,` or `>` in `Vec<T>`");
-                                return None;
-                            }
-                        }
-                    }
-                    self.expect(Tok::ColonColon, "expected `::` after `Vec<T>`")?;
-                    let (method, mspan) = self.expect_ident("associated function name")?;
-                    self.expect(Tok::LParen, "expected `(` after associated function")?;
-                    let mut args = vec![];
-                    loop {
+                        self.expect(Tok::Comma, "expected `,` between element type and rank")?;
                         self.skip_nls();
-                        if matches!(self.cur(), Tok::RParen) {
-                            self.bump();
-                            break;
-                        }
-                        args.push(self.parse_expr()?);
+                        let rank = self.parse_array_rank()?;
                         self.skip_nls();
-                        match self.cur() {
-                            Tok::Comma => {
-                                self.bump();
-                            }
-                            Tok::RParen => {}
-                            _ => {
-                                self.err("E0005", "expected `,` or `)` in associated call");
-                                return None;
+                        self.expect(Tok::Gt, "expected `>` after array rank")?;
+                        format!("Array{}", rank)
+                    } else {
+                        loop {
+                            self.skip_nls();
+                            type_args.push(self.parse_type()?);
+                            self.skip_nls();
+                            match self.cur() {
+                                Tok::Comma => {
+                                    self.bump();
+                                }
+                                Tok::Gt => {
+                                    self.bump();
+                                    break;
+                                }
+                                _ => {
+                                    self.err("E0005", "expected `,` or `>` in type arguments");
+                                    return None;
+                                }
                             }
                         }
-                    }
-                    let end = self.prev_span().end;
-                    return Some(Expr {
-                        id: self.fresh(),
-                        span: Span::new(sp.start, end),
-                        kind: ExprKind::AssocCall(Box::new(AssocCall {
-                            base: name,
-                            base_span: sp,
-                            type_args,
-                            method,
-                            method_span: mspan,
-                            args,
-                        })),
-                    });
+                        name.clone()
+                    };
+                    return self.parse_assoc_tail(assoc_base, sp, type_args, sp.start);
+                }
+                // `StringIndex::new()`: built-in zero-arity constructor.
+                if name == "StringIndex" && matches!(self.cur(), Tok::ColonColon) {
+                    return self.parse_assoc_tail("StringIndex".to_string(), sp, vec![], sp.start);
                 }
                 // `Type::Variant(args)` — enum variant construction.
                 if matches!(self.cur(), Tok::ColonColon) {
@@ -3545,6 +3665,24 @@ impl Parser {
         let r = self.parse_expr();
         self.no_struct -= 1;
         r
+    }
+
+    /// Enter one recursive-descent level, restoring the counter on every
+    /// return path. Exceeding the budget reports E0006 once and fails the
+    /// current production, which unwinds without consuming the rest of the
+    /// input.
+    fn with_depth<T>(&mut self, f: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            self.err(
+                "E0006",
+                format!("nesting too deep (limit {})", MAX_PARSE_DEPTH),
+            );
+            return None;
+        }
+        self.depth += 1;
+        let out = f(self);
+        self.depth -= 1;
+        out
     }
 
     /// Parse one complete expression plus end-of-input (REPL echo check).

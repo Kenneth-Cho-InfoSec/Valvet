@@ -56,6 +56,15 @@ static VStr vstr_from_c(const char *c) {
     memcpy(p, c, n + 1);
     return (VStr){p, (int64_t)n};
 }
+/* Length-aware literal constructor: embedded NUL bytes are preserved. */
+static VStr vstr_from_bytes(const char *c, int64_t n) {
+    if (n < 0) { fprintf(stderr, "alloc error\n"); abort(); }
+    char *p = (char *)malloc((size_t)n + 1);
+    if (!p) { fprintf(stderr, "alloc error\n"); abort(); }
+    if (n > 0) memcpy(p, c, (size_t)n);
+    p[n] = '\0';
+    return (VStr){p, n};
+}
 static void vstr_free(VStr *v) {
     if (v->s) { free(v->s); v->s = NULL; v->len = 0; }
 }
@@ -277,6 +286,31 @@ static VFileOut v_read_file(VStr path) {    VFileOut o = {{NULL, 0}, {NULL, 0}, 
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); o.err = vstr_from_c("cannot seek file"); o.has_err = 1; return o; }
     long n = ftell(f);
     if (n < 0) { fclose(f); o.err = vstr_from_c("cannot size file"); o.has_err = 1; return o; }
+    rewind(f);
+    char *p = (char *)malloc((size_t)n + 1);
+    if (!p) { fclose(f); fprintf(stderr, "alloc error\n"); abort(); }
+    size_t got = fread(p, 1, (size_t)n, f);
+    fclose(f);
+    p[got] = '\0';
+    o.text = (VStr){p, (int64_t)got};
+    return o;
+}
+static VFileOut v_read_file_limit(VStr path, int64_t max_bytes) {
+    VFileOut o = {{NULL, 0}, {NULL, 0}, 0};
+    if (!path.s || path.len == 0) { o.err = vstr_from_c("empty path"); o.has_err = 1; return o; }
+    if (max_bytes < 0) { o.err = vstr_from_c("negative max bytes"); o.has_err = 1; return o; }
+    FILE *f = fopen(path.s, "rb");
+    if (!f) {
+        VStr pre = vstr_from_c("cannot open file: ");
+        o.err = vstr_concat(pre, path);
+        vstr_free(&pre);
+        o.has_err = 1;
+        return o;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); o.err = vstr_from_c("cannot seek file"); o.has_err = 1; return o; }
+    long n = ftell(f);
+    if (n < 0) { fclose(f); o.err = vstr_from_c("cannot size file"); o.has_err = 1; return o; }
+    if ((int64_t)n > max_bytes) { fclose(f); o.err = vstr_from_c("file exceeds max bytes"); o.has_err = 1; return o; }
     rewind(f);
     char *p = (char *)malloc((size_t)n + 1);
     if (!p) { fclose(f); fprintf(stderr, "alloc error\n"); abort(); }
@@ -773,8 +807,11 @@ enum LNode {
     Enum(String),
     Vec(String),
     Mat(String),
+    ArrayD(String),
+    ArrayN(String),
     Factor(String),
     Union(String),
+    StringIndex(String),
 }
 
 struct Gen<'a> {
@@ -850,6 +887,131 @@ struct LoopValue {
 impl<'a> Gen<'a> {
     fn ty_of(&self, id: NodeId) -> Ty {
         self.checked.types.get(&id).cloned().unwrap_or(Ty::Unit)
+    }
+
+    /// Resolved type of a place. Used by index lowering to choose the
+    /// `Vec` (`len`), `Mat` (`rows`/`cols`), or `ArrayD`
+    /// (`rank`/`shape`/`strides`) bounds rule.
+    fn place_ty(&self, p: &Place) -> Option<Ty> {
+        match p {
+            Place::Var(n, _) => self.vartypes.get(&mangle(n)).cloned(),
+            Place::Field { base, field, .. } => {
+                let bt = self.place_ty(base)?;
+                let bt = match bt {
+                    Ty::Reference { inner, .. } => *inner,
+                    t => t,
+                };
+                match bt {
+                    Ty::Struct(n) => self
+                        .structs
+                        .get(&n)
+                        .and_then(|d| d.fields.iter().find(|(f, _)| f == field))
+                        .map(|(_, t)| t.clone()),
+                    _ => None,
+                }
+            }
+            Place::Deref { inner, .. } => match self.place_ty(inner)? {
+                Ty::Reference { inner, .. } => Some(*inner),
+                _ => None,
+            },
+            Place::Index { .. } => None,
+        }
+    }
+
+    /// Emit one bounds-checked linear offset for `base` and return the C
+    /// expression. Indices are evaluated once, left to right. The caller
+    /// supplies the base type and its C lvalue so reads and writes share
+    /// exactly the same order and checks.
+    fn emit_index_offset(
+        &mut self,
+        base_ty: &Ty,
+        base: &str,
+        indices: &[Expr],
+    ) -> Result<String, Ice> {
+        let saved = self.cur_move;
+        self.cur_move = false;
+        let mut idx_tmps = Vec::with_capacity(indices.len());
+        for idx in indices {
+            let iw = self.emit_expr(idx)?;
+            let i64_ = format!("(int64_t)({})", iw);
+            idx_tmps.push(self.new_tmp_ty("int64_t", &i64_));
+        }
+        self.cur_move = saved;
+        match base_ty {
+            Ty::Generic { base: b, args } if b == "Vec" && args.len() == 1 => {
+                if idx_tmps.len() != 1 {
+                    return Err(Ice("Vec index arity".into()));
+                }
+                let i = &idx_tmps[0];
+                self.out.push_str(&format!(
+                    "if ({i} < 0 || {i} >= {base}.len) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n",
+                    i = i,
+                    base = base
+                ));
+                Ok(i.clone())
+            }
+            Ty::Generic { base: b, args } if b == "Mat" && args.is_empty() => {
+                if idx_tmps.len() != 2 {
+                    return Err(Ice("Mat index arity".into()));
+                }
+                let i = &idx_tmps[0];
+                let j = &idx_tmps[1];
+                self.out.push_str(&format!(
+                    "if ({i} < 0 || {i} >= {base}.rows) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n",
+                    i = i,
+                    base = base
+                ));
+                self.out.push_str(&format!(
+                    "if ({j} < 0 || {j} >= {base}.cols) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n",
+                    j = j,
+                    base = base
+                ));
+                Ok(format!("({} * {}.cols + {})", i, base, j))
+            }
+            Ty::Generic { base: b, args } if b == "ArrayD" && args.len() == 1 => {
+                if idx_tmps.is_empty() || idx_tmps.len() > 32 {
+                    return Err(Ice("ArrayD index arity".into()));
+                }
+                // Runtime rank check: ArrayD has no compile-time rank.
+                self.out.push_str(&format!(
+                    "if ((int64_t){} != {}.rank) {{ fprintf(stderr, \"array index rank mismatch\\n\"); abort(); }}\n",
+                    idx_tmps.len(),
+                    base
+                ));
+                let mut terms = Vec::with_capacity(idx_tmps.len());
+                for (k, i) in idx_tmps.iter().enumerate() {
+                    self.out.push_str(&format!(
+                        "if ({i} < 0 || {i} >= {base}.shape[{k}]) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n",
+                        i = i,
+                        base = base,
+                        k = k
+                    ));
+                    terms.push(format!("({} * {}.strides[{}])", i, base, k));
+                }
+                Ok(terms.join(" + "))
+            }
+            Ty::Generic { base: b, args } if args.len() == 1 && array_rank(b).is_some() => {
+                let rank = array_rank(b).expect("array rank");
+                if idx_tmps.len() != rank {
+                    return Err(Ice("ArrayN index arity".into()));
+                }
+                // Compile-time rank: sema checked the index count, so there
+                // is no runtime rank check. Shape and strides are still
+                // runtime data.
+                let mut terms = Vec::with_capacity(idx_tmps.len());
+                for (k, i) in idx_tmps.iter().enumerate() {
+                    self.out.push_str(&format!(
+                        "if ({i} < 0 || {i} >= {base}.shape[{k}]) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n",
+                        i = i,
+                        base = base,
+                        k = k
+                    ));
+                    terms.push(format!("({} * {}.strides[{}])", i, base, k));
+                }
+                Ok(terms.join(" + "))
+            }
+            _ => Err(Ice("index on non-indexable type".into())),
+        }
     }
 
     /// Dimension of a node (dimensionless default).
@@ -1209,6 +1371,20 @@ impl<'a> Gen<'a> {
             if self.enums.contains_key(stripped) {
                 return Ty::Enum(stripped.to_string());
             }
+            // Qualified names sanitize `::` and `.` to `_` in C, so the
+            // stripped C name is not a map key. Match the sanitized form
+            // back to the qualified Valvet name; otherwise temps of stdlib
+            // structs (AggSpec, FilterTerm, PqSchema, ...) are never freed.
+            for name in self.structs.keys() {
+                if ctype_name(name) == *cty {
+                    return Ty::Struct(name.clone());
+                }
+            }
+            for name in self.enums.keys() {
+                if ctype_name(name) == *cty {
+                    return Ty::Enum(name.clone());
+                }
+            }
             // Instantiation names embed base + args (`VOption_Int32`).
             for (key, (base, args)) in &self.generic_insts {
                 let _ = key;
@@ -1349,6 +1525,23 @@ impl<'a> Gen<'a> {
                 self.out.push_str(&format!("{}.codes.data = NULL;\n", lval));
                 self.out.push_str(&format!("{}.codes.len = 0;\n", lval));
             }
+            Ty::Generic { base, args } if base == "StringIndex" && args.is_empty() => {
+                // Neutering a moved-from StringIndex: drop skips NULL arrays.
+                self.out.push_str(&format!("{}.keys = NULL;\n", lval));
+                self.out.push_str(&format!("{}.hashes = NULL;\n", lval));
+                self.out.push_str(&format!("{}.buckets = NULL;\n", lval));
+                self.out.push_str(&format!("{}.len = 0;\n", lval));
+                self.out.push_str(&format!("{}.cap = 0;\n", lval));
+                self.out.push_str(&format!("{}.bucket_cap = 0;\n", lval));
+            }
+            Ty::Generic { base, args }
+                if args.len() == 1 && (base == "ArrayD" || array_rank(base).is_some()) =>
+            {
+                // Neutering a moved-from array: drop skips NULL buffers.
+                self.out.push_str(&format!("{}.data = NULL;\n", lval));
+                self.out.push_str(&format!("{}.len = 0;\n", lval));
+                self.out.push_str(&format!("{}.rank = 0;\n", lval));
+            }
             Ty::Generic { base, args } => {
                 let variants = self.generic_variants(base, args);
                 if variants
@@ -1443,6 +1636,22 @@ impl<'a> Gen<'a> {
                 format!(
                     "{}.levels.data = NULL;\n{}.levels.len = 0;\n{}.codes.data = NULL;\n{}.codes.len = 0;\n",
                     lval, lval, lval, lval
+                )
+            }
+            Ty::Generic { base, args } if base == "StringIndex" && args.is_empty() => {
+                let _ = args;
+                format!(
+                    "{}.keys = NULL;\n{}.hashes = NULL;\n{}.buckets = NULL;\n{}.len = 0;\n{}.cap = 0;\n{}.bucket_cap = 0;\n",
+                    lval, lval, lval, lval, lval, lval
+                )
+            }
+            Ty::Generic { base, args }
+                if args.len() == 1 && (base == "ArrayD" || array_rank(base).is_some()) =>
+            {
+                let _ = args;
+                format!(
+                    "{}.data = NULL;\n{}.len = 0;\n{}.rank = 0;\n",
+                    lval, lval, lval
                 )
             }
             Ty::Generic { base, args } => {
@@ -1595,8 +1804,14 @@ impl<'a> Gen<'a> {
                             out.push(LNode::Vec(key));
                         } else if base == "Mat" {
                             out.push(LNode::Mat(key));
+                        } else if base == "ArrayD" {
+                            out.push(LNode::ArrayD(key));
+                        } else if array_rank(base).is_some() {
+                            out.push(LNode::ArrayN(key));
                         } else if base == "Factor" {
                             out.push(LNode::Factor(key));
+                        } else if base == "StringIndex" {
+                            out.push(LNode::StringIndex(key));
                         } else {
                             out.push(LNode::Union(key));
                         }
@@ -1634,8 +1849,14 @@ impl<'a> Gen<'a> {
                 LNode::Vec(key.clone())
             } else if base == "Mat" {
                 LNode::Mat(key.clone())
+            } else if base == "ArrayD" {
+                LNode::ArrayD(key.clone())
+            } else if array_rank(base).is_some() {
+                LNode::ArrayN(key.clone())
             } else if base == "Factor" {
                 LNode::Factor(key.clone())
+            } else if base == "StringIndex" {
+                LNode::StringIndex(key.clone())
             } else {
                 LNode::Union(key.clone())
             };
@@ -1646,6 +1867,13 @@ impl<'a> Gen<'a> {
                     if let Some(k) = self.inst_key_for(b, &a) {
                         d.push(LNode::Vec(k));
                     }
+                }
+            }
+            // `Array<T, N>` aliases the runtime `ArrayD<T>` layout, so the
+            // runtime typedef must be emitted first.
+            if array_rank(base).is_some() {
+                if let Some(k) = self.inst_key_for("ArrayD", args) {
+                    d.push(LNode::ArrayD(k));
                 }
             }
             d.retain(|x| *x != node);
@@ -1772,6 +2000,21 @@ impl<'a> Gen<'a> {
         ));
         Ok(())
     }
+    /// One `StringIndex` layout: insertion-ordered keys, cached hashes, and
+    /// an open-addressed bucket table. All members are private to codegen.
+    fn emit_string_index_layout(&mut self, key: &str) -> Result<(), Ice> {
+        let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
+        if base != "StringIndex" || !args.is_empty() {
+            return Ok(());
+        }
+        let ct = ctype_inst(&base, &args);
+        self.out.push_str(&format!(
+            "typedef struct {{ VStr *keys; uint64_t *hashes; int64_t len; int64_t cap; int64_t *buckets; int64_t bucket_cap; }} {};\n",
+            ct
+        ));
+        Ok(())
+    }
+
     fn emit_mat_layout(&mut self, key: &str) -> Result<(), Ice> {
         let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
         if base != "Mat" || !args.is_empty() {
@@ -1782,6 +2025,40 @@ impl<'a> Gen<'a> {
             "typedef struct {{ double *data; int64_t rows; int64_t cols; }} {};\n",
             ct
         ));
+        Ok(())
+    }
+
+    /// One `ArrayD<T>` layout: owned row-major buffer plus runtime rank,
+    /// shape, and element strides. The fixed 32-slot metadata arrays avoid
+    /// VLAs and make the layout identical for every rank.
+    fn emit_arrayd_layout(&mut self, key: &str) -> Result<(), Ice> {
+        let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
+        if base != "ArrayD" || args.len() != 1 {
+            return Ok(());
+        }
+        let ct = ctype_inst(&base, &args);
+        // Value position: `Unit` erases to `int`, matching the helper
+        // signatures and avoiding a `void *data` buffer.
+        let et = self.cty_val(&args[0]);
+        self.out.push_str(&format!(
+            "typedef struct {{ {} *data; int64_t len; int64_t rank; int64_t shape[32]; int64_t strides[32]; }} {};\n",
+            et, ct
+        ));
+        Ok(())
+    }
+
+    /// One compile-time-rank `Array<T, N>` layout. It is an alias of the
+    /// runtime `ArrayD<T>` layout: the rank lives in the type name and sema,
+    /// while shape and strides stay runtime data. The alias keeps the runtime
+    /// kernels shared and still gives the rank-specific type a distinct name.
+    fn emit_arrayn_layout(&mut self, key: &str) -> Result<(), Ice> {
+        let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
+        if array_rank(&base).is_none() || args.len() != 1 {
+            return Ok(());
+        }
+        let ct = ctype_inst(&base, &args);
+        let dct = ctype_inst("ArrayD", &args);
+        self.out.push_str(&format!("typedef {} {};\n", dct, ct));
         Ok(())
     }
 
@@ -1803,7 +2080,7 @@ impl<'a> Gen<'a> {
     }
     fn emit_union_layout(&mut self, key: &str) -> Result<(), Ice> {
         let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
-        if base == "Vec" || base == "Mat" || base == "Factor" {
+        if base == "Vec" || base == "Mat" || base == "Factor" || base == "StringIndex" {
             return Ok(());
         }
         let ct = ctype_inst(&base, &args);
@@ -1848,7 +2125,10 @@ impl<'a> Gen<'a> {
                 LNode::Enum(n) => self.emit_enum_layout(n)?,
                 LNode::Vec(key) => self.emit_vec_layout(key)?,
                 LNode::Mat(key) => self.emit_mat_layout(key)?,
+                LNode::ArrayD(key) => self.emit_arrayd_layout(key)?,
+                LNode::ArrayN(key) => self.emit_arrayn_layout(key)?,
                 LNode::Factor(key) => self.emit_factor_layout(key)?,
+                LNode::StringIndex(key) => self.emit_string_index_layout(key)?,
                 LNode::Union(key) => self.emit_union_layout(key)?,
             }
         }
@@ -1960,8 +2240,29 @@ impl<'a> Gen<'a> {
                 self.out.push_str(&format!(
                     "static void v_drop_{iname}({ct} *v);\nstatic {ct} v_clone_{iname}({ct} v);\n"
                 ));
+            } else if base == "ArrayD" && args.len() == 1 {
+                // ArrayD drop/clone declarations (kernels defined below).
+                let ct = ctype_inst(&base, &args);
+                let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
+                self.out.push_str(&format!(
+                    "static void v_drop_{iname}({ct} *v);\nstatic {ct} v_clone_{iname}({ct} v);\n"
+                ));
+            } else if array_rank(&base).is_some() && args.len() == 1 {
+                // Rank-specific wrappers over the ArrayD drop/clone helpers.
+                let ct = ctype_inst(&base, &args);
+                let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
+                self.out.push_str(&format!(
+                    "static void v_drop_{iname}({ct} *v);\nstatic {ct} v_clone_{iname}({ct} v);\n"
+                ));
             } else if base == "Factor" && args.is_empty() {
                 // F1: Factor drop/clone declarations (kernels below).
+                let ct = ctype_inst(&base, &args);
+                let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
+                self.out.push_str(&format!(
+                    "static void v_drop_{iname}({ct} *v);\nstatic {ct} v_clone_{iname}({ct} v);\n"
+                ));
+            } else if base == "StringIndex" && args.is_empty() {
+                // StringIndex drop/clone declarations (helpers below).
                 let ct = ctype_inst(&base, &args);
                 let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
                 self.out.push_str(&format!(
@@ -1994,29 +2295,51 @@ impl<'a> Gen<'a> {
                 self.emit_enum_clone(n)?;
             }
         }
-        for key in &ikeys {
-            let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
-            let t = Ty::Generic {
-                base: base.clone(),
-                args: args.clone(),
-            };
-            if base == "Vec" && args.len() == 1 {
-                self.emit_vec_fns(&args)?;
-                self.emit_vec_drop(&args)?;
-                self.emit_vec_clone(&args)?;
-                continue;
-            }
-            if base == "Mat" && args.is_empty() {
-                self.emit_mat_fns()?;
-                continue;
-            }
-            if base == "Factor" && args.is_empty() {
-                self.emit_factor_fns()?;
-                continue;
-            }
-            if self.type_needs_drop(&t) {
-                self.emit_inst_drop(&base, &args)?;
-                self.emit_inst_clone(&base, &args)?;
+        // Two passes: runtime `ArrayD` kernels first, then the rank-specific
+        // `Array<T, N>` wrappers that call them. `ikeys` is sorted, so a
+        // single pass would emit `Array3` before `ArrayD` and lose the
+        // helper definitions.
+        for pass in 0..2 {
+            for key in &ikeys {
+                let (base, args) = self.generic_insts.get(key).cloned().unwrap_or_default();
+                let is_rank_array = array_rank(&base).is_some();
+                if (pass == 0) == is_rank_array {
+                    continue;
+                }
+                let t = Ty::Generic {
+                    base: base.clone(),
+                    args: args.clone(),
+                };
+                if base == "Vec" && args.len() == 1 {
+                    self.emit_vec_fns(&args)?;
+                    self.emit_vec_drop(&args)?;
+                    self.emit_vec_clone(&args)?;
+                    continue;
+                }
+                if base == "Mat" && args.is_empty() {
+                    self.emit_mat_fns()?;
+                    continue;
+                }
+                if base == "ArrayD" && args.len() == 1 {
+                    self.emit_arrayd_fns(&args)?;
+                    continue;
+                }
+                if is_rank_array && args.len() == 1 {
+                    self.emit_arrayn_fns(&base, &args)?;
+                    continue;
+                }
+                if base == "Factor" && args.is_empty() {
+                    self.emit_factor_fns()?;
+                    continue;
+                }
+                if base == "StringIndex" && args.is_empty() {
+                    self.emit_string_index_fns()?;
+                    continue;
+                }
+                if self.type_needs_drop(&t) {
+                    self.emit_inst_drop(&base, &args)?;
+                    self.emit_inst_clone(&base, &args)?;
+                }
             }
         }
         // C1 functional kernels over named functions (need vec layouts
@@ -2250,6 +2573,39 @@ impl<'a> Gen<'a> {
                 err = none("o.err"),
                 ok = some("o.text")
             ));
+            self.out.push_str(&format!(
+                concat!(
+                    "static {rct} v_read_file_limit_wrap(VStr path, int64_t max_bytes) {{",
+                    "VFileOut o = v_read_file_limit(path, max_bytes);",
+                    "if (o.has_err) return {err};",
+                    "return {ok};}}\n"
+                ),
+                rct = rct,
+                err = none("o.err"),
+                ok = some("o.text")
+            ));
+            if self.has_inst("Vec", &[Ty::Int64]) {
+                let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int64));
+                self.out.push_str(&format!(
+                    concat!(
+                        "static {rct} v_bytes_to_string_wrap({vct} v) {{",
+                        "if (v.len < 0 || v.len == INT64_MAX) return {badlen};",
+                        "for (int64_t i = 0; i < v.len; ++i) {{",
+                        "if (v.data[i] < 0 || v.data[i] > 255) return {badbyte};",
+                        "}}",
+                        "char *p = (char *)malloc((size_t)v.len + 1);",
+                        "if (!p) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}",
+                        "for (int64_t i = 0; i < v.len; ++i) p[i] = (char)(unsigned char)v.data[i];",
+                        "p[v.len] = '\\0';",
+                        "return {ok};}}\n"
+                    ),
+                    rct = rct,
+                    vct = vct,
+                    badlen = none("vstr_from_c(\"invalid byte length\")"),
+                    badbyte = none("vstr_from_c(\"byte out of range\")"),
+                    ok = some("(VStr){p, v.len}")
+                ));
+            }
         }
         // `csv_rows(content, strict): Result<Vec<Vec<String>>, String>`.
         if self.has_inst("Result", &[rows_t.clone(), Ty::Str]) {
@@ -2938,6 +3294,186 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
+    /// `StringIndex` runtime: insertion-ordered keys with cached FNV-1a
+    /// hashes and an open-addressed bucket table. The table keeps a load
+    /// factor of at most 0.5; keys and hashes grow independently.
+    fn emit_string_index_fns(&mut self) -> Result<(), Ice> {
+        let ct = ctype_inst("StringIndex", &[]);
+        let vct = ctype_inst("Vec", std::slice::from_ref(&Ty::Str));
+        let oct = ctype_inst("Option", std::slice::from_ref(&Ty::Int64));
+        let code = r#"
+static @CT@ vsi_new(void) {
+    @CT@ v = {NULL, NULL, 0, 0, NULL, 0};
+    return v;
+}
+static void vsi_rehash(@CT@ *v, int64_t ncap) {
+    if (ncap < 8) ncap = 8;
+    uint64_t cap = (uint64_t)ncap;
+    cap--;
+    cap |= cap >> 1;
+    cap |= cap >> 2;
+    cap |= cap >> 4;
+    cap |= cap >> 8;
+    cap |= cap >> 16;
+    cap |= cap >> 32;
+    cap++;
+    if (cap == 0 || cap > (uint64_t)INT64_MAX) {
+        fprintf(stderr, "allocation size overflow\n");
+        abort();
+    }
+    while (cap <= (uint64_t)v->len) {
+        if (cap > (uint64_t)INT64_MAX / 2) {
+            fprintf(stderr, "allocation size overflow\n");
+            abort();
+        }
+        cap *= 2;
+    }
+    if (cap > (uint64_t)SIZE_MAX / sizeof(int64_t)) {
+        fprintf(stderr, "allocation size overflow\n");
+        abort();
+    }
+    int64_t *nb = (int64_t *)calloc((size_t)cap, sizeof(int64_t));
+    if (!nb) { fprintf(stderr, "alloc error\n"); abort(); }
+    int64_t mask = (int64_t)(cap - 1);
+    for (int64_t i = 0; i < v->len; i++) {
+        int64_t at = (int64_t)((uint64_t)v->hashes[i] & (uint64_t)mask);
+        while (nb[at] != 0) { at = (at + 1) & mask; }
+        nb[at] = i + 1;
+    }
+    free(v->buckets);
+    v->buckets = nb;
+    v->bucket_cap = (int64_t)cap;
+}
+static void vsi_reserve(@CT@ *v, int64_t need) {
+    if (need < 0) { fprintf(stderr, "allocation size overflow\n"); abort(); }
+    if (need <= v->cap) return;
+    if ((uint64_t)need > (uint64_t)SIZE_MAX / sizeof(VStr) ||
+        (uint64_t)need > (uint64_t)SIZE_MAX / sizeof(uint64_t)) {
+        fprintf(stderr, "allocation size overflow\n");
+        abort();
+    }
+    int64_t target = v->cap ? v->cap : 4;
+    while (target < need) {
+        if (target > INT64_MAX / 2) {
+            fprintf(stderr, "allocation size overflow\n");
+            abort();
+        }
+        target *= 2;
+    }
+    VStr *nk = (VStr *)realloc(v->keys, (size_t)target * sizeof(VStr));
+    if (!nk) { fprintf(stderr, "alloc error\n"); abort(); }
+    v->keys = nk;
+    uint64_t *nh = (uint64_t *)realloc(v->hashes, (size_t)target * sizeof(uint64_t));
+    if (!nh) { fprintf(stderr, "alloc error\n"); abort(); }
+    v->hashes = nh;
+    v->cap = target;
+}
+static int64_t vsi_find_hashed(@CT@ *v, VStr key, uint64_t h) {
+    if (v->bucket_cap == 0) return -1;
+    int64_t mask = v->bucket_cap - 1;
+    int64_t at = (int64_t)(h & (uint64_t)mask);
+    for (int64_t e = v->bucket_cap; e > 0; e--) {
+        int64_t slot = v->buckets[at];
+        if (slot == 0) return -1;
+        int64_t i = slot - 1;
+        if (v->hashes[i] == h && vstr_eq(v->keys[i], key)) return i;
+        at = (at + 1) & mask;
+    }
+    return -1;
+}
+static int64_t vsi_len(@CT@ *v) { return v->len; }
+static int vsi_contains(@CT@ *v, VStr key) {
+    return vsi_find_hashed(v, key, (uint64_t)v_hash_str(key)) >= 0;
+}
+static @OCT@ vsi_get(@CT@ *v, VStr key) {
+    int64_t at = vsi_find_hashed(v, key, (uint64_t)v_hash_str(key));
+    if (at < 0) return (@OCT@){ .tag = 1 };
+    return (@OCT@){ .tag = 0, .u = { .v0 = { .v___0 = at } } };
+}
+static int64_t vsi_get_or_insert(@CT@ *v, VStr key) {
+    uint64_t h = (uint64_t)v_hash_str(key);
+    int64_t found = vsi_find_hashed(v, key, h);
+    if (found >= 0) return found;
+    if (v->len == INT64_MAX) {
+        fprintf(stderr, "allocation size overflow\n");
+        abort();
+    }
+    if (v->bucket_cap == 0 || (uint64_t)(v->len + 1) > (uint64_t)v->bucket_cap / 2) {
+        if (v->bucket_cap == 0) {
+            vsi_rehash(v, 8);
+        } else {
+            if (v->bucket_cap > INT64_MAX / 2) {
+                fprintf(stderr, "allocation size overflow\n");
+                abort();
+            }
+            vsi_rehash(v, v->bucket_cap * 2);
+        }
+    }
+    vsi_reserve(v, v->len + 1);
+    v->keys[v->len] = vstr_clone(key);
+    v->hashes[v->len] = h;
+    v->len += 1;
+    int64_t mask = v->bucket_cap - 1;
+    int64_t at = (int64_t)(h & (uint64_t)mask);
+    while (v->buckets[at] != 0) { at = (at + 1) & mask; }
+    v->buckets[at] = v->len;
+    return v->len - 1;
+}
+static @VCT@ vsi_keys(@CT@ *v) {
+    @VCT@ out = vvec_Vec_String_with_capacity(v->len);
+    for (int64_t i = 0; i < v->len; i++) {
+        vvec_Vec_String_push(&out, vstr_clone(v->keys[i]));
+    }
+    return out;
+}
+static void v_drop_StringIndex_(@CT@ *v) {
+    if (v->keys) {
+        for (int64_t i = 0; i < v->len; i++) vstr_free(&v->keys[i]);
+        free(v->keys);
+        v->keys = NULL;
+    }
+    free(v->hashes);
+    v->hashes = NULL;
+    free(v->buckets);
+    v->buckets = NULL;
+    v->len = 0;
+    v->cap = 0;
+    v->bucket_cap = 0;
+}
+static @CT@ v_clone_StringIndex_(@CT@ v) {
+    if (v.len == 0) return vsi_new();
+    if (v.len > INT64_MAX / 2) {
+        fprintf(stderr, "allocation size overflow\n");
+        abort();
+    }
+    int64_t bcap = 8;
+    while (bcap < v.len * 2) {
+        if (bcap > INT64_MAX / 2) {
+            fprintf(stderr, "allocation size overflow\n");
+            abort();
+        }
+        bcap *= 2;
+    }
+    @CT@ out = vsi_new();
+    vsi_reserve(&out, v.len);
+    for (int64_t i = 0; i < v.len; i++) {
+        out.keys[i] = vstr_clone(v.keys[i]);
+        out.hashes[i] = v.hashes[i];
+    }
+    out.len = v.len;
+    vsi_rehash(&out, bcap);
+    return out;
+}
+"#;
+        self.out.push_str(
+            &code
+                .replace("@CT@", &ct)
+                .replace("@VCT@", &vct)
+                .replace("@OCT@", &oct),
+        );
+        Ok(())
+    }
+
     /// M1 dense-matrix runtime: drop/clone plus constructors and the
     /// LU-backed kernels (transpose, matmul, lu_solve, det, inverse).
     /// Row-major `double` buffer; empty matrices hold NULL (drop skips it).
@@ -2960,19 +3496,54 @@ impl<'a> Gen<'a> {
         let rct = ctype_inst("Result", &[mat_ty.clone(), shape.clone()]);
         let rvct = ctype_inst("Result", &[f64_vec.clone(), shape.clone()]);
         let rsct = ctype_inst("Result", &[mat_ty.clone(), Ty::Str]);
+        // Checked shape arithmetic and allocation. Every matrix dimension
+        // product goes through these helpers: unchecked `r * c` can wrap to
+        // a small allocation and later index out of bounds. The element cap
+        // also keeps a hostile dimension from reaching the OS allocator.
+        self.out.push_str(
+            "#define VMAT_MAX_ELEMENTS ((int64_t)1 << 28)\n\
+static int64_t vmat_checked_mul(int64_t a, int64_t b) {\n\
+if (a < 0 || b < 0) { fprintf(stderr, \"negative matrix dimension\\n\"); abort(); }\n\
+if (a != 0 && b > INT64_MAX / a) { fprintf(stderr, \"matrix dimension overflow\\n\"); abort(); }\n\
+return a * b;\n\
+}\n\
+static int64_t vmat_checked_elems(int64_t r, int64_t c) {\n\
+int64_t n = vmat_checked_mul(r, c);\n\
+if (n > VMAT_MAX_ELEMENTS) { fprintf(stderr, \"matrix too large\\n\"); abort(); }\n\
+return n;\n\
+}\n\
+static double *vmat_alloc(int64_t n) {\n\
+if (n < 0 || n > VMAT_MAX_ELEMENTS || (uint64_t)n > (uint64_t)SIZE_MAX / sizeof(double)) {\n\
+fprintf(stderr, \"matrix allocation size overflow\\n\"); abort();\n\
+}\n\
+if (n == 0) return NULL;\n\
+double *p = (double *)calloc((size_t)n, sizeof(double));\n\
+if (!p) { fprintf(stderr, \"alloc error\\n\"); abort(); }\n\
+return p;\n\
+}\n\
+static int64_t *vmat_alloc_i64(int64_t n) {\n\
+if (n < 0 || (uint64_t)n > (uint64_t)SIZE_MAX / sizeof(int64_t)) {\n\
+fprintf(stderr, \"matrix allocation size overflow\\n\"); abort();\n\
+}\n\
+if (n == 0) return NULL;\n\
+int64_t *p = (int64_t *)malloc((size_t)n * sizeof(int64_t));\n\
+if (!p) { fprintf(stderr, \"alloc error\\n\"); abort(); }\n\
+return p;\n\
+}\n",
+        );
         // Drop + clone (C23: no implicit declarations; defined once here).
         self.out.push_str(&format!(
             "static void v_drop_Mat_({ct} *v) {{\nif (v->data) {{ free(v->data); v->data = NULL; }}\nv->rows = 0; v->cols = 0;\n}}\n"
         ));
         self.out.push_str(&format!(
-            "static {ct} v_clone_Mat_({ct} v) {{\n{ct} c = {{NULL, v.rows, v.cols}};\nint64_t n = v.rows * v.cols;\nif (n > 0) {{\nc.data = (double *)malloc((size_t)n * sizeof(double));\nif (!c.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{ c.data[i] = v.data[i]; }}\n}}\nreturn c;\n}}\n"
+            "static {ct} v_clone_Mat_({ct} v) {{\n{ct} c = {{NULL, v.rows, v.cols}};\nint64_t n = vmat_checked_elems(v.rows, v.cols);\nc.data = vmat_alloc(n);\nfor (int64_t i = 0; i < n; ++i) {{ c.data[i] = v.data[i]; }}\nreturn c;\n}}\n"
         ));
         // Constructors (negative dimensions trap like OOB indexing).
         self.out.push_str(&format!(
-            "static {ct} vmat_zeros(int64_t r, int64_t c) {{\nif (r < 0 || c < 0) {{ fprintf(stderr, \"negative matrix dimension\\n\"); abort(); }}\n{ct} m = {{NULL, r, c}};\nint64_t n = r * c;\nif (n > 0) {{\nm.data = (double *)calloc((size_t)n, sizeof(double));\nif (!m.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\n}}\nreturn m;\n}}\n"
+            "static {ct} vmat_zeros(int64_t r, int64_t c) {{\n{ct} m = {{NULL, r, c}};\nint64_t n = vmat_checked_elems(r, c);\nm.data = vmat_alloc(n);\nreturn m;\n}}\n"
         ));
         self.out.push_str(&format!(
-            "static {ct} vmat_identity(int64_t n) {{\nif (n < 0) {{ fprintf(stderr, \"negative matrix dimension\\n\"); abort(); }}\n{ct} m = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ m.data[i * n + i] = 1.0; }}\nreturn m;\n}}\n"
+            "static {ct} vmat_identity(int64_t n) {{\n{ct} m = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ m.data[i * n + i] = 1.0; }}\nreturn m;\n}}\n"
         ));
         // `from_rows` only when its `Result<Mat, String>` layout exists
         // (mirrors the Vec kernel gates: kernels reference layouts).
@@ -2994,7 +3565,7 @@ impl<'a> Gen<'a> {
             "static {ct} vmat_outer({vct} *a, {vct} *b) {{\n{ct} m = vmat_zeros(a->len, b->len);\nfor (int64_t i = 0; i < a->len; ++i) {{\nfor (int64_t j = 0; j < b->len; ++j) {{ m.data[i * b->len + j] = a->data[i] * b->data[j]; }}\n}}\nreturn m;\n}}\n"
         ));
         self.out.push_str(&format!(
-            "static {ct} vmat_kron({ct} *a, {ct} *b) {{\nint64_t r = a->rows * b->rows;\nint64_t c = a->cols * b->cols;\n{ct} m = vmat_zeros(r, c);\nfor (int64_t i = 0; i < a->rows; ++i) {{\nfor (int64_t j = 0; j < a->cols; ++j) {{\ndouble x = a->data[i * a->cols + j];\nfor (int64_t k = 0; k < b->rows; ++k) {{\nfor (int64_t l = 0; l < b->cols; ++l) {{ m.data[(i * b->rows + k) * c + (j * b->cols + l)] = x * b->data[k * b->cols + l]; }}\n}}\n}}\n}}\nreturn m;\n}}\n"
+            "static {ct} vmat_kron({ct} *a, {ct} *b) {{\nint64_t r = vmat_checked_mul(a->rows, b->rows);\nint64_t c = vmat_checked_mul(a->cols, b->cols);\n{ct} m = vmat_zeros(r, c);\nfor (int64_t i = 0; i < a->rows; ++i) {{\nfor (int64_t j = 0; j < a->cols; ++j) {{\ndouble x = a->data[i * a->cols + j];\nfor (int64_t k = 0; k < b->rows; ++k) {{\nfor (int64_t l = 0; l < b->cols; ++l) {{ m.data[(i * b->rows + k) * c + (j * b->cols + l)] = x * b->data[k * b->cols + l]; }}\n}}\n}}\n}}\nreturn m;\n}}\n"
         ));
         let shape_lit = |r: &str, a: &str, b: &str| {
             format!(
@@ -3017,20 +3588,20 @@ impl<'a> Gen<'a> {
             "static int vmat_lu(double *a, int64_t n, int64_t *piv) {\nint sgn = 1;\nfor (int64_t k = 0; k < n; ++k) { piv[k] = k; }\nfor (int64_t k = 0; k < n; ++k) {\nint64_t p = k;\ndouble best = a[piv[k] * n + k] < 0 ? -(a[piv[k] * n + k]) : a[piv[k] * n + k];\nfor (int64_t i = k + 1; i < n; ++i) {\ndouble v = a[piv[i] * n + k];\ndouble av = v < 0 ? -v : v;\nif (av > best) { best = av; p = i; }\n}\nif (best == 0.0) { return 0; }\nif (p != k) { int64_t t = piv[k]; piv[k] = piv[p]; piv[p] = t; sgn = -sgn; }\nfor (int64_t i = k + 1; i < n; ++i) {\ndouble f = a[piv[i] * n + k] / a[piv[k] * n + k];\na[piv[i] * n + k] = f;\nfor (int64_t j = k + 1; j < n; ++j) { a[piv[i] * n + j] -= f * a[piv[k] * n + j]; }\n}\n}\nreturn sgn;\n}\n",
         );
         self.out.push_str(&format!(
-            "static double vmat_det({ct} *v) {{\nif (v->rows != v->cols) {{ return 0.0 / 0.0; }}\nint64_t n = v->rows;\nif (n == 0) {{ return 1.0; }}\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nint64_t *piv = (int64_t *)malloc((size_t)(n + 1) * sizeof(int64_t));\nif (!piv) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nint sgn = vmat_lu(a, n, piv);\ndouble d = 0.0;\nif (sgn != 0) {{\nd = (double)sgn;\nfor (int64_t k = 0; k < n; ++k) {{ d *= a[piv[k] * n + k]; }}\n}} else {{ d = 0.0 / 0.0; }}\nfree(a); free(piv);\nreturn d;\n}}\n"
+            "static double vmat_det({ct} *v) {{\nif (v->rows != v->cols) {{ return 0.0 / 0.0; }}\nint64_t n = v->rows;\nif (n == 0) {{ return 1.0; }}\nint64_t nn = vmat_checked_elems(n, n);\ndouble *a = vmat_alloc(nn);\nfor (int64_t i = 0; i < nn; ++i) {{ a[i] = v->data[i]; }}\nint64_t *piv = vmat_alloc_i64(n);\nint sgn = vmat_lu(a, n, piv);\ndouble d = 0.0;\nif (sgn != 0) {{\nd = (double)sgn;\nfor (int64_t k = 0; k < n; ++k) {{ d *= a[piv[k] * n + k]; }}\n}} else {{ d = 0.0 / 0.0; }}\nfree(a); free(piv);\nreturn d;\n}}\n"
         ));
         if want_sol {
             self.out.push_str(&format!(
-            "static {rvct} vmat_lu_solve({ct} *v, {vct} *b) {{\nif (v->rows != v->cols || b->len != v->rows) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->rows, .v_found = b->len }} }} }} }};\nreturn o;\n}}\nint64_t n = v->rows;\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nint64_t *piv = (int64_t *)malloc((size_t)(n + 1) * sizeof(int64_t));\nif (!piv) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *y = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!y) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nint ok = vmat_lu(a, n, piv);\n{rvct} o;\nif (!ok) {{\no = ({rvct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\n}} else {{\nfor (int64_t i = 0; i < n; ++i) {{\ndouble s = b->data[piv[i]];\nfor (int64_t j = 0; j < i; ++j) {{ s -= a[piv[i] * n + j] * y[j]; }}\ny[i] = s;\n}}\n{vct} x = {{NULL, 0, 0}};\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\n}}\nfor (int64_t i = n - 1; i >= 0; --i) {{\ndouble s = y[i];\nfor (int64_t j = i + 1; j < n; ++j) {{ s -= a[piv[i] * n + j] * x.data[j]; }}\nx.data[i] = s / a[piv[i] * n + i];\nif (i == 0) {{ break; }}\n}}\no = ({rvct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\n}}\nfree(a); free(piv); free(y);\nreturn o;\n}}\n"
+            "static {rvct} vmat_lu_solve({ct} *v, {vct} *b) {{\nif (v->rows != v->cols || b->len != v->rows) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->rows, .v_found = b->len }} }} }} }};\nreturn o;\n}}\nint64_t n = v->rows;\nint64_t nn = vmat_checked_elems(n, n);\ndouble *a = vmat_alloc(nn);\nfor (int64_t i = 0; i < nn; ++i) {{ a[i] = v->data[i]; }}\nint64_t *piv = vmat_alloc_i64(n);\ndouble *y = vmat_alloc(n);\nint ok = vmat_lu(a, n, piv);\n{rvct} o;\nif (!ok) {{\no = ({rvct}){{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\n}} else {{\nfor (int64_t i = 0; i < n; ++i) {{\ndouble s = b->data[piv[i]];\nfor (int64_t j = 0; j < i; ++j) {{ s -= a[piv[i] * n + j] * y[j]; }}\ny[i] = s;\n}}\n{vct} x = {{NULL, 0, 0}};\nx.data = vmat_alloc(vmat_checked_elems(n, 1));\nx.len = n; x.cap = n;\nfor (int64_t i = n - 1; i >= 0; --i) {{\ndouble s = y[i];\nfor (int64_t j = i + 1; j < n; ++j) {{ s -= a[piv[i] * n + j] * x.data[j]; }}\nx.data[i] = s / a[piv[i] * n + i];\nif (i == 0) {{ break; }}\n}}\no = ({rvct}){{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\n}}\nfree(a); free(piv); free(y);\nreturn o;\n}}\n"
         ));
             // S1 matrix-vector product (same Vec-result gate as lu_solve).
             self.out.push_str(&format!(
-            "static {rvct} vmat_vec({ct} *v, {vct} *b) {{\nif (v->cols != b->len) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->cols, .v_found = b->len }} }} }} }};\nreturn o;\n}}\n{vct} x = {{NULL, 0, 0}};\nif (v->rows > 0) {{\nx.data = (double *)malloc((size_t)v->rows * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = v->rows; x.cap = v->rows;\nfor (int64_t i = 0; i < v->rows; ++i) {{\ndouble s = 0.0;\nfor (int64_t j = 0; j < v->cols; ++j) {{ s += v->data[i * v->cols + j] * b->data[j]; }}\nx.data[i] = s;\n}}\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
+            "static {rvct} vmat_vec({ct} *v, {vct} *b) {{\nif (v->cols != b->len) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->cols, .v_found = b->len }} }} }} }};\nreturn o;\n}}\n{vct} x = {{NULL, 0, 0}};\nx.data = vmat_alloc(vmat_checked_elems(v->rows, 1));\nx.len = v->rows; x.cap = v->rows;\nfor (int64_t i = 0; i < v->rows; ++i) {{\ndouble s = 0.0;\nfor (int64_t j = 0; j < v->cols; ++j) {{ s += v->data[i * v->cols + j] * b->data[j]; }}\nx.data[i] = s;\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
         ));
         }
         if want_mm && want_sol {
             self.out.push_str(&format!(
-            "static {rct} vmat_inverse({ct} *v) {{\nif (v->rows != v->cols) {{ return {shape}; }}\nint64_t n = v->rows;\n{ct} m = vmat_zeros(n, n);\nfor (int64_t j = 0; j < n; ++j) {{\n{vct} b = {{NULL, 0, 0}};\nif (n > 0) {{\nb.data = (double *)malloc((size_t)n * sizeof(double));\nif (!b.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nb.len = n; b.cap = n;\nfor (int64_t i = 0; i < n; ++i) {{ b.data[i] = i == j ? 1.0 : 0.0; }}\n}}\n{rvct} s = vmat_lu_solve(v, &b);\nfree(b.data);\nif (s.tag != 0) {{\nfree(m.data);\n{rct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\nreturn o;\n}}\nfor (int64_t i = 0; i < n; ++i) {{ m.data[i * n + j] = s.u.v0.v___0.data[i]; }}\nfree(s.u.v0.v___0.data);\n}}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n",
+            "static {rct} vmat_inverse({ct} *v) {{\nif (v->rows != v->cols) {{ return {shape}; }}\nint64_t n = v->rows;\n{ct} m = vmat_zeros(n, n);\nfor (int64_t j = 0; j < n; ++j) {{\n{vct} b = {{NULL, 0, 0}};\nb.data = vmat_alloc(vmat_checked_elems(n, 1));\nb.len = n; b.cap = n;\nfor (int64_t i = 0; i < n; ++i) {{ b.data[i] = i == j ? 1.0 : 0.0; }}\n{rvct} s = vmat_lu_solve(v, &b);\nfree(b.data);\nif (s.tag != 0) {{\nfree(m.data);\n{rct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = n, .v_found = -1 }} }} }} }};\nreturn o;\n}}\nfor (int64_t i = 0; i < n; ++i) {{ m.data[i * n + j] = s.u.v0.v___0.data[i]; }}\nfree(s.u.v0.v___0.data);\n}}\n{rct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = m }} }} }};\nreturn o;\n}}\n",
             shape = shape_lit(&rct, "v->rows", "v->cols")
         ));
         }
@@ -3052,10 +3623,10 @@ impl<'a> Gen<'a> {
         // S1 diagonal (total; needs only the Vec layout, always recorded
         // alongside any Mat use through the method checker).
         self.out.push_str(&format!(
-            "static {vct} vmat_diag({ct} *v) {{\n{vct} x = {{NULL, 0, 0}};\nint64_t n = v->rows < v->cols ? v->rows : v->cols;\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\nfor (int64_t i = 0; i < n; ++i) {{ x.data[i] = v->data[i * v->cols + i]; }}\n}}\nreturn x;\n}}\n"
+            "static {vct} vmat_diag({ct} *v) {{\n{vct} x = {{NULL, 0, 0}};\nint64_t n = v->rows < v->cols ? v->rows : v->cols;\nx.data = vmat_alloc(vmat_checked_elems(n, 1));\nx.len = n; x.cap = n;\nfor (int64_t i = 0; i < n; ++i) {{ x.data[i] = v->data[i * v->cols + i]; }}\nreturn x;\n}}\n"
         ));
         self.out.push_str(&format!(
-            "static {vct} vmat_col({ct} *v, int64_t j) {{\nif (j < 0 || j >= v->cols) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n{vct} x = {{NULL, 0, 0}};\nif (v->rows > 0) {{\nx.data = (double *)malloc((size_t)v->rows * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = v->rows; x.cap = v->rows;\nfor (int64_t i = 0; i < v->rows; ++i) {{ x.data[i] = v->data[i * v->cols + j]; }}\n}}\nreturn x;\n}}\n"
+            "static {vct} vmat_col({ct} *v, int64_t j) {{\nif (j < 0 || j >= v->cols) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n{vct} x = {{NULL, 0, 0}};\nx.data = vmat_alloc(vmat_checked_elems(v->rows, 1));\nx.len = v->rows; x.cap = v->rows;\nfor (int64_t i = 0; i < v->rows; ++i) {{ x.data[i] = v->data[i * v->cols + j]; }}\nreturn x;\n}}\n"
         ));
         // Symmetric Jacobi eigen decomposition + one-sided Jacobi SVD
         // (shared helpers below; wrappers gated on their Result layouts).
@@ -3073,24 +3644,282 @@ impl<'a> Gen<'a> {
         // helpers above gate on either).
         if want_sol {
             self.out.push_str(&format!(
-            "static {rvct} vmat_eigen_values({ct} *v) {{\nif (v->rows != v->cols) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->rows, .v_found = v->cols }} }} }} }};\nreturn o;\n}}\nint64_t n = v->rows;\n{vct} x = {{NULL, 0, 0}};\nif (n > 0) {{\nx.data = (double *)malloc((size_t)n * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nvmat_jacobi(a, (double *)0, n);\nfor (int64_t i = 0; i < n; ++i) {{ x.data[i] = a[i * n + i]; }}\nfree(a);\nfor (int64_t i = 0; i < n; ++i) {{\nint64_t b = i;\nfor (int64_t j = i + 1; j < n; ++j) {{ if (x.data[j] > x.data[b]) {{ b = j; }} }}\nif (b != i) {{ double t = x.data[i]; x.data[i] = x.data[b]; x.data[b] = t; }}\n}}\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
+            "static {rvct} vmat_eigen_values({ct} *v) {{\nif (v->rows != v->cols) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = v->rows, .v_found = v->cols }} }} }} }};\nreturn o;\n}}\nint64_t n = v->rows;\nint64_t nn = vmat_checked_elems(n, n);\n{vct} x = {{NULL, 0, 0}};\nx.data = vmat_alloc(vmat_checked_elems(n, 1));\nx.len = n; x.cap = n;\ndouble *a = vmat_alloc(nn);\nfor (int64_t i = 0; i < nn; ++i) {{ a[i] = v->data[i]; }}\nvmat_jacobi(a, (double *)0, n);\nfor (int64_t i = 0; i < n; ++i) {{ x.data[i] = a[i * n + i]; }}\nfree(a);\nfor (int64_t i = 0; i < n; ++i) {{\nint64_t b = i;\nfor (int64_t j = i + 1; j < n; ++j) {{ if (x.data[j] > x.data[b]) {{ b = j; }} }}\nif (b != i) {{ double t = x.data[i]; x.data[i] = x.data[b]; x.data[b] = t; }}\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
         ));
             self.out.push_str(&format!(
-            "static {rvct} vmat_svd_s({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\n{vct} x = {{NULL, 0, 0}};\nif (n > 0) {{\nx.data = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!x.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nx.len = n; x.cap = n;\ndouble *w = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!w) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < m * n; ++i) {{ w[i] = v->data[i]; }}\ndouble *u = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!u) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *vt = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!vt) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{\nfor (int64_t j = 0; j < n; ++j) {{ vt[i * n + j] = i == j ? 1.0 : 0.0; }}\n}}\nif (!vmat_svd_full(w, m, n, u, x.data, vt)) {{\nfree(w); free(u); free(vt); free(x.data);\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn o;\n}}\nfree(w); free(u); free(vt);\n}}\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
+            "static {rvct} vmat_svd_s({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\nif (m < n) {{\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn o;\n}}\nint64_t mn = vmat_checked_elems(m, n);\nint64_t nn = vmat_checked_elems(n, n);\n{vct} x = {{NULL, 0, 0}};\nx.data = vmat_alloc(vmat_checked_elems(n, 1));\nx.len = n; x.cap = n;\ndouble *w = vmat_alloc(mn);\nfor (int64_t i = 0; i < mn; ++i) {{ w[i] = v->data[i]; }}\ndouble *u = vmat_alloc(mn);\ndouble *vt = vmat_alloc(nn);\nfor (int64_t i = 0; i < n; ++i) {{\nfor (int64_t j = 0; j < n; ++j) {{ vt[i * n + j] = i == j ? 1.0 : 0.0; }}\n}}\nif (!vmat_svd_full(w, m, n, u, x.data, vt)) {{\nfree(w); free(u); free(vt); free(x.data);\n{rvct} o = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn o;\n}}\nfree(w); free(u); free(vt);\n{rvct} o = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = x }} }} }};\nreturn o;\n}}\n"
         ));
         }
         if want_mm {
             self.out.push_str(&format!(
-            "static {rct} vmat_eigen_vectors({ct} *v) {{\nif (v->rows != v->cols) {{ return {shape}; }}\nint64_t n = v->rows;\n{ct} o = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ o.data[i * n + i] = 1.0; }}\ndouble *a = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!a) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n * n; ++i) {{ a[i] = v->data[i]; }}\nvmat_jacobi(a, o.data, n);\ndouble *d = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!d) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{ d[i] = a[i * n + i]; }}\nfree(a);\nfor (int64_t i = 0; i < n; ++i) {{\nint64_t b = i;\nfor (int64_t j = i + 1; j < n; ++j) {{ if (d[j] > d[b]) {{ b = j; }} }}\nif (b != i) {{\ndouble t = d[i]; d[i] = d[b]; d[b] = t;\nfor (int64_t k = 0; k < n; ++k) {{ double u = o.data[k * n + i]; o.data[k * n + i] = o.data[k * n + b]; o.data[k * n + b] = u; }}\n}}\n}}\nfree(d);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n",
+            "static {rct} vmat_eigen_vectors({ct} *v) {{\nif (v->rows != v->cols) {{ return {shape}; }}\nint64_t n = v->rows;\nint64_t nn = vmat_checked_elems(n, n);\n{ct} o = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ o.data[i * n + i] = 1.0; }}\ndouble *a = vmat_alloc(nn);\nfor (int64_t i = 0; i < nn; ++i) {{ a[i] = v->data[i]; }}\nvmat_jacobi(a, o.data, n);\ndouble *d = vmat_alloc(vmat_checked_elems(n, 1));\nfor (int64_t i = 0; i < n; ++i) {{ d[i] = a[i * n + i]; }}\nfree(a);\nfor (int64_t i = 0; i < n; ++i) {{\nint64_t b = i;\nfor (int64_t j = i + 1; j < n; ++j) {{ if (d[j] > d[b]) {{ b = j; }} }}\nif (b != i) {{\ndouble t = d[i]; d[i] = d[b]; d[b] = t;\nfor (int64_t k = 0; k < n; ++k) {{ double u = o.data[k * n + i]; o.data[k * n + i] = o.data[k * n + b]; o.data[k * n + b] = u; }}\n}}\n}}\nfree(d);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n",
             shape = shape_lit(&rct, "v->rows", "v->cols")
         ));
             self.out.push_str(&format!(
-            "static {rct} vmat_svd_u({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\n{ct} o = vmat_zeros(m, n);\ndouble *w = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!w) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < m * n; ++i) {{ w[i] = v->data[i]; }}\ndouble *sg = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!sg) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *vt = (double *)malloc((size_t)(n * n + 1) * sizeof(double));\nif (!vt) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < n; ++i) {{\nfor (int64_t j = 0; j < n; ++j) {{ vt[i * n + j] = i == j ? 1.0 : 0.0; }}\n}}\nif (!vmat_svd_full(w, m, n, o.data, sg, vt)) {{\nfree(w); free(sg); free(vt); free(o.data);\n{rct} r = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn r;\n}}\nfree(w); free(sg); free(vt);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n"
+            "static {rct} vmat_svd_u({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\nif (m < n) {{\n{rct} r = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn r;\n}}\nint64_t mn = vmat_checked_elems(m, n);\nint64_t nn = vmat_checked_elems(n, n);\n{ct} o = vmat_zeros(m, n);\ndouble *w = vmat_alloc(mn);\nfor (int64_t i = 0; i < mn; ++i) {{ w[i] = v->data[i]; }}\ndouble *sg = vmat_alloc(vmat_checked_elems(n, 1));\ndouble *vt = vmat_alloc(nn);\nfor (int64_t i = 0; i < n; ++i) {{\nfor (int64_t j = 0; j < n; ++j) {{ vt[i * n + j] = i == j ? 1.0 : 0.0; }}\n}}\nif (!vmat_svd_full(w, m, n, o.data, sg, vt)) {{\nfree(w); free(sg); free(vt); free(o.data);\n{rct} r = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn r;\n}}\nfree(w); free(sg); free(vt);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n"
         ));
             self.out.push_str(&format!(
-            "static {rct} vmat_svd_vt({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\n{ct} o = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ o.data[i * n + i] = 1.0; }}\ndouble *w = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!w) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nfor (int64_t i = 0; i < m * n; ++i) {{ w[i] = v->data[i]; }}\ndouble *u = (double *)malloc((size_t)(m * n + 1) * sizeof(double));\nif (!u) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\ndouble *sg = (double *)malloc((size_t)(n + 1) * sizeof(double));\nif (!sg) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\nif (!vmat_svd_full(w, m, n, u, sg, o.data)) {{\nfree(w); free(u); free(sg); free(o.data);\n{rct} r = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn r;\n}}\nfree(w); free(u); free(sg);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n"
+            "static {rct} vmat_svd_vt({ct} *v) {{\nint64_t m = v->rows;\nint64_t n = v->cols;\nif (m < n) {{\n{rct} r = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn r;\n}}\nint64_t mn = vmat_checked_elems(m, n);\n{ct} o = vmat_zeros(n, n);\nfor (int64_t i = 0; i < n; ++i) {{ o.data[i * n + i] = 1.0; }}\ndouble *w = vmat_alloc(mn);\nfor (int64_t i = 0; i < mn; ++i) {{ w[i] = v->data[i]; }}\ndouble *u = vmat_alloc(mn);\ndouble *sg = vmat_alloc(vmat_checked_elems(n, 1));\nif (!vmat_svd_full(w, m, n, u, sg, o.data)) {{\nfree(w); free(u); free(sg); free(o.data);\n{rct} r = {{ .tag = 1, .u = {{ .v1 = {{ .v___0 = ({shape_ct}){{ .v_expected = m, .v_found = n }} }} }} }};\nreturn r;\n}}\nfree(w); free(u); free(sg);\n{rct} r = {{ .tag = 0, .u = {{ .v0 = {{ .v___0 = o }} }} }};\nreturn r;\n}}\n"
         ));
         }
+        Ok(())
+    }
+
+    /// `ArrayD<T>` runtime: layout helpers, constructors, shape queries,
+    /// drop/clone, and `to_vec`. Row-major strides are stored in elements;
+    /// all shape validation traps instead of returning a partial array.
+    fn emit_arrayd_fns(&mut self, args: &[Ty]) -> Result<(), Ice> {
+        let t = args
+            .first()
+            .cloned()
+            .ok_or_else(|| Ice("ArrayD element type".into()))?;
+        let ct = ctype_inst("ArrayD", std::slice::from_ref(&t));
+        let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
+        let et = self.cty_val(&t);
+        let vct = ctype_inst("Vec", std::slice::from_ref(&t));
+        let viname = vct.strip_prefix('V').unwrap_or(&vct).to_string();
+        let ivct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int64));
+        let iiname = ivct.strip_prefix('V').unwrap_or(&ivct).to_string();
+        let needs_drop = self.type_needs_drop(&t);
+        let clone_value = if needs_drop {
+            self.clone_call(&t, "value")
+        } else {
+            "value".to_string()
+        };
+        let clone_slot = if needs_drop {
+            self.clone_call(&t, "v.data[i]")
+        } else {
+            "v.data[i]".to_string()
+        };
+        let clone_to_vec = if needs_drop {
+            self.clone_call(&t, "v->data[i]")
+        } else {
+            "v->data[i]".to_string()
+        };
+        let drop_loop = if needs_drop {
+            format!(
+                "for (int64_t i = 0; i < v->len; ++i) {{ {}; }}\n",
+                self.drop_call(&t, "v->data[i]")
+            )
+        } else {
+            String::new()
+        };
+        let size_check = format!(
+            "if ((uint64_t)len > (uint64_t)SIZE_MAX / sizeof({})) {{ fprintf(stderr, \"allocation size overflow\\n\"); abort(); }}\n",
+            et
+        );
+        let has_data_vec = self.has_inst("Vec", std::slice::from_ref(&t));
+
+        self.out.push_str(&format!(
+            "static void varrayd_{iname}_prepare(const int64_t *shape, int64_t rank, int64_t *strides, int64_t *len) {{\n\
+if (rank < 1 || rank > 32) {{ fprintf(stderr, \"array rank must be between 1 and 32\\n\"); abort(); }}\n\
+int64_t total = 1;\n\
+for (int64_t k = 0; k < rank; ++k) {{\n\
+if (shape[k] < 0) {{ fprintf(stderr, \"negative array dimension\\n\"); abort(); }}\n\
+if (shape[k] != 0 && total > INT64_MAX / shape[k]) {{ fprintf(stderr, \"array shape overflow\\n\"); abort(); }}\n\
+total *= shape[k];\n\
+}}\n\
+int64_t stride = 1;\n\
+for (int64_t k = rank - 1; k >= 0; --k) {{\n\
+strides[k] = stride;\n\
+if (shape[k] != 0) {{\n\
+if (stride > INT64_MAX / shape[k]) {{ fprintf(stderr, \"array stride overflow\\n\"); abort(); }}\n\
+stride *= shape[k];\n\
+}}\n\
+}}\n\
+*len = total;\n\
+}}\n",
+            iname = iname
+        ));
+        self.out.push_str(&format!(
+            "static void v_drop_{iname}({ct} *v) {{\n\
+if (v->data) {{\n\
+{drop_loop}\
+free(v->data); v->data = NULL;\n\
+}}\n\
+v->len = 0; v->rank = 0;\n\
+}}\n",
+            iname = iname,
+            ct = ct,
+            drop_loop = drop_loop
+        ));
+        self.out.push_str(&format!(
+            "static {ct} v_clone_{iname}({ct} v) {{\n\
+{ct} c = {{0}};\n\
+c.len = v.len; c.rank = v.rank;\n\
+for (int64_t k = 0; k < v.rank; ++k) {{ c.shape[k] = v.shape[k]; c.strides[k] = v.strides[k]; }}\n\
+if (v.len > 0) {{\n\
+if ((uint64_t)v.len > (uint64_t)SIZE_MAX / sizeof({et})) {{ fprintf(stderr, \"allocation size overflow\\n\"); abort(); }}\n\
+c.data = ({et} *)malloc((size_t)v.len * sizeof({et}));\n\
+if (!c.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\n\
+for (int64_t i = 0; i < v.len; ++i) {{ c.data[i] = {clone_slot}; }}\n\
+}}\n\
+return c;\n\
+}}\n",
+            ct = ct,
+            iname = iname,
+            et = et,
+            clone_slot = clone_slot
+        ));
+        if has_data_vec {
+            self.out.push_str(&format!(
+                "static {ct} varrayd_{iname}_from_vec({ivct} *shape, {vct} data) {{\n\
+{ct} a = {{0}};\n\
+int64_t len = 0;\n\
+varrayd_{iname}_prepare(shape->data, shape->len, a.strides, &len);\n\
+if (data.len != len) {{ fprintf(stderr, \"array shape does not match data length\\n\"); abort(); }}\n\
+a.data = data.data; a.len = len; a.rank = shape->len;\n\
+for (int64_t k = 0; k < a.rank; ++k) {{ a.shape[k] = shape->data[k]; }}\n\
+return a;\n\
+}}\n",
+                ct = ct,
+                iname = iname,
+                ivct = ivct,
+                vct = vct
+            ));
+        }
+        self.out.push_str(&format!(
+            "static {ct} varrayd_{iname}_filled({ivct} *shape, {et} value) {{\n\
+{ct} a = {{0}};\n\
+int64_t len = 0;\n\
+varrayd_{iname}_prepare(shape->data, shape->len, a.strides, &len);\n\
+a.len = len; a.rank = shape->len;\n\
+for (int64_t k = 0; k < a.rank; ++k) {{ a.shape[k] = shape->data[k]; }}\n\
+if (len > 0) {{\n\
+{size_check}\
+a.data = ({et} *)malloc((size_t)len * sizeof({et}));\n\
+if (!a.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\n\
+for (int64_t i = 0; i < len; ++i) {{ a.data[i] = {clone_value}; }}\n\
+}}\n\
+return a;\n\
+}}\n",
+            ct = ct,
+            iname = iname,
+            ivct = ivct,
+            et = et,
+            size_check = size_check,
+            clone_value = clone_value
+        ));
+        self.out.push_str(&format!(
+            "static {ct} varrayd_{iname}_zeros({ivct} *shape) {{\n\
+{ct} a = {{0}};\n\
+int64_t len = 0;\n\
+varrayd_{iname}_prepare(shape->data, shape->len, a.strides, &len);\n\
+a.len = len; a.rank = shape->len;\n\
+for (int64_t k = 0; k < a.rank; ++k) {{ a.shape[k] = shape->data[k]; }}\n\
+if (len > 0) {{\n\
+{size_check}\
+a.data = ({et} *)calloc((size_t)len, sizeof({et}));\n\
+if (!a.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\n\
+}}\n\
+return a;\n\
+}}\n",
+            ct = ct,
+            iname = iname,
+            ivct = ivct,
+            et = et,
+            size_check = size_check
+        ));
+        self.out.push_str(&format!(
+            "static {ivct} varrayd_{iname}_shape({ct} *v) {{\n\
+{ivct} o = vvec_{iiname}_new();\n\
+for (int64_t k = 0; k < v->rank; ++k) {{ vvec_{iiname}_push(&o, v->shape[k]); }}\n\
+return o;\n\
+}}\n\
+static {ivct} varrayd_{iname}_strides({ct} *v) {{\n\
+{ivct} o = vvec_{iiname}_new();\n\
+for (int64_t k = 0; k < v->rank; ++k) {{ vvec_{iiname}_push(&o, v->strides[k]); }}\n\
+return o;\n\
+}}\n\
+static int64_t varrayd_{iname}_dim({ct} *v, int64_t axis) {{\n\
+if (axis < 0 || axis >= v->rank) {{ fprintf(stderr, \"array axis out of bounds\\n\"); abort(); }}\n\
+return v->shape[axis];\n\
+}}\n",
+            ivct = ivct,
+            ct = ct,
+            iname = iname,
+            iiname = iiname
+        ));
+        if has_data_vec {
+            self.out.push_str(&format!(
+                "static {vct} varrayd_{iname}_to_vec({ct} *v) {{\n\
+{vct} o = vvec_{viname}_new();\n\
+if (v->len > 0) {{\n\
+if ((uint64_t)v->len > (uint64_t)SIZE_MAX / sizeof({et})) {{ fprintf(stderr, \"allocation size overflow\\n\"); abort(); }}\n\
+o.data = ({et} *)malloc((size_t)v->len * sizeof({et}));\n\
+if (!o.data) {{ fprintf(stderr, \"alloc error\\n\"); abort(); }}\n\
+o.len = v->len; o.cap = v->len;\n\
+for (int64_t i = 0; i < v->len; ++i) {{ o.data[i] = {clone_to_vec}; }}\n\
+}}\n\
+return o;\n\
+}}\n",
+                vct = vct,
+                ct = ct,
+                iname = iname,
+                viname = viname,
+                et = et,
+                clone_to_vec = clone_to_vec
+            ));
+        }
+        Ok(())
+    }
+
+    /// `Array<T, N>` rank-specific wrappers. The layout and kernels are the
+    /// `ArrayD<T>` ones; these wrappers reject a runtime shape whose length
+    /// disagrees with the compile-time rank and give the type its own
+    /// drop/clone symbols for generic struct and union fields.
+    fn emit_arrayn_fns(&mut self, base: &str, args: &[Ty]) -> Result<(), Ice> {
+        let rank = array_rank(base).ok_or_else(|| Ice("ArrayN rank".into()))?;
+        let t = args
+            .first()
+            .cloned()
+            .ok_or_else(|| Ice("ArrayN element type".into()))?;
+        let ct = ctype_inst(base, std::slice::from_ref(&t));
+        let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
+        let dct = ctype_inst("ArrayD", std::slice::from_ref(&t));
+        let diname = dct.strip_prefix('V').unwrap_or(&dct).to_string();
+        let et = self.cty_val(&t);
+        let vct = ctype_inst("Vec", std::slice::from_ref(&t));
+        let ivct = ctype_inst("Vec", std::slice::from_ref(&Ty::Int64));
+        let has_data_vec = self.has_inst("Vec", std::slice::from_ref(&t));
+
+        self.out.push_str(&format!(
+            "static void v_drop_{iname}({ct} *v) {{ v_drop_{diname}(v); }}\n\
+static {ct} v_clone_{iname}({ct} v) {{ return v_clone_{diname}(v); }}\n",
+            iname = iname,
+            ct = ct,
+            diname = diname
+        ));
+        if has_data_vec {
+            self.out.push_str(&format!(
+                "static {ct} varrayn_{iname}_from_vec({ivct} *shape, {vct} data) {{\n\
+if (shape->len != {rank}) {{ fprintf(stderr, \"array shape rank mismatch\\n\"); abort(); }}\n\
+return varrayd_{diname}_from_vec(shape, data);\n\
+}}\n",
+                ct = ct,
+                iname = iname,
+                ivct = ivct,
+                vct = vct,
+                rank = rank,
+                diname = diname
+            ));
+        }
+        self.out.push_str(&format!(
+            "static {ct} varrayn_{iname}_filled({ivct} *shape, {et} value) {{\n\
+if (shape->len != {rank}) {{ fprintf(stderr, \"array shape rank mismatch\\n\"); abort(); }}\n\
+return varrayd_{diname}_filled(shape, value);\n\
+}}\n\
+static {ct} varrayn_{iname}_zeros({ivct} *shape) {{\n\
+if (shape->len != {rank}) {{ fprintf(stderr, \"array shape rank mismatch\\n\"); abort(); }}\n\
+return varrayd_{diname}_zeros(shape);\n\
+}}\n",
+            ct = ct,
+            iname = iname,
+            ivct = ivct,
+            et = et,
+            rank = rank,
+            diname = diname
+        ));
         Ok(())
     }
 
@@ -3276,6 +4105,49 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Array value-returning method call. `Array<T, N>` reuses the `ArrayD`
+    /// kernels, so shape/strides/dim/to_vec call the runtime helper name;
+    /// only `rank` and `clone` differ (a compile-time constant and a
+    /// rank-specific wrapper).
+    fn emit_arrayd_method(
+        &mut self,
+        base: &str,
+        rank: Option<usize>,
+        method: &str,
+        elem: &Ty,
+        r: &str,
+        args: &[Expr],
+    ) -> Result<String, Ice> {
+        let ct = ctype_inst(base, std::slice::from_ref(elem));
+        let iname = ct.strip_prefix('V').unwrap_or(&ct).to_string();
+        let dct = ctype_inst("ArrayD", std::slice::from_ref(elem));
+        let diname = dct.strip_prefix('V').unwrap_or(&dct).to_string();
+        let rptr = format!("&{}", r);
+        match method {
+            "rank" => match rank {
+                Some(n) => Ok(format!("(int64_t){}", n)),
+                None => Ok(format!("{}.rank", r)),
+            },
+            "len" => Ok(format!("{}.len", r)),
+            "dim" => {
+                let a = args.first().ok_or_else(|| Ice("dim arity".into()))?;
+                let saved = self.cur_move;
+                self.cur_move = false;
+                let axis = self.emit_expr(a)?;
+                self.cur_move = saved;
+                Ok(format!(
+                    "varrayd_{}_dim({}, (int64_t)({}))",
+                    diname, rptr, axis
+                ))
+            }
+            "shape" => Ok(format!("varrayd_{}_shape({})", diname, rptr)),
+            "strides" => Ok(format!("varrayd_{}_strides({})", diname, rptr)),
+            "to_vec" => Ok(format!("varrayd_{}_to_vec({})", diname, rptr)),
+            "clone" => Ok(format!("v_clone_{}({})", iname, r)),
+            _ => Err(Ice("unknown array method".into())),
+        }
+    }
+
     /// F1 value-returning `Factor` method call (receiver borrows via
     /// `&slot`; the `String` argument to `relevel` borrows like `println`).
     fn emit_factor_method(&mut self, method: &str, r: &str, args: &[Expr]) -> Result<String, Ice> {
@@ -3302,6 +4174,56 @@ impl<'a> Gen<'a> {
             }
             _ => Err(Ice("unknown Factor method".into())),
         }
+    }
+
+    /// `StringIndex` value-returning method call. The receiver is borrowed
+    /// through `&slot`; key arguments are materialized without moving and the
+    /// index clones a key only when it inserts it.
+    fn emit_string_index_method(
+        &mut self,
+        method: &str,
+        r: &str,
+        args: &[Expr],
+    ) -> Result<String, Ice> {
+        let rptr = format!("&{}", r);
+        match method {
+            "len" => Ok(format!("vsi_len({})", rptr)),
+            "contains" => {
+                let key = self.string_index_key(args)?;
+                Ok(format!("vsi_contains({}, {})", rptr, key))
+            }
+            "get" => {
+                let key = self.string_index_key(args)?;
+                Ok(format!("vsi_get({}, {})", rptr, key))
+            }
+            "get_or_insert" => {
+                let key = self.string_index_key(args)?;
+                Ok(format!("vsi_get_or_insert({}, {})", rptr, key))
+            }
+            "keys" => {
+                let ct = ctype_inst("Vec", std::slice::from_ref(&Ty::Str));
+                Ok(self.new_tmp_ty(&ct, &format!("vsi_keys({})", rptr)))
+            }
+            "clone" => {
+                let ct = ctype_inst("StringIndex", &[]);
+                Ok(self.new_tmp_ty(&ct, &format!("v_clone_StringIndex_({})", r)))
+            }
+            _ => Err(Ice("unknown StringIndex method".into())),
+        }
+    }
+
+    /// Materialize a `StringIndex` key without moving it. String literals and
+    /// call results become frame temps that are freed at statement end; the
+    /// index clones the key on insertion, so the caller's slot stays live.
+    fn string_index_key(&mut self, args: &[Expr]) -> Result<String, Ice> {
+        let a = args
+            .first()
+            .ok_or_else(|| Ice("StringIndex key arity".into()))?;
+        let saved = self.cur_move;
+        self.cur_move = false;
+        let key = self.mat_str(a)?;
+        self.cur_move = saved;
+        Ok(key)
     }
 
     /// C1 Stage-1 functional kernels: one C loop per (kind, types)
@@ -4215,9 +5137,15 @@ impl<'a> Gen<'a> {
         self.cur_move = false;
         let c = self.emit_expr(cond)?;
         self.cur_move = saved;
-        self.out.push_str(&format!("if (!({})) break;\n", c));
+        // Materialize the Bool before freeing the condition's temporaries.
+        // The condition may be a method call on an owned temporary
+        // (`while (i < tf_names(t).len())`); freeing first would read
+        // through a dangling pointer, and breaking first would leak it.
+        let ctmp = self.fresh_tmp();
+        self.out.push_str(&format!("int {} = {};\n", ctmp, c));
         self.flush_nulls();
         self.pop_frame();
+        self.out.push_str(&format!("if (!({})) break;\n", ctmp));
         // Fresh C scope per iteration so body locals redeclare cleanly.
         self.out.push_str("{\n");
         self.loop_stack.push(LoopInfo {
@@ -4294,26 +5222,21 @@ impl<'a> Gen<'a> {
                 } = &expr.kind
                 {
                     let vt = self.ty_of(value.id);
-                    // J1 indexed store: check bounds first (index evaluates
-                    // before the value), then reuse the plain-slot logic
-                    // with the element slot as the target.
+                    // Indexed store: evaluate the base and indices, check
+                    // bounds, then reuse the plain-slot logic with the element
+                    // slot as the target. `Vec`, `Mat`, and arrays share the
+                    // helper so read and write order cannot diverge.
                     let cname = match target {
-                        Place::Index { base, idx, .. } => {
+                        Place::Index { base, indices, .. } => {
                             if place_has_index(base) {
                                 return Err(Ice("nested index store".into()));
                             }
+                            let bt = self
+                                .place_ty(base)
+                                .ok_or_else(|| Ice("unknown indexed place type".into()))?;
                             let bv = place_lvalue(base, self);
-                            let sv = self.cur_move;
-                            self.cur_move = false;
-                            let iw = self.emit_expr(idx)?;
-                            self.cur_move = sv;
-                            let i64_ = format!("(int64_t)({})", iw);
-                            self.out.push_str(&format!(
-                                "if ({i} < 0 || {i} >= {bv}.len) {{ fprintf(stderr, \"index out of bounds\\n\"); abort(); }}\n",
-                                i = i64_,
-                                bv = bv
-                            ));
-                            format!("{}.data[{}]", bv, i64_)
+                            let off = self.emit_index_offset(&bt, &bv, indices)?;
+                            format!("{}.data[{}]", bv, off)
                         }
                         _ => place_lvalue(target, self),
                     };
@@ -4761,7 +5684,7 @@ impl<'a> Gen<'a> {
                 s
             }
             ExprKind::Bool(b) => (if *b { "1" } else { "0" }).to_string(),
-            ExprKind::Str(s) => format!("vstr_from_c(\"{}\")", c_escape(s)),
+            ExprKind::Str(s) => format!("vstr_from_bytes(\"{}\", {})", c_escape(s), s.len()),
             ExprKind::Var(name) => {
                 let cname = mangle(name);
                 // Bare `None`/`Missing` (unshadowed — sema guarantees) is a
@@ -4814,36 +5737,34 @@ impl<'a> Gen<'a> {
                 }
                 path
             }
-            ExprKind::Index { base, idx } => {
+            ExprKind::Index { base, indices } => {
                 // Element copy out (owned elements clone, exactly like
                 // `get`: the buffer is never aliased). Out-of-bounds is a
                 // defined trap, mirroring integer division by zero.
-                let et = match self.ty_of(base.id) {
+                let bt = self.ty_of(base.id);
+                let et = match &bt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
                         args[0].clone()
                     }
-                    _ => return Err(Ice("index on non-Vec".into())),
+                    Ty::Generic { base, args } if base == "Mat" && args.is_empty() => Ty::Float64,
+                    Ty::Generic { base, args }
+                        if args.len() == 1 && (base == "ArrayD" || array_rank(base).is_some()) =>
+                    {
+                        args[0].clone()
+                    }
+                    _ => return Err(Ice("index on non-indexable type".into())),
                 };
                 let saved = self.cur_move;
                 self.cur_move = false;
                 let b = self.mat_str(base)?;
-                let iw = self.emit_expr(idx)?;
+                let off = self.emit_index_offset(&bt, &b, indices)?;
                 self.cur_move = saved;
-                let i64_ = format!("(int64_t)({})", iw);
-                let slot = format!("{}.data[{}]", b, i64_);
-                let val = if self.type_needs_drop(&et) {
+                let slot = format!("{}.data[{}]", b, off);
+                if self.type_needs_drop(&et) {
                     self.clone_call(&et, &slot)
                 } else {
                     slot
-                };
-                let zero = format!("({}){{0}}", self.cty(&et));
-                format!(
-                    "({i} < 0 || {i} >= {b}.len ? (fprintf(stderr, \"index out of bounds\\n\"), abort(), {zero}) : ({val}))",
-                    i = i64_,
-                    b = b,
-                    zero = zero,
-                    val = val
-                )
+                }
             }
             ExprKind::Call { name, args } => {
                 if name == "println" || name == "print" || name == "write" {
@@ -5111,6 +6032,8 @@ impl<'a> Gen<'a> {
                     self.cur_move = saved;
                     format!("vfactor_from_strings(&{})", v)
                 } else if name == "read_file"
+                    || name == "read_file_limit"
+                    || name == "bytes_to_string"
                     || name == "csv_rows"
                     || name == "csv_bad_rows"
                     || name == "json_rows"
@@ -5135,6 +6058,11 @@ impl<'a> Gen<'a> {
                     }
                     match name.as_str() {
                         "read_file" => format!("v_read_file_wrap({})", parts.join(", ")),
+                        "read_file_limit" => format!(
+                            "v_read_file_limit_wrap({}, (int64_t)({}))",
+                            parts[0], parts[1]
+                        ),
+                        "bytes_to_string" => format!("v_bytes_to_string_wrap({})", parts[0]),
                         "csv_rows" => format!("v_csv_rows_wrap({})", parts.join(", ")),
                         "csv_bad_rows" => format!("v_csv_bad_rows_wrap({})", parts.join(", ")),
                         "write_file" => format!("v_write_file_wrap({})", parts.join(", ")),
@@ -5254,6 +6182,65 @@ impl<'a> Gen<'a> {
                 let type_args = &call.type_args;
                 let method = &call.method;
                 let args = &call.args;
+                if base == "StringIndex" {
+                    if method != "new" || !type_args.is_empty() || !args.is_empty() {
+                        return Err(Ice("unsupported StringIndex associated call".into()));
+                    }
+                    let ct = ctype_inst("StringIndex", &[]);
+                    return Ok(self.new_tmp_ty(&ct, "vsi_new()"));
+                }
+                let rank = array_rank(base);
+                if base == "ArrayD" || rank.is_some() {
+                    let elem = match self.ty_of(e.id) {
+                        Ty::Generic { base: b, args }
+                            if args.len() == 1 && (b == "ArrayD" || array_rank(&b).is_some()) =>
+                        {
+                            args[0].clone()
+                        }
+                        _ => return Err(Ice("array associated call result".into())),
+                    };
+                    let act = ctype_inst(base, std::slice::from_ref(&elem));
+                    let ainame = act.strip_prefix('V').unwrap_or(&act).to_string();
+                    let prefix = if rank.is_some() { "varrayn" } else { "varrayd" };
+                    let shape_arg = args
+                        .first()
+                        .ok_or_else(|| Ice("array constructor shape arity".into()))?;
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let shape = self.mat_str(shape_arg)?;
+                    self.cur_move = saved;
+                    return match method.as_str() {
+                        "from_vec" => {
+                            let data_arg = args
+                                .get(1)
+                                .ok_or_else(|| Ice("array from_vec arity".into()))?;
+                            let saved = self.cur_move;
+                            self.cur_move = true;
+                            let data = self.mat_str(data_arg)?;
+                            self.cur_move = saved;
+                            self.consume(&data);
+                            Ok(format!(
+                                "{}_{}_from_vec(&{}, {})",
+                                prefix, ainame, shape, data
+                            ))
+                        }
+                        "filled" => {
+                            let value_arg = args
+                                .get(1)
+                                .ok_or_else(|| Ice("array filled arity".into()))?;
+                            let saved = self.cur_move;
+                            self.cur_move = false;
+                            let value = self.mat_str(value_arg)?;
+                            self.cur_move = saved;
+                            Ok(format!(
+                                "{}_{}_filled(&{}, {})",
+                                prefix, ainame, shape, value
+                            ))
+                        }
+                        "zeros" => Ok(format!("{}_{}_zeros(&{})", prefix, ainame, shape)),
+                        _ => Err(Ice("unknown array associated function".into())),
+                    };
+                }
                 if base != "Vec" || method != "with_capacity" || type_args.len() != 1 {
                     return Err(Ice("unsupported associated call".into()));
                 }
@@ -5897,6 +6884,24 @@ impl<'a> Gen<'a> {
                     self.cur_move = saved;
                     return self.emit_mat_method(method, &r, args);
                 }
+                // Array methods (receiver borrows like `Vec`/`Mat`).
+                if let Ty::Generic { base, args: targs } = &rt {
+                    if targs.len() == 1 && (base == "ArrayD" || array_rank(base).is_some()) {
+                        let elem = targs[0].clone();
+                        let saved = self.cur_move;
+                        self.cur_move = false;
+                        let r = self.mat_str(receiver)?;
+                        self.cur_move = saved;
+                        return self.emit_arrayd_method(
+                            base,
+                            array_rank(base),
+                            method,
+                            &elem,
+                            &r,
+                            args,
+                        );
+                    }
+                }
                 // F1 `Factor` methods (same borrow discipline as `Mat`).
                 if matches!(&rt, Ty::Generic { base, args } if base == "Factor" && args.is_empty())
                 {
@@ -5905,6 +6910,14 @@ impl<'a> Gen<'a> {
                     let r = self.mat_str(receiver)?;
                     self.cur_move = saved;
                     return self.emit_factor_method(method, &r, args);
+                }
+                if matches!(&rt, Ty::Generic { base, args } if base == "StringIndex" && args.is_empty())
+                {
+                    let saved = self.cur_move;
+                    self.cur_move = false;
+                    let r = self.mat_str(receiver)?;
+                    self.cur_move = saved;
+                    return self.emit_string_index_method(method, &r, args);
                 }
                 let (elem_ty, iname) = match &rt {
                     Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
@@ -6116,7 +7129,10 @@ impl<'a> Gen<'a> {
                 Ok(format!("({} == {})", slot, lit))
             }
             Pat::LitStr(lit) => {
-                let tmp = self.new_tmp_ty("VStr", &format!("vstr_from_c(\"{}\")", c_escape(lit)));
+                let tmp = self.new_tmp_ty(
+                    "VStr",
+                    &format!("vstr_from_bytes(\"{}\", {})", c_escape(lit), lit.len()),
+                );
                 Ok(format!("(vstr_eq({}, {}))", slot, tmp))
             }
             Pat::Variant {
@@ -6942,11 +7958,16 @@ fn c_escape(s: &str) -> String {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
+            // C trigraphs are replaced before string escapes are decoded;
+            // escaping every `?` keeps `??/` from becoming a backslash.
+            '?' => out.push_str("\\?"),
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
+            // Fixed-width octal escapes are never greedy: `\000` followed by
+            // `b` is NUL then `b`, unlike C's `\x00b` (one 0x0b escape).
             c if (c as u32) < 0x20 || (c as u32) == 0x7f => {
-                out.push_str(&format!("\\x{:02x}", c as u32));
+                out.push_str(&format!("\\{:03o}", c as u32));
             }
             c => out.push(c),
         }
@@ -6956,12 +7977,47 @@ fn c_escape(s: &str) -> String {
 
 // ---------- C driver ----------
 
+/// Whether `path` is a regular executable file.
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// Resolve one program name without a shell. A name containing a path
+/// separator is used as-is; a bare name is searched in `PATH` in order.
+/// This is deliberately not `sh -c "command -v ..."`: names can come from
+/// user-controlled CLI arguments (`--target`).
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    if name.is_empty() {
+        return None;
+    }
+    let direct = PathBuf::from(name);
+    if name.contains('/') || direct.is_absolute() {
+        return is_executable(&direct).then_some(direct);
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|candidate| is_executable(candidate))
+}
+
 /// Locate a C compiler: $VALVET_CC, user-local vgcc, then PATH.
 pub fn find_cc() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("VALVET_CC") {
         let pb = PathBuf::from(&p);
         if pb.exists() {
             return Some(pb);
+        }
+        if let Some(found) = find_program(&p) {
+            return Some(found);
         }
     }
     if let Ok(home) = std::env::var("HOME") {
@@ -6971,17 +8027,8 @@ pub fn find_cc() -> Option<PathBuf> {
         }
     }
     for cand in ["gcc", "cc"] {
-        if let Ok(out) = Command::new("sh")
-            .arg("-c")
-            .arg(format!("command -v {}", cand))
-            .output()
-        {
-            if out.status.success() {
-                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !p.is_empty() {
-                    return Some(PathBuf::from(p));
-                }
-            }
+        if let Some(found) = find_program(cand) {
+            return Some(found);
         }
     }
     None

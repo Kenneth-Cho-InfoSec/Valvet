@@ -162,6 +162,13 @@ fn hermetic() -> bool {
     std::env::var("VALVET_HERMETIC").is_ok_and(|v| v != "0" && !v.is_empty())
 }
 
+/// Local `std/` shadowing is opt-in. Hermetic runs always pin the stdlib,
+/// even if the opt-in environment variable is present.
+fn allow_stdlib_shadow() -> bool {
+    !hermetic()
+        && std::env::var("VALVET_ALLOW_STDLIB_SHADOW").is_ok_and(|v| v != "0" && !v.is_empty())
+}
+
 fn git_run(dir: Option<&Path>, args: &[&str]) -> Result<String, String> {
     let mut cmd = std::process::Command::new("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
@@ -672,14 +679,18 @@ impl Loader {
                 fb
             };
             let target = if ipath.first().map(|s| s == "std").unwrap_or(false) {
-                // `std::` imports also consult the stdlib roots in order;
-                // anything else resolves from the entry directory only.
+                // `std::` imports are pinned to the stdlib roots by default.
+                // A project-local `std/` tree is used only with the explicit
+                // `--allow-stdlib-shadow` opt-in (never under hermetic).
                 // Under a stdlib root the leading `std` segment is dropped
                 // (`import std.math::sqrt` lives at `<root>/math.valvet`
                 // declaring `module std.math;`). A miss everywhere falls back
                 // to the entry-relative path so the diagnostic still names
                 // the file the user would create.
-                match first_hit(&self.root.join(&rel)) {
+                let local = allow_stdlib_shadow()
+                    .then(|| first_hit(&self.root.join(&rel)))
+                    .flatten();
+                match local {
                     Some(h) => h,
                     None if ipath.len() > 1 => {
                         let mut srel = PathBuf::new();
@@ -1032,9 +1043,11 @@ fn scan_expr(e: &crate::ast::Expr, saw_try: &mut bool, saw_ret_val: &mut bool) {
         | AddrOf { expr, .. }
         | Field { base: expr, .. }
         | OptField { base: expr, .. } => scan_expr(expr, saw_try, saw_ret_val),
-        Index { base, idx, .. } => {
+        Index { base, indices } => {
             scan_expr(base, saw_try, saw_ret_val);
-            scan_expr(idx, saw_try, saw_ret_val);
+            for idx in indices {
+                scan_expr(idx, saw_try, saw_ret_val);
+            }
         }
         Assign { target, value, .. } => {
             scan_place(target, saw_try, saw_ret_val);
@@ -1105,9 +1118,11 @@ fn scan_place(p: &crate::ast::Place, saw_try: &mut bool, saw_ret_val: &mut bool)
         crate::ast::Place::Field { base, .. } | crate::ast::Place::Deref { inner: base, .. } => {
             scan_place(base, saw_try, saw_ret_val)
         }
-        crate::ast::Place::Index { base, idx, .. } => {
+        crate::ast::Place::Index { base, indices, .. } => {
             scan_place(base, saw_try, saw_ret_val);
-            scan_expr(idx, saw_try, saw_ret_val);
+            for idx in indices {
+                scan_expr(idx, saw_try, saw_ret_val);
+            }
         }
     }
 }
@@ -1230,9 +1245,11 @@ fn renumber_place(p: &mut crate::ast::Place, next: &mut crate::ast::NodeId) {
     match p {
         Var(_, _) => {}
         Field { base, .. } | Deref { inner: base, .. } => renumber_place(base, next),
-        Index { base, idx, .. } => {
+        Index { base, indices, .. } => {
             renumber_place(base, next);
-            renumber_expr(idx, next);
+            for idx in indices {
+                renumber_expr(idx, next);
+            }
         }
     }
 }
@@ -1278,9 +1295,11 @@ fn renumber_expr(e: &mut crate::ast::Expr, next: &mut crate::ast::NodeId) {
         | AddrOf { expr, .. }
         | Field { base: expr, .. }
         | OptField { base: expr, .. } => renumber_expr(expr, next),
-        Index { base, idx } => {
+        Index { base, indices } => {
             renumber_expr(base, next);
-            renumber_expr(idx, next);
+            for idx in indices {
+                renumber_expr(idx, next);
+            }
         }
         Assign { target, value, .. } => {
             renumber_place(target, next);

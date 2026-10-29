@@ -1,0 +1,4 @@
+fun main() {
+    val a = ArrayD<Float64>::zeros(vec![-1])
+    println(a.len())
+}

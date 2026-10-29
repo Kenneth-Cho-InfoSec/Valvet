@@ -1,0 +1,9 @@
+854
+[i, f, b, s, g]
+[int, float, bool, string, string]
+3
+[1, 2, 3]
+[1.5, NA, 2.5]
+[true, false, NA]
+[a, NA, c]
+[x, y, x]

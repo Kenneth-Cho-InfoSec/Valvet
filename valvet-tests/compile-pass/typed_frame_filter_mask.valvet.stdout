@@ -1,0 +1,16 @@
+[i, f, b, s, g]
+2
+[int, float, bool, string, factor]
+[1, 3]
+[1.5, 2.5]
+[true, false]
+[a, ]
+[a, a]
+[i, f, b, s, g]
+3
+[int, float, bool, string, factor]
+[1, 3, 4]
+[1.5, 2.5, 4]
+[true, false, true]
+[a, , c]
+[a, a, NA]

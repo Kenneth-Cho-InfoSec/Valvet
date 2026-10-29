@@ -1,0 +1,15 @@
+fun main() {
+    val m = mat_zeros(1, 100000);
+    match (m.svd_s()) {
+        Ok(_) -> println("ok"),
+        Err(e) -> println(e.expected),
+    }
+    match (m.svd_u()) {
+        Ok(_) -> println("ok"),
+        Err(e) -> println(e.expected),
+    }
+    match (m.svd_vt()) {
+        Ok(_) -> println("ok"),
+        Err(e) -> println(e.expected),
+    }
+}

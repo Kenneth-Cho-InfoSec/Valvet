@@ -1,0 +1,20 @@
+fun main() {
+    var a = ArrayD<Float64>::from_vec(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    println(a.rank())
+    println(a.len())
+    println(a.dim(0))
+    println(a.dim(1))
+    println(a[0, 0])
+    println(a[1, 2])
+    a[0, 1] = 20.0
+    println(a[0, 1])
+    println(a.shape())
+    println(a.strides())
+    println(a.to_vec())
+    val b = a.clone()
+    println(b[1, 2])
+    var z = ArrayD<Int64>::zeros(vec![2, 2])
+    println(z[1, 1])
+    z[0, 0] = 5
+    println(z[0, 0])
+}

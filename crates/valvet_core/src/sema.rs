@@ -5,6 +5,12 @@ use crate::diag::Diagnostic;
 use crate::source::Span;
 use crate::units::Dim;
 
+/// `--hermetic` is a compile-time policy gate: no subprocesses, environment
+/// reads, file I/O, or cwd disclosure. It is still not an OS sandbox.
+fn hermetic() -> bool {
+    std::env::var("VALVET_HERMETIC").is_ok_and(|v| v != "0" && !v.is_empty())
+}
+
 /// Symbol info for a local binding.
 #[derive(Debug, Clone)]
 struct Local {
@@ -112,6 +118,11 @@ pub fn is_copy_ty(
         Ty::Generic { base, .. } if base == "Mat" => false,
         // `Factor` owns level/code buffers (see layout in codegen).
         Ty::Generic { base, .. } if base == "Factor" => false,
+        // `StringIndex` owns key and bucket buffers (see layout in codegen).
+        Ty::Generic { base, .. } if base == "StringIndex" => false,
+        // `ArrayD` and `Array<T, N>` own their data buffers (see layout in
+        // codegen).
+        Ty::Generic { base, .. } if base == "ArrayD" || array_rank(base).is_some() => false,
         // Shared references are Copy; exclusive ones move.
         Ty::Reference { mutable, .. } => !mutable,
         Ty::Generic { args, .. } => args.iter().all(|a| is_copy_ty(a, structs, enums)),
@@ -405,6 +416,17 @@ fn is_builtin_type_name(name: &str) -> bool {
             | "Rng"
             | "Mat"
             | "Factor"
+            | "StringIndex"
+            | "ArrayD"
+            | "Array"
+            | "Array1"
+            | "Array2"
+            | "Array3"
+            | "Array4"
+            | "Array5"
+            | "Array6"
+            | "Array7"
+            | "Array8"
     )
 }
 
@@ -475,8 +497,8 @@ fn expr_tree_has_return(e: &Expr) -> bool {
         | ExprKind::Field { base: expr, .. }
         | ExprKind::OptField { base: expr, .. }
         | ExprKind::Try { expr } => expr_tree_has_return(expr),
-        ExprKind::Index { base, idx, .. } => {
-            expr_tree_has_return(base) || expr_tree_has_return(idx)
+        ExprKind::Index { base, indices } => {
+            expr_tree_has_return(base) || indices.iter().any(expr_tree_has_return)
         }
         ExprKind::Assign { value, .. } => expr_tree_has_return(value),
         ExprKind::If {
@@ -555,6 +577,131 @@ impl Cx {
             Place::Field { base, .. } => Self::place_has_index(base),
             Place::Deref { inner, .. } => Self::place_has_index(inner),
             Place::Var(_, _) => false,
+        }
+    }
+
+    /// Type-check one indexing operation and return the element type.
+    /// Shared by expression reads and assignment places so `v[i]`, `m[i, j]`,
+    /// arity diagnostics, and index-type diagnostics cannot diverge.
+    fn check_index_operands(&mut self, span: Span, bt: &Ty, indices: &[Expr]) -> Option<Ty> {
+        // An index is never typed by the surrounding expression; clear
+        // `expected` so `w[0]` in a Float64 assignment still infers the
+        // literal index as an integer.
+        let saved_exp = self.expected.take();
+        let mut idx_tys = Vec::with_capacity(indices.len());
+        let mut idx_err = false;
+        for idx in indices {
+            let it = self.check_expr(idx);
+            if ty_has_error(&it) {
+                idx_err = true;
+            }
+            idx_tys.push(it);
+        }
+        self.expected = saved_exp;
+        if ty_has_error(bt) {
+            return None;
+        }
+        if matches!(
+            bt,
+            Ty::Generic { base, args } if base == "StringIndex" && args.is_empty()
+        ) {
+            self.err(
+                "E0401",
+                span,
+                "StringIndex cannot be indexed (use `.get(key)` or `.get_or_insert(key)`)",
+                None,
+            );
+            return None;
+        }
+        for (idx, it) in indices.iter().zip(idx_tys.iter()) {
+            if !matches!(it, Ty::Int32 | Ty::Int64) && !ty_has_error(it) {
+                self.err(
+                    "E0201",
+                    idx.span,
+                    format!("index must be Int32/Int64, found {}", it.name()),
+                    None,
+                );
+                idx_err = true;
+            }
+        }
+        if idx_err {
+            return None;
+        }
+        match bt {
+            Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
+                if indices.len() != 1 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "Vec indexing takes exactly 1 index, found {}",
+                            indices.len()
+                        ),
+                        None,
+                    );
+                    return None;
+                }
+                Some(args[0].clone())
+            }
+            Ty::Generic { base, args } if base == "Mat" && args.is_empty() => {
+                if indices.len() != 2 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "Mat indexing takes exactly 2 indices, found {}",
+                            indices.len()
+                        ),
+                        None,
+                    );
+                    return None;
+                }
+                Some(Ty::Float64)
+            }
+            Ty::Generic { base, args } if base == "ArrayD" && args.len() == 1 => {
+                if indices.is_empty() || indices.len() > 32 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "ArrayD indexing takes 1 to 32 indices, found {}",
+                            indices.len()
+                        ),
+                        None,
+                    );
+                    return None;
+                }
+                Some(args[0].clone())
+            }
+            Ty::Generic { base, args } if args.len() == 1 && array_rank(base).is_some() => {
+                let rank = array_rank(base).expect("array rank");
+                if indices.len() != rank {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!(
+                            "Array<T, N> indexing takes exactly {} indices, found {}",
+                            rank,
+                            indices.len()
+                        ),
+                        None,
+                    );
+                    return None;
+                }
+                Some(args[0].clone())
+            }
+            _ => {
+                self.err(
+                    "E0401",
+                    span,
+                    format!(
+                        "type {} cannot be indexed (use `v[i]` for Vec, `m[i, j]` for Mat, or `a[i, j, ...]` for arrays)",
+                        bt.name()
+                    ),
+                    None,
+                );
+                None
+            }
         }
     }
 
@@ -640,7 +787,11 @@ impl Cx {
                     }
                 }
             }
-            Place::Index { base, idx, span } => {
+            Place::Index {
+                base,
+                indices,
+                span,
+            } => {
                 if Self::place_has_index(base) {
                     self.err(
                         "E0201",
@@ -654,32 +805,8 @@ impl Cx {
                 if ty_has_error(&bt) {
                     return None;
                 }
-                match bt {
-                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
-                        let it = self.check_expr(idx);
-                        if !matches!(it, Ty::Int32 | Ty::Int64) && !ty_has_error(&it) {
-                            self.err(
-                                "E0201",
-                                idx.span,
-                                format!("vector index must be Int32/Int64, found {}", it.name()),
-                                None,
-                            );
-                        }
-                        Some((args[0].clone(), bmut, Dim::dimensionless()))
-                    }
-                    _ => {
-                        self.err(
-                            "E0401",
-                            *span,
-                            format!(
-                                "type {} cannot be indexed (only `Vec` supports `v[i]`)",
-                                bt.name()
-                            ),
-                            None,
-                        );
-                        None
-                    }
-                }
+                let et = self.check_index_operands(*span, &bt, indices)?;
+                Some((et, bmut, Dim::dimensionless()))
             }
         }
     }
@@ -1040,12 +1167,51 @@ impl Cx {
                 || base == "Rng"
                 || base == "Mat"
                 || base == "Factor"
+                || base == "StringIndex"
+                || base == "ArrayD"
+                || array_rank(base).is_some()
             {
                 for a in args {
                     self.record_ty(a);
                 }
                 let key = Self::inst_key(base, args);
                 self.generic_insts.insert(key, (base.clone(), args.clone()));
+                // `StringIndex` helpers use `Vec<String>` for `keys` and
+                // `Option<Int64>` for `get`, so both layouts must exist even
+                // when only the index type appears in the program.
+                if base == "StringIndex" && args.is_empty() {
+                    self.record_vec_inst(&Ty::Str);
+                    self.record_ty(&Ty::Generic {
+                        base: "Option".to_string(),
+                        args: vec![Ty::Int64],
+                    });
+                }
+                // The Mat kernel block references the `Vec<Float64>` layout
+                // for `outer`, `diag`, `col`, and several Result-gated
+                // kernels. Record it with every Mat instantiation so a
+                // Mat-only program still has complete C types.
+                if base == "Mat" && args.is_empty() {
+                    self.record_ty(&Ty::Generic {
+                        base: "Vec".to_string(),
+                        args: vec![Ty::Float64],
+                    });
+                }
+                // `ArrayD<T>` metadata queries return `Vec<Int64>`, and all
+                // constructors take that shape type. Record it for every
+                // ArrayD instantiation so a signature-only use still emits a
+                // complete layout.
+                if base == "ArrayD" && args.len() == 1 {
+                    self.record_vec_inst(&Ty::Int64);
+                }
+                // Compile-time-rank arrays reuse the `ArrayD` layout and
+                // helpers; record the runtime type so its layout and kernels
+                // are emitted before the rank-specific wrappers.
+                if array_rank(base).is_some() && args.len() == 1 {
+                    self.record_ty(&Ty::Generic {
+                        base: "ArrayD".to_string(),
+                        args: args.clone(),
+                    });
+                }
                 if base == "Vec" && args.len() == 1 {
                     let opt = Ty::Generic {
                         base: "Option".to_string(),
@@ -1127,7 +1293,17 @@ impl Cx {
                     | ("Missing", 1)
                     | ("Rng", 0)
                     | ("Mat", 0)
-                    | ("Factor", 0) => {
+                    | ("Factor", 0)
+                    | ("StringIndex", 0)
+                    | ("ArrayD", 1) => {
+                        let t = Ty::Generic {
+                            base: base.clone(),
+                            args: resolved,
+                        };
+                        self.record_ty(&t);
+                        t
+                    }
+                    _ if array_rank(base).is_some() && resolved.len() == 1 => {
                         let t = Ty::Generic {
                             base: base.clone(),
                             args: resolved,
@@ -1140,7 +1316,7 @@ impl Cx {
                             "E0201",
                             span,
                             format!("unknown generic type `{}`, or wrong arity", base),
-                            Some("only `Option<T>`, `Result<T, E>`, `Vec<T>`, `Missing<T>`, `Rng`, `Mat` and `Factor` are supported".into()),
+                            Some("only `Option<T>`, `Result<T, E>`, `Vec<T>`, `Missing<T>`, `Rng`, `Mat`, `Factor`, `StringIndex`, `ArrayD<T>` and `Array<T, N>` are supported".into()),
                         );
                         Ty::Error
                     }
@@ -1149,7 +1325,7 @@ impl Cx {
             Ty::Named(n) => match n.as_str() {
                 // Bare `Mat`/`Rng` annotations (parser only makes Generics
                 // with `<...>`; these arity-0 builtins never take args).
-                "Mat" | "Rng" | "Factor" => {
+                "Mat" | "Rng" | "Factor" | "StringIndex" => {
                     let t = Ty::Generic {
                         base: n.clone(),
                         args: vec![],
@@ -1165,7 +1341,7 @@ impl Cx {
                             "E0201",
                             span,
                             format!("unknown type `{}`", n),
-                            Some("expected Int32, Int64, Float64, Bool, String, or a declared struct/enum".into()),
+                            Some("expected Int32, Int64, Float64, Bool, String, StringIndex, or a declared struct/enum".into()),
                         );
                         Ty::Error
                     }
@@ -1463,8 +1639,11 @@ impl Cx {
             ExprKind::Binary { lhs, rhs, .. } => {
                 self.contains_local_borrow(lhs, params) || self.contains_local_borrow(rhs, params)
             }
-            ExprKind::Index { base, idx } => {
-                self.contains_local_borrow(base, params) || self.contains_local_borrow(idx, params)
+            ExprKind::Index { base, indices } => {
+                self.contains_local_borrow(base, params)
+                    || indices
+                        .iter()
+                        .any(|idx| self.contains_local_borrow(idx, params))
             }
             ExprKind::Unary { expr, .. } => self.contains_local_borrow(expr, params),
             ExprKind::Assign { value, .. } => self.contains_local_borrow(value, params),
@@ -2049,16 +2228,29 @@ impl Cx {
                 // Discarded non-unit values are allowed, EXCEPT method results:
                 // `v.push(x);` without assignment would silently lose the update.
                 if t != Ty::Unit && !ty_has_error(&t) {
-                    if let ExprKind::Method { method, .. } = &expr.kind {
-                        self.err(
-                            "E0201",
-                            expr.span,
-                            format!(
-                                "`{}` returns a value; assign it (e.g. `v = v.{}(...)`)",
-                                method, method
-                            ),
-                            None,
-                        );
+                    if let ExprKind::Method {
+                        receiver, method, ..
+                    } = &expr.kind
+                    {
+                        // `keys` and `clone` are pure snapshots. Discarding
+                        // them is harmless, and codegen still materializes
+                        // them as frame-owned temporaries.
+                        let discardable = matches!(
+                            self.types.get(&receiver.id),
+                            Some(Ty::Generic { base, args })
+                                if base == "StringIndex" && args.is_empty()
+                        ) && (method == "keys" || method == "clone");
+                        if !discardable {
+                            self.err(
+                                "E0201",
+                                expr.span,
+                                format!(
+                                    "`{}` returns a value; assign it (e.g. `v = v.{}(...)`)",
+                                    method, method
+                                ),
+                                None,
+                            );
+                        }
                     }
                 }
                 self.types.insert(*id, Ty::Unit);
@@ -2441,12 +2633,235 @@ impl Cx {
                 let method = &call.method;
                 let method_span = &call.method_span;
                 let args = &call.args;
-                if base != "Vec" {
+                if base == "StringIndex" {
+                    let t = Ty::Generic {
+                        base: "StringIndex".to_string(),
+                        args: vec![],
+                    };
+                    if !type_args.is_empty() {
+                        self.err(
+                            "E0201",
+                            *base_span,
+                            format!(
+                                "`StringIndex` takes no type arguments, found {}",
+                                type_args.len()
+                            ),
+                            None,
+                        );
+                        return Ty::Error;
+                    }
+                    if method != "new" {
+                        self.err(
+                            "E0401",
+                            *method_span,
+                            format!("unknown associated function `{}`", method),
+                            Some("available: new".into()),
+                        );
+                        return Ty::Error;
+                    }
+                    if !args.is_empty() {
+                        self.err(
+                            "E0201",
+                            *method_span,
+                            format!("`new` takes no arguments, found {}", args.len()),
+                            None,
+                        );
+                        return Ty::Error;
+                    }
+                    self.record_ty(&t);
+                    return self.insert(e.id, t);
+                } else if base == "ArrayD" || array_rank(base).is_some() {
+                    if type_args.len() != 1 {
+                        self.err(
+                            "E0201",
+                            *base_span,
+                            format!(
+                                "array type needs exactly one type argument, found {}",
+                                type_args.len()
+                            ),
+                            None,
+                        );
+                        return Ty::Error;
+                    }
+                    let elem = self.resolve_ty(&type_args[0], *base_span);
+                    if ty_has_error(&elem) {
+                        return Ty::Error;
+                    }
+                    let shape_ty = Ty::Generic {
+                        base: "Vec".to_string(),
+                        args: vec![Ty::Int64],
+                    };
+                    self.record_vec_inst(&Ty::Int64);
+                    let array_ty = Ty::Generic {
+                        base: base.clone(),
+                        args: vec![elem.clone()],
+                    };
+                    let t = match method.as_str() {
+                        "from_vec" => {
+                            if args.len() != 2 {
+                                self.err(
+                                    "E0201",
+                                    *method_span,
+                                    format!(
+                                        "`from_vec` takes exactly 2 arguments, found {}",
+                                        args.len()
+                                    ),
+                                    None,
+                                );
+                                self.record_ty(&array_ty);
+                                return array_ty;
+                            }
+                            let saved = self.expected.replace(shape_ty.clone());
+                            let st = self.check_expr(&args[0]);
+                            self.expected = saved;
+                            if st != shape_ty && !ty_has_error(&st) {
+                                self.err(
+                                    "E0201",
+                                    args[0].span,
+                                    format!(
+                                        "`from_vec` expects {} for the shape, found {}",
+                                        shape_ty.name(),
+                                        st.name()
+                                    ),
+                                    None,
+                                );
+                            }
+                            let data_ty = Ty::Generic {
+                                base: "Vec".to_string(),
+                                args: vec![elem.clone()],
+                            };
+                            self.record_vec_inst(&elem);
+                            let saved = self.expected.replace(data_ty.clone());
+                            let dt = self.check_expr(&args[1]);
+                            self.expected = saved;
+                            if dt != data_ty && !ty_has_error(&dt) {
+                                self.err(
+                                    "E0201",
+                                    args[1].span,
+                                    format!(
+                                        "`from_vec` expects {} for the data, found {}",
+                                        data_ty.name(),
+                                        dt.name()
+                                    ),
+                                    None,
+                                );
+                            }
+                            self.record_ty(&array_ty);
+                            array_ty
+                        }
+                        "filled" => {
+                            if args.len() != 2 {
+                                self.err(
+                                    "E0201",
+                                    *method_span,
+                                    format!(
+                                        "`filled` takes exactly 2 arguments, found {}",
+                                        args.len()
+                                    ),
+                                    None,
+                                );
+                                self.record_ty(&array_ty);
+                                return array_ty;
+                            }
+                            let saved = self.expected.replace(shape_ty.clone());
+                            let st = self.check_expr(&args[0]);
+                            self.expected = saved;
+                            if st != shape_ty && !ty_has_error(&st) {
+                                self.err(
+                                    "E0201",
+                                    args[0].span,
+                                    format!(
+                                        "`filled` expects {} for the shape, found {}",
+                                        shape_ty.name(),
+                                        st.name()
+                                    ),
+                                    None,
+                                );
+                            }
+                            let saved = self.expected.replace(elem.clone());
+                            let vt = self.check_expr(&args[1]);
+                            self.expected = saved;
+                            if vt != elem && !ty_has_error(&vt) && !ty_has_error(&elem) {
+                                self.err(
+                                    "E0201",
+                                    args[1].span,
+                                    format!(
+                                        "`filled` expects {} for the value, found {}",
+                                        elem.name(),
+                                        vt.name()
+                                    ),
+                                    None,
+                                );
+                            }
+                            self.record_ty(&array_ty);
+                            array_ty
+                        }
+                        "zeros" => {
+                            if args.len() != 1 {
+                                self.err(
+                                    "E0201",
+                                    *method_span,
+                                    format!(
+                                        "`zeros` takes exactly 1 argument, found {}",
+                                        args.len()
+                                    ),
+                                    None,
+                                );
+                                self.record_ty(&array_ty);
+                                return array_ty;
+                            }
+                            let saved = self.expected.replace(shape_ty.clone());
+                            let st = self.check_expr(&args[0]);
+                            self.expected = saved;
+                            if st != shape_ty && !ty_has_error(&st) {
+                                self.err(
+                                    "E0201",
+                                    args[0].span,
+                                    format!(
+                                        "`zeros` expects {} for the shape, found {}",
+                                        shape_ty.name(),
+                                        st.name()
+                                    ),
+                                    None,
+                                );
+                            }
+                            if !matches!(elem, Ty::Float64 | Ty::Int32 | Ty::Int64)
+                                && !ty_has_error(&elem)
+                            {
+                                self.err(
+                                    "E0201",
+                                    *base_span,
+                                    format!(
+                                        "`zeros` needs a numeric element type, found {}",
+                                        elem.name()
+                                    ),
+                                    None,
+                                );
+                            }
+                            self.record_ty(&array_ty);
+                            array_ty
+                        }
+                        _ => {
+                            self.err(
+                                "E0401",
+                                *method_span,
+                                format!("unknown associated function `{}`", method),
+                                Some("available: from_vec, filled, zeros".into()),
+                            );
+                            Ty::Error
+                        }
+                    };
+                    self.insert(e.id, t.clone());
+                    return t;
+                } else if base != "Vec" {
                     self.err(
                         "E0401",
                         *base_span,
                         format!("associated call `{}` is not supported", base),
-                        Some("only `Vec<T>::with_capacity(n)` is available".into()),
+                        Some(
+                            "only `Vec<T>::with_capacity(n)` and array `from_vec`/`filled`/`zeros` are available"
+                                .into(),
+                        ),
                     );
                     return Ty::Error;
                 }
@@ -3075,7 +3490,7 @@ impl Cx {
                         // Qualified variants (`Missing::Missing`) read the
                         // ambient expectation: seed it when known.
                         let saved_exp = self.expected.clone();
-                        if idx > 0 && self.expected.is_none() {
+                        if exp_elem.is_some() || (idx > 0 && self.expected.is_none()) {
                             self.expected = seed.clone();
                         }
                         let t = match self.ctor_use(el) {
@@ -3172,8 +3587,28 @@ impl Cx {
                         self.record_ty(&t);
                         t
                     }
+                    Ty::Generic { base, args }
+                        if args.len() == 1 && (base == "ArrayD" || array_rank(&base).is_some()) =>
+                    {
+                        let elem = args[0].clone();
+                        let t = self.check_arrayd_method(
+                            e.span,
+                            &base,
+                            &elem,
+                            method,
+                            *method_span,
+                            call_args,
+                        );
+                        self.record_ty(&t);
+                        t
+                    }
                     Ty::Generic { base, args } if base == "Factor" && args.is_empty() => {
                         let t = self.check_factor_method(e.span, method, *method_span, call_args);
+                        self.record_ty(&t);
+                        t
+                    }
+                    Ty::Generic { base, args } if base == "StringIndex" && args.is_empty() => {
+                        let t = self.check_string_index_method(method, *method_span, call_args);
                         self.record_ty(&t);
                         t
                     }
@@ -3210,7 +3645,7 @@ impl Cx {
                                     "E0401",
                                     *method_span,
                                     format!(
-                                        "type {} has no methods (only `Vec`, `Mat`, `Factor`, `String` and `Rng` have methods)",
+                                        "type {} has no methods (only `Vec`, `Mat`, `ArrayD`, `Array`, `Factor`, `StringIndex`, `String` and `Rng` have methods)",
                                         rt.name()
                                     ),
                                     None,
@@ -3470,43 +3905,14 @@ impl Cx {
                     }
                 }
             }
-            ExprKind::Index { base, idx } => {
+            ExprKind::Index { base, indices } => {
                 let bt = self.check_expr(base);
-                // An index is never typed by the surrounding expression;
-                // clear `expected` so `w[0]` in a Float64 assignment still
-                // infers the literal index as an integer.
-                let saved_exp = self.expected.take();
-                let it = self.check_expr(idx);
-                self.expected = saved_exp;
-                if ty_has_error(&bt) || ty_has_error(&it) {
-                    return Ty::Error;
-                }
-                if !matches!(it, Ty::Int32 | Ty::Int64) {
-                    self.err(
-                        "E0201",
-                        idx.span,
-                        format!("vector index must be Int32/Int64, found {}", it.name()),
-                        None,
-                    );
-                }
-                match bt {
-                    Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => {
-                        let t = args[0].clone();
+                match self.check_index_operands(e.span, &bt, indices) {
+                    Some(t) => {
                         self.record_ty(&t);
                         t
                     }
-                    _ => {
-                        self.err(
-                            "E0401",
-                            e.span,
-                            format!(
-                                "type {} cannot be indexed (only `Vec` supports `v[i]`)",
-                                bt.name()
-                            ),
-                            None,
-                        );
-                        Ty::Error
-                    }
+                    None => Ty::Error,
                 }
             }
             ExprKind::AddrOf { expr, mutable, .. } => {
@@ -5343,6 +5749,104 @@ impl Cx {
         }
     }
 
+    /// Array methods, shared by `ArrayD<T>` and `Array<T, N>`. Receiver
+    /// borrows; shape queries return owned `Vec<Int64>` snapshots, and
+    /// `to_vec` clones the row-major element buffer so the array stays
+    /// intact.
+    fn check_arrayd_method(
+        &mut self,
+        span: Span,
+        base: &str,
+        elem: &Ty,
+        method: &str,
+        method_span: Span,
+        args: &[Expr],
+    ) -> Ty {
+        let vec_of = |t: Ty| Ty::Generic {
+            base: "Vec".to_string(),
+            args: vec![t],
+        };
+        let array_of = |t: Ty| Ty::Generic {
+            base: base.to_string(),
+            args: vec![t],
+        };
+        match method {
+            "rank" | "len" => {
+                if !args.is_empty() {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`{}` takes no arguments", method),
+                        None,
+                    );
+                }
+                Ty::Int64
+            }
+            "dim" => {
+                if args.len() != 1 {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`dim` takes exactly 1 argument, found {}", args.len()),
+                        None,
+                    );
+                    return Ty::Int64;
+                }
+                let saved = self.expected.take();
+                let at = self.check_expr(&args[0]);
+                self.expected = saved;
+                if !matches!(at, Ty::Int32 | Ty::Int64) && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`dim` expects an integer axis, found {}", at.name()),
+                        None,
+                    );
+                }
+                Ty::Int64
+            }
+            "shape" | "strides" => {
+                if !args.is_empty() {
+                    self.err(
+                        "E0201",
+                        span,
+                        format!("`{}` takes no arguments", method),
+                        None,
+                    );
+                }
+                self.record_vec_inst(&Ty::Int64);
+                vec_of(Ty::Int64)
+            }
+            "to_vec" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`to_vec` takes no arguments", None);
+                }
+                self.record_vec_inst(elem);
+                vec_of(elem.clone())
+            }
+            "clone" => {
+                if !args.is_empty() {
+                    self.err("E0201", span, "`clone` takes no arguments", None);
+                }
+                let t = array_of(elem.clone());
+                self.record_ty(&t);
+                t
+            }
+            _ => {
+                self.err(
+                    "E0401",
+                    method_span,
+                    format!(
+                        "unknown method `{}` (available on arrays: rank, len, dim, shape, strides, to_vec, clone)",
+                        method
+                    ),
+                    None,
+                );
+                Ty::Error
+            }
+        }
+    }
+
     /// `Mat` methods (M1): dense Float64 matrices. Receiver borrows;
     /// fallible kernels report `Result<_, ShapeError>` like the numeric
     /// `Vec` kernels. `det` yields NaN on singular input (total, like
@@ -6117,6 +6621,113 @@ impl Cx {
         }
     }
 
+    /// `StringIndex` methods: length, membership, lookup, insertion, key
+    /// snapshot, and deep clone. Keys are `String` and positions are `Int64`.
+    fn check_string_index_method(&mut self, method: &str, method_span: Span, args: &[Expr]) -> Ty {
+        let idx_ty = || Ty::Generic {
+            base: "StringIndex".to_string(),
+            args: vec![],
+        };
+        let str_vec = || Ty::Generic {
+            base: "Vec".to_string(),
+            args: vec![Ty::Str],
+        };
+        let opt_i64 = || Ty::Generic {
+            base: "Option".to_string(),
+            args: vec![Ty::Int64],
+        };
+        match method {
+            "len" => {
+                if !args.is_empty() {
+                    self.err("E0201", method_span, "`len` takes no arguments", None);
+                }
+                Ty::Int64
+            }
+            "contains" => {
+                if args.len() != 1 {
+                    self.err(
+                        "E0201",
+                        method_span,
+                        "`contains` takes exactly 1 argument",
+                        None,
+                    );
+                    return Ty::Bool;
+                }
+                let at = self.check_expr(&args[0]);
+                if at != Ty::Str && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`contains` expects a String key, found {}", at.name()),
+                        None,
+                    );
+                }
+                Ty::Bool
+            }
+            "get" => {
+                if args.len() != 1 {
+                    self.err("E0201", method_span, "`get` takes exactly 1 argument", None);
+                    return opt_i64();
+                }
+                let at = self.check_expr(&args[0]);
+                if at != Ty::Str && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`get` expects a String key, found {}", at.name()),
+                        None,
+                    );
+                }
+                opt_i64()
+            }
+            "get_or_insert" => {
+                if args.len() != 1 {
+                    self.err(
+                        "E0201",
+                        method_span,
+                        "`get_or_insert` takes exactly 1 argument",
+                        None,
+                    );
+                    return Ty::Int64;
+                }
+                let at = self.check_expr(&args[0]);
+                if at != Ty::Str && !ty_has_error(&at) {
+                    self.err(
+                        "E0201",
+                        args[0].span,
+                        format!("`get_or_insert` expects a String key, found {}", at.name()),
+                        None,
+                    );
+                }
+                Ty::Int64
+            }
+            "keys" => {
+                if !args.is_empty() {
+                    self.err("E0201", method_span, "`keys` takes no arguments", None);
+                }
+                str_vec()
+            }
+            "clone" => {
+                if !args.is_empty() {
+                    self.err("E0201", method_span, "`clone` takes no arguments", None);
+                }
+                idx_ty()
+            }
+            _ => {
+                self.err(
+                    "E0401",
+                    method_span,
+                    format!(
+                        "unknown method `{}` (available on StringIndex: len, contains, get, get_or_insert, keys, clone)",
+                        method
+                    ),
+                    None,
+                );
+                Ty::Error
+            }
+        }
+    }
+
     /// `String` methods (J1): splitting, trimming, and total parsing.
     /// Parsing yields `Option` (never traps): `None` on any malformed input.
     fn check_str_method(
@@ -6341,8 +6952,20 @@ impl Cx {
             base: "Result".to_string(),
             args: vec![rows_t(), Ty::Str],
         };
+        if (name == "read_file" || name == "read_file_limit") && hermetic() {
+            self.err(
+                "E0401",
+                span,
+                format!(
+                    "`{}` is denied in hermetic runs (filesystem is an input)",
+                    name
+                ),
+                Some("drop `--hermetic` or pass data through a parameter".into()),
+            );
+            return str_res();
+        }
         let want = match name {
-            "read_file" | "csv_bad_rows" | "json_rows" => 1,
+            "read_file" | "csv_bad_rows" | "json_rows" | "bytes_to_string" => 1,
             _ => 2,
         };
         if args.len() != want {
@@ -6388,6 +7011,20 @@ impl Cx {
         let t = match name {
             "read_file" => {
                 expect(self, 0, &Ty::Str, "path");
+                str_res()
+            }
+            "read_file_limit" => {
+                expect(self, 0, &Ty::Str, "path");
+                expect(self, 1, &Ty::Int64, "max bytes");
+                str_res()
+            }
+            "bytes_to_string" => {
+                let vi = Ty::Generic {
+                    base: "Vec".to_string(),
+                    args: vec![Ty::Int64],
+                };
+                expect(self, 0, &vi, "Vec<Int64> bytes");
+                self.record_ty(&vi);
                 str_res()
             }
             "csv_rows" => {
@@ -6551,7 +7188,7 @@ impl Cx {
         // every mode except hermetic runs. `sys_getenv` maps missing
         // names to `None`.
         if name == "sys_getenv" {
-            if std::env::var("VALVET_HERMETIC").is_ok_and(|v| v != "0" && !v.is_empty()) {
+            if hermetic() {
                 self.err(
                     "E0401",
                     span,
@@ -6589,6 +7226,15 @@ impl Cx {
             return ot;
         }
         if name == "sys_cwd" {
+            if hermetic() {
+                self.err(
+                    "E0401",
+                    span,
+                    "`sys_cwd` is denied in hermetic runs (host metadata is an input)",
+                    Some("drop `--hermetic` or thread the path as a parameter".into()),
+                );
+                return Ty::Str;
+            }
             if !args.is_empty() {
                 self.err(
                     "E0201",
@@ -6666,6 +7312,8 @@ impl Cx {
                 }
             };
         } else if name == "read_file"
+            || name == "read_file_limit"
+            || name == "bytes_to_string"
             || name == "csv_rows"
             || name == "csv_bad_rows"
             || name == "json_rows"
@@ -7178,6 +7826,15 @@ impl Cx {
         } else if name == "write_file" {
             // J6: `write_file(path, content): Result<Int64, String>`
             // (bytes written).
+            if hermetic() {
+                self.err(
+                    "E0401",
+                    span,
+                    "`write_file` is denied in hermetic runs (filesystem is an input)",
+                    Some("drop `--hermetic` or return the bytes to the caller".into()),
+                );
+                return self.io_result_int();
+            }
             if args.len() != 2 {
                 self.err(
                     "E0201",

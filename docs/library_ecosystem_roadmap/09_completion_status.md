@@ -13,6 +13,7 @@ are not present, so port migration and oracle verification remain external.
 | FND-03 | Complete | [FND-03](#fnd-03) |
 | COL-01 | Complete | [COL-01](#col-01) |
 | COL-02 | Complete with a documented fixture deviation | [COL-02](#col-02) |
+| COL-03 | Complete | [COL-03](#col-03) |
 | NUM-01 | Complete | [NUM-01](#num-01) |
 | NUM-02 | Complete | [NUM-02](#num-02) |
 | IO-01 | Complete | [IO-01](#io-01) |
@@ -25,7 +26,9 @@ are not present, so port migration and oracle verification remain external.
 | FND-04 | Not started | Depends on ARR-02 for tuple returns |
 | ARR-01 | Not started | Large language and ABI task |
 | ARR-02 | Not started | Large language and ABI task |
-| MAT-01 | Not started | Depends on a reviewed `ShapeError` layout change |
+| ARR-03 | Complete | [ARR-03](#arr-03) |
+| ARR-04 | Complete | [ARR-04](#arr-04) |
+| MAT-01 | Complete | [MAT-01](#mat-01) |
 | LINALG-01 | Complete | [LINALG-01](#linalg-01) |
 | PERF-02 | Not started | Depends on COL-01 and COL-02 |
 | PERF-03 | Not started | Large borrow and codegen task |
@@ -96,6 +99,18 @@ are not present, so port migration and oracle verification remain external.
 | Tests executed | `vec_capacity.valvet`; `vec_owned_ops.valvet`; `vec_owned_resize.valvet` compile-fail; generated-C kernel assertions; manual short-destination run; ASan/UBSan with leak detection; full debug and release suites. |
 | Issues found | The roadmap asked for `compile-fail/vec_copy_from_short.valvet` and `.error`, but a short destination is a runtime condition, not a static one. The implementation aborts with `index out of bounds` and exit code 1. The compile-fail slot is used for `vec_owned_resize.valvet`, which rejects owned `resize`. Integer counts accept `Int32` and `Int64`, a superset of the documented `Int64` signature. |
 | Completion evidence | `vec_capacity` prints `0, 3, 3, 4, 6, 2.5, 2.5, 12, 7, 1, 6, 12`. `vec_owned_ops` prints `x, y, z` and is ASan clean. Short `copy_from` exits 1 with `index out of bounds`. Generated C contains the five new kernels and one `with_capacity` allocation. |
+
+### COL-03
+
+| Field | Value |
+| --- | --- |
+| Status | Complete |
+| Files changed | `crates/valvet_core/src/ast.rs`; `crates/valvet_core/src/parser.rs`; `crates/valvet_core/src/sema.rs`; `crates/valvet_core/src/ownership.rs`; `crates/valvet_core/src/codegen.rs`; `crates/valvet_core/tests/front_end.rs`; `docs/implementation/DICT_SPEC.md`; `docs/implementation/ARCHITECTURE.md`; `README.md`; `valvet-tests/compile-pass/string_index_basic.valvet` and `.stdout`; `string_index_group.valvet` and `.stdout`; `string_index_growth.valvet` and `.stdout`; `string_index_owned.valvet` and `.stdout`; `string_index_move.valvet` and `.stdout`; `string_index_discard.valvet` and `.stdout`; `string_index_containers.valvet` and `.stdout`; `valvet-tests/compile-fail/string_index_unknown_method.valvet`, `string_index_key_type.valvet`, `string_index_not_indexable.valvet`, `string_index_use_after_move.valvet`, `string_index_print.valvet`, `string_index_constructor_arity.valvet`, and `string_index_method_arity.valvet` with `.error` sidecars |
+| Implementation summary | Added `StringIndex`, an ordered string-keyed index with `Int64` positions. The API is `StringIndex::new()`, `len`, `contains`, `get -> Option<Int64>`, `get_or_insert -> Int64`, `keys -> Vec<String>`, and deep `clone`. The C layout is `typedef struct { VStr *keys; uint64_t *hashes; int64_t len; int64_t cap; int64_t *buckets; int64_t bucket_cap; } VStringIndex_;`. Keys are insertion-ordered. Hashes are cached FNV-1a. Buckets use open addressing with power-of-two capacity and a load factor of at most 0.5. `get_or_insert` borrows its key and clones only on insertion. The type is move-only; moved-from values are poisoned. Drop and clone work directly and inside structs, enums, `Option`, `Vec`, and `ArrayD`. `keys` and `clone` are the only method results that may be discarded as expression statements. The type is not a general `Map<K,V>`. Deletion, non-string keys, map literals, `idx[key]`, printing the index itself, and join multimaps remain out of scope. |
+| Sources verified | `docs/implementation/DICT_SPEC.md`; the dictionary/map audit at `/tmp/opencode/valvet-dict-map-audit.md`; existing `Vec`, `ArrayD`, `Factor`, and owned-type layout, drop, clone, and poison conventions in `crates/valvet_core/src/codegen.rs`. |
+| Tests executed | Nine `string_index_*` front-end tests; seven compile-pass fixtures; seven compile-fail fixtures; full debug and release fixture suites; `valvet test --doc`; `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo test --workspace`; ASan/UBSan/LSan on all seven compile-pass fixtures with byte-identical output. |
+| Issues found | The associated-call branch originally returned before inserting the expression type, so `return StringIndex::new();` lowered as a `Unit` return. The success path now uses `self.insert(e.id, t)`. Discarding `keys()` or `clone()` needed a narrow `Stmt::Expr` exception; all other method results still report `E0201`. The stdlib has not migrated to `StringIndex`, so no measured speedup is claimed. Joins need a separate multimap design. |
+| Completion evidence | `string_index_basic` prints `0`, `false`, `None`, positions `0` and `1`, duplicate `0`, `[a, b]`, and the clone length `2`. `string_index_group` prints `[east, west, north]` and `[20, 20, 40]`. `string_index_growth` inserts 20 keys across rehashes, preserves positions `0` and `19`, and keeps first-appearance order `k0` through `k19`. `string_index_owned` proves the keys snapshot and clone are independent. `string_index_move` covers parameter, struct, and return moves plus a borrowed reference receiver through explicit `(*idx)`. `string_index_containers` covers `Vec`, `ArrayD`, `Option`, enum payloads, and a struct field cloned through `Vec<Indexed>`. The discard fixture, including discarded results on temporary `StringIndex` receivers, is leak-free under ASan. Generated C contains the exact layout, `vsi_*`, `v_drop_StringIndex_`, and `v_clone_StringIndex_`, with no `<error>` text and no unresolved helper names. |
 
 ### NUM-01
 
@@ -207,6 +222,42 @@ are not present, so port migration and oracle verification remain external.
 | Issues found | Nested temporary borrows are not accepted, so each intermediate is bound with `val`. Port 09 source is external. |
 | Completion evidence | Fixture prints `-4, -0, 4.5, 0` for a real system and `1, -1, 1.5, 1.5` for a complex diagonal system. |
 
+### ARR-03
+
+| Field | Value |
+| --- | --- |
+| Status | Complete |
+| Files changed | `crates/valvet_core/src/parser.rs`; `crates/valvet_core/src/sema.rs`; `crates/valvet_core/src/ownership.rs`; `crates/valvet_core/src/codegen.rs`; `crates/valvet_core/tests/front_end.rs`; `docs/implementation/ARCHITECTURE.md`; `valvet-tests/compile-pass/arrayd_basic.valvet` and `.stdout`; `arrayd_strings.valvet` and `.stdout`; `arrayd_index_oob.valvet` and `.exit`; `arrayd_rank_mismatch.valvet` and `.exit`; `arrayd_bad_shape.valvet` and `.exit`; `arrayd_axis_oob.valvet` and `.exit`; `valvet-tests/compile-fail/arrayd_dim_type.valvet`, `arrayd_from_vec_type.valvet`, `arrayd_index_arity.valvet`, `arrayd_unknown_method.valvet`, `arrayd_use_after_move.valvet`, and `arrayd_zeros_type.valvet` with `.error` sidecars |
+| Implementation summary | Added `ArrayD<T>` as a runtime-rank, row-major, owning container. The C layout is `typedef struct { T *data; int64_t len; int64_t rank; int64_t shape[32]; int64_t strides[32]; } VArrayD_T;` with no VLA. `from_vec` steals the data buffer; `filled` and `zeros` allocate a new one. Shape validation checks rank 1 to 32, non-negative dimensions, product and stride overflow, and data length. Methods are `rank`, `len`, `dim`, `shape`, `strides`, `to_vec`, and deep `clone`. Indexing checks the runtime rank and each axis, then uses stored strides. `Vec<T>` stays 1D and `Mat` stays 2D. Views, slicing, `select`, stride-0 broadcasting, and borrowed array views are deferred. |
+| Sources verified | ARR-03 row in `06_actionable_task_list.md`; MAT-01 index-list lowering; existing `Vec` layout and drop/clone conventions; `mdspan` row-major stride model. |
+| Tests executed | `arrayd_basic` and `arrayd_strings`; four abort fixtures; six compile-fail fixtures; seven `arrayd_*` front-end tests in `crates/valvet_core/tests/front_end.rs`; full debug and release fixture suites; ASan/UBSan/LSan on the string and numeric fixtures; `cargo fmt`; `cargo clippy`. |
+| Issues found | Invalid shapes and out-of-range access abort through `fprintf` plus `abort()` instead of returning `ShapeError`; this keeps the existing `Mat` and `Vec` trap behavior. `from_vec` takes ownership of the data vector, so use-after-move is `E0301`. A shape-only `ArrayD<T>` use still records `Vec<Int64>` for its metadata layout; `from_vec` and `to_vec` helpers are emitted only when `Vec<T>` is recorded. |
+| Completion evidence | `arrayd_basic` prints `2, 6, 2, 3, 1, 6, 20, [2, 3], [3, 1], [1, 20, 3, 4, 5, 6], 6, 0, 5`. `arrayd_strings` prints owned `String` reads, writes, clone, and `to_vec` output `a, d, B, B, [a, B, c, d], a, x, x, y`. The rank-mismatch fixture aborts with `array index rank mismatch`; the bad-shape fixture aborts with `negative array dimension`; the axis fixture aborts with `array axis out of bounds`; the OOB fixture aborts with `index out of bounds`. Generated C contains the fixed `shape[32]`/`strides[32]` layout, `.shape[0]`, `.strides[0]`, and the runtime rank check. |
+
+### ARR-04
+
+| Field | Value |
+| --- | --- |
+| Status | Complete |
+| Files changed | `crates/valvet_core/src/ast.rs`; `crates/valvet_core/src/parser.rs`; `crates/valvet_core/src/sema.rs`; `crates/valvet_core/src/ownership.rs`; `crates/valvet_core/src/codegen.rs`; `crates/valvet_core/tests/front_end.rs`; `docs/implementation/ARCHITECTURE.md`; `valvet-tests/compile-pass/array_fixed_basic.valvet` and `.stdout`; `array_fixed_strings.valvet` and `.stdout`; `array_fixed_shape.valvet` and `.exit`; `array_fixed_index_oob.valvet` and `.exit`; `array_fixed_rank8.valvet` and `.stdout`; `array_mat_coexist.valvet` and `.stdout`; `valvet-tests/compile-fail/array_fixed_arity.valvet`, `array_fixed_rank.valvet`, and `array_fixed_move.valvet` with `.error` sidecars |
+| Implementation summary | Added `Array<T, N>` for compile-time ranks 1 to 8. The parser accepts `Array<T, N>` in type positions and `Array<T, N>::...` associated calls, encodes the rank in the internal base name (`Array3`), and rejects ranks outside the range. Sema checks indexing arity exactly. Codegen aliases the `ArrayD<T>` layout with a rank-specific typedef and emits rank-specific `from_vec`, `filled`, `zeros`, drop, and clone wrappers. Index lowering uses the stored shape and strides without a runtime rank check. Constructors still take a runtime `Vec<Int64>` shape; the wrappers trap with `array shape rank mismatch` when its length is not `N`. `rank()` returns the compile-time rank as an `Int64` constant. `Vec<T>` remains 1D and `Mat` remains 2D. |
+| Sources verified | ARR-04 row in `06_actionable_task_list.md`; ARR-03 runtime layout and kernels; the type and associated-call parsing patterns used by `Vec<T>` and `ArrayD<T>`. |
+| Tests executed | `array_fixed_basic`, `array_fixed_strings`, `array_fixed_rank8`, and `array_mat_coexist`; the shape and out-of-bounds abort fixtures; three compile-fail fixtures; six `array_fixed_*` front-end tests in `crates/valvet_core/tests/front_end.rs`; full debug and release fixture suites; ASan/UBSan/LSan on the numeric and owned-element fixtures; `cargo fmt`; `cargo clippy`. |
+| Issues found | The reused `ArrayD` layout still stores `rank` and fixed `shape[32]`/`strides[32]`, so `Array<T, N>` does not have a distinct fixed-rank ABI; it is a compile-time rank tag over the runtime layout. Shape dimensions and the shape vector length are runtime values, so the length is validated at construction rather than in sema. The parser recovers from an out-of-range rank with rank 1 so the front end reports one `E0201` instead of cascading parse errors. No user-level `Mat`/array conversion or borrowed view was added; `Mat` remains a separate 2D `Float64` type, and the coexistence bridge is the shared `Vec<Float64>` runtime verified by `array_mat_coexist`. |
+| Completion evidence | `array_fixed_basic` prints `2, 6, 2, 3, 1, 6, 20, [2, 3], [3, 1], [1, 20, 3, 4, 5, 6], 6, 0, 5`. `array_fixed_strings` prints `a, d, B, B, [a, B, c, d], x, x, y`. `array_fixed_rank8` prints `8, 1, 0, 7`. `array_mat_coexist` prints `1, 4, 6`, confirming that `Mat`, `Array<Float64, 2>`, and `ArrayD<Float64>` share the runtime without symbol conflicts. Generated C contains `typedef VArrayD_Float64 VArray2_Float64;`, `varrayn_Array2_Float64_from_vec`, the rank-specific drop/clone wrappers, and no `array index rank mismatch` for `Array<T, N>` indexing. The shape fixture aborts with `array shape rank mismatch`; the OOB fixture aborts with `index out of bounds`; arity, rank, and move fixtures report `E0201`, `E0201`, and `E0301`. |
+
+### MAT-01
+
+| Field | Value |
+| --- | --- |
+| Status | Complete |
+| Files changed | `crates/valvet_core/src/ast.rs`; `crates/valvet_core/src/parser.rs`; `crates/valvet_core/src/resolver.rs`; `crates/valvet_core/src/sema.rs`; `crates/valvet_core/src/ownership.rs`; `crates/valvet_core/src/codegen.rs`; `crates/valvet_core/tests/front_end.rs`; `docs/implementation/ARCHITECTURE.md`; `valvet-tests/compile-pass/mat_get_set.valvet`; `valvet-tests/compile-pass/mat_get_set.valvet.stdout`; `valvet-tests/compile-pass/mat_index_oob.valvet`; `valvet-tests/compile-pass/mat_index_oob.valvet.exit`; `valvet-tests/compile-fail/mat_index_arity.valvet`; `valvet-tests/compile-fail/mat_index_arity.valvet.error`; `valvet-tests/compile-fail/mat_index_type.valvet`; `valvet-tests/compile-fail/mat_index_type.valvet.error`; `valvet-tests/compile-fail/vec_index_arity.valvet`; `valvet-tests/compile-fail/vec_index_arity.valvet.error` |
+| Implementation summary | `ExprKind::Index` and `Place::Index` now carry an index list. The parser accepts `m[i, j]`, the resolver rewrites every index, and sema checks `Mat` arity 2 and integer index types through one helper shared by reads and writes. Codegen lowers the read and the store to the same row-major slot `data[i * cols + j]` with row then column bounds checks. Existing `Vec` indexing keeps arity 1. A `Mat` instantiation now also records the `Vec<Float64>` layout referenced by the Mat kernel block, so a Mat-only program links. No `ShapeError` layout change was needed. |
+| Sources verified | MAT-01 row in `06_actionable_task_list.md`; existing `Mat` layout in `crates/valvet_core/src/codegen.rs`; existing `Vec` index bounds behavior. |
+| Tests executed | `mat_get_set.valvet`; `mat_index_oob.valvet`; three compile-fail fixtures; `mat_multi_index_read_write_accepted_and_lowered`, `mat_only_program_records_vec_float64_layout`, `mat_multi_index_arity_rejected`, `mat_multi_index_type_rejected`, and `vec_multi_index_arity_rejected` in `crates/valvet_core/tests/front_end.rs`; full debug and release fixture suites; ASan/UBSan with leak detection on `mat_get_set`; `cargo fmt`; `cargo clippy`. |
+| Issues found | An out-of-range matrix index aborts with the existing `index out of bounds` trap, matching `Vec`; it does not return a recoverable error. This keeps `ShapeError` and all existing add/sub/mul kernels unchanged. A pre-existing Mat-only link failure was exposed by the new fixture: the Mat kernel block referenced `VVec_Float64` without recording its layout. Recording `Vec<Float64>` with every `Mat` instantiation fixed it. |
+| Completion evidence | The fixture prints `1`, `4`, `[[1, 20], [30, 4]]`, `50`, `[[1, 20], [30, 50]]`, and `7` after reads and writes at `[0, 0]`, `[1, 1]`, `[0, 1]`, and `[1, 0]`, including a write through a `struct` field base. Generated C contains `.rows`, `.cols`, and `data[i * cols + j]` for both read and store. The out-of-bounds fixture exits by `abort()` and arity/type fixtures report `E0201`. |
+
 ### NUM-03
 
 | Field | Value |
@@ -223,12 +274,13 @@ are not present, so port migration and oracle verification remain external.
 
 Commands run on the final tree:
 
-- `cargo fmt --all --check`: pass.
+- `cargo fmt --all -- --check`: pass.
 - `cargo clippy --workspace --all-targets -- -D warnings`: pass.
-- `cargo test --workspace`: pass. Includes 6 codegen FP tests, 191 front-end tests, and the existing CLI and pipeline suites.
-- `target/debug/valvet test valvet-tests`: 300 passed, 0 failed.
-- `target/release/valvet test valvet-tests`: 300 passed, 0 failed.
-- ASan/UBSan with leak detection on `math_scalar`, `numeric_core`, `numeric_residuals`, `numeric_reductions`, `linalg_complex2`, `vec_owned_ops`, and `complex_pow`: output matched each golden file.
+- `cargo test --workspace`: pass. Includes 6 codegen FP tests, 218 front-end tests, 2 fuzz tests, and the existing CLI and pipeline suites.
+- `target/debug/valvet test valvet-tests`: 340 passed, 0 failed.
+- `target/debug/valvet test valvet-tests --profile release`: 340 passed, 0 failed.
+- `target/debug/valvet test --doc`: 8 passed, 0 failed.
+- ASan/UBSan with leak detection on `math_scalar`, `numeric_core`, `numeric_residuals`, `numeric_reductions`, `linalg_complex2`, `vec_owned_ops`, `complex_pow`, `mat_get_set`, `arrayd_basic`, `arrayd_strings`, `array_fixed_basic`, `array_fixed_strings`, `array_fixed_rank8`, `array_mat_coexist`, `string_index_basic`, `string_index_group`, `string_index_growth`, `string_index_owned`, `string_index_move`, `string_index_discard`, and `string_index_containers`: output matched each golden file.
 - `python3 -m unittest discover -s scripts/tests -v`: 6 passed.
 - `python3 scripts/sqrt_sweep.py --count 1000000 --batch 10000 --valvet target/release/valvet --json /tmp/opencode/sqrt_sweep.json`: 1,000,000 checked, 0 mismatches. Summary stored in `evidence/sqrt_sweep_1m.json`.
 
@@ -236,5 +288,4 @@ Commands run on the final tree:
 
 - Port sources and oracle files are outside the repository. Port 08, port 09, port 10, BDF, and weak migration checks cannot run here.
 - FND-04 needs tuple returns from ARR-02 or a different return representation.
-- MAT-01 changes the builtin `ShapeError` layout and needs a full review of every kernel that constructs it.
 - ODE-01, STOCH-01, NUM-04, and later P2 tasks need port sources or exact formulas that are not in this checkout.

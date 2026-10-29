@@ -1,0 +1,5 @@
+id,score,ok,name,grp
+1,1.5,true,alpha,a
+2,NA,false,beta,b
+3,2.5,true,"gam,ma",a
+4,,false,,b

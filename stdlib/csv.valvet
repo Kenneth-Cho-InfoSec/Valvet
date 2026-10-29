@@ -61,7 +61,7 @@ pub fun read_json(path: String): Result<CsvTable, String> {
     return build_table(rows, false);
 }
 
-pub fun infer_schema(t: &CsvTable): Vec<String> {
+pub fun infer_schema_ex(t: &CsvTable, detect_bool: Bool): Vec<String> {
     val kinds: Vec<String> = vec![]
     val ncols = t.header.len()
     var c = 0 as Int64
@@ -85,12 +85,21 @@ pub fun infer_schema(t: &CsvTable): Vec<String> {
                         level = 2;
                     }
                 }
+                if (detect_bool && level == 2) {
+                    if (cell != "true" && cell != "false") {
+                        level = 3;
+                    }
+                }
             }
             r += 1 as Int64
         }
-        val name = if (level == 0) { "int" } else { if (level == 1) { "float" } else { "string" } }
+        val name = if (level == 0) { "int" } else { if (level == 1) { "float" } else { if (detect_bool && level == 2) { "bool" } else { "string" } } }
         kinds.push(name);
         c += 1 as Int64
     }
     kinds
+}
+
+pub fun infer_schema(t: &CsvTable): Vec<String> {
+    infer_schema_ex(t, false)
 }

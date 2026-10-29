@@ -1,0 +1,7 @@
+matched=0 left_only=0 right_only=0 out=0
+[id, x, x_right]
+0
+[int, string, string]
+[]
+[]
+[]

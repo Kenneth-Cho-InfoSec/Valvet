@@ -186,19 +186,39 @@ spectral kernel needs it.
 
 **Decision needed by:** Phase 2 or later.
 
-### Q12. Should `Mat` get/set return `Option`/`Result` or support indexing?
+### Q12. Should `Mat` and `ArrayD` indexing return `Option`/`Result` or trap?
 
 **Why it matters:** a general mutable index is the missing piece for port 03.
 The error type affects ergonomics and codegen.
 
 **Options:** `Option<Float64>`, `Result<Float64, ShapeError>`, a direct index
-with a documented panic, or a checked/unchecked pair.
+with a documented abort, or a checked/unchecked pair.
 
-**Recommendation:** start with `Option` for get and `Result<Unit, ShapeError>`
-for set, unless the language already has an index convention. Do not add a
-second matrix type to avoid the decision.
+**Decision:** MAT-01 and ARR-03 use direct indexing with runtime bounds checks
+and abort through the shared `index out of bounds` trap. `Vec`, `Mat`, and
+`ArrayD` therefore share one indexing convention. A recoverable `Option` or
+`Result` API is deferred until a consumer needs it. Do not add a second matrix
+type to avoid the decision.
 
-**Decision needed by:** Phase 1, MAT-01.
+**Decision needed by:** Phase 1, MAT-01 and ARR-03.
+
+### Q12a. What are the rank, layout, and view rules for N-dimensional arrays?
+
+**Why it matters:** ports carry nested `Vec<Vec<...>>` grids, but nested vectors
+are jagged and do not provide a row-major element buffer or a runtime rank.
+The layout decision affects every later array task.
+
+**Decision:** `ArrayD<T>` has runtime rank 1 to 32, owns one row-major buffer,
+stores shape and strides in elements, and is move-only. `Array<T, N>` is the
+compile-time-rank form for 1 to 8. It reuses the `ArrayD<T>` layout and kernels
+through a rank-specific typedef and wrappers; index arity is checked in sema, so
+indexing has no runtime rank check. Shape dimensions remain runtime values, and
+constructors validate that the shape vector length matches `N`. `Vec<T>` stays
+1D and `Mat` stays 2D. Views, `slice`, `select`, stride-0 broadcasting, and
+borrowed array views are deferred. Do not treat `Vec<Vec<T>>` as an
+N-dimensional array.
+
+**Decision needed by:** Phase 1, ARR-03 and ARR-04.
 
 ### Q13. What is the package namespace and module naming rule?
 

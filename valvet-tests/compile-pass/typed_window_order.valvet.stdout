@@ -1,0 +1,8 @@
+[part, ord, x, y, rn]
+6
+[string, int, int, float, int]
+[a, a, b, a, b, a]
+[2, 1, 2, 3, 1, 1]
+[20, 10, 5, NA, 7, 30]
+[2, 1, 5, NA, 7, 3]
+[2, 3, 1, 1, 2, 4]

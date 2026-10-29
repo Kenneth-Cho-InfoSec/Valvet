@@ -1,0 +1,118 @@
+import std::frame::DynamicFrame;
+import std::schema::check_bool_col;
+import std::schema::check_float_col;
+import std::schema::check_int_col;
+import std::schema::parse_factor_col;
+import std::schema::parse_str_col;
+import std::stats::MissingPolicy;
+import std::stats::mean;
+import std::stats::n_missing;
+import std::stats::sd;
+import std::stats::sum_v;
+import std::stats::var_v;
+import std::typed_frame::Column;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::col_bool;
+import std::typed_frame::col_float;
+import std::typed_frame::col_int;
+import std::typed_frame::col_is_missing;
+import std::typed_frame::col_kind;
+import std::typed_frame::col_len;
+import std::typed_frame::col_str;
+import std::typed_frame::col_strings;
+import std::typed_frame::col_to_string;
+import std::typed_frame::tf_arrange_keys;
+import std::typed_frame::tf_clone;
+import std::typed_frame::tf_col;
+import std::typed_frame::tf_col_at;
+import std::typed_frame::tf_col_index;
+import std::typed_stats::tf_describe;
+import std::typed_frame::tf_drop_na;
+import std::typed_frame::tf_factor_col;
+import std::typed_frame::tf_filter_mask;
+import std::typed_frame::tf_from_dynamic;
+import std::typed_frame::tf_has_col;
+import std::typed_frame::tf_kind;
+import std::typed_frame::tf_kinds;
+import std::typed_frame::tf_names;
+import std::typed_frame::tf_new;
+import std::typed_frame::tf_nrows;
+import std::typed_frame::tf_order_rows;
+import std::typed_frame::tf_schema;
+import std::typed_frame::tf_select;
+import std::typed_frame::tf_set_column;
+import std::typed_frame::tf_take_rows;
+import std::typed_frame::tf_to_dynamic;
+import std::typed_frame::sort_key;
+import std::typed_stats::tf_n_missing;
+import std::typed_join::tf_join_audit_summary;
+import std::typed_join::tf_join_frame;
+import std::typed_join::tf_join_full;
+import std::typed_join::tf_join_inner;
+import std::typed_join::tf_join_left;
+import std::typed_join::tf_join_right;
+
+fun empty_names(): Vec<String> { return vec![]; }
+fun empty_cols(): Vec<Column> { return vec![]; }
+
+fun unwrap_tf(r: Result<TypedFrame, String>): TypedFrame {
+    match (r) {
+        Ok(t) -> t,
+        Err(e) -> { println(e); TypedFrame { names: empty_names(), cols: empty_cols(), nrows: 0 as Int64 } },
+    }
+}
+
+fun show(t: &TypedFrame) {
+    println(tf_names(t));
+    println(tf_nrows(t));
+    println(tf_kinds(t));
+    var i = 0 as Int64;
+    while (i < tf_names(t).len()) {
+        val c = tf_col_at(t, i);
+        match (c) {
+            Some(col) -> println(col_strings(col)),
+            None -> println("missing"),
+        };
+        i = i + (1 as Int64);
+    }
+}
+
+fun show_opt_f(o: Option<Float64>) {
+    match (o) { Some(v) -> println(v), None -> println("NA") };
+}
+
+fun show_opt_i(o: Option<Int64>) {
+    match (o) { Some(v) -> println(v), None -> println("NA") };
+}
+
+fun show_err(r: Result<TypedFrame, String>) {
+    match (r) { Ok(t) -> show(&t), Err(e) -> println(e) };
+}
+
+fun suffix_left(): TypedFrame {
+    val id: Vec<Missing<Int64>> = vec![Missing::Present(1 as Int64), Missing::Present(2 as Int64)];
+    val x: Vec<Missing<String>> = vec![Missing::Present("l1".clone()), Missing::Present("l2".clone())];
+    val xr: Vec<Missing<String>> = vec![Missing::Present("lr1".clone()), Missing::Present("lr2".clone())];
+    val z: Vec<Missing<String>> = vec![Missing::Present("lz1".clone()), Missing::Present("lz2".clone())];
+    val cols: Vec<Column> = vec![Column::Int(id), Column::Str(x), Column::Str(xr), Column::Str(z)];
+    val names: Vec<String> = vec!["id".clone(), "x".clone(), "x_right".clone(), "z".clone()];
+    return unwrap_tf(tf_new(names, cols, 2 as Int64));
+}
+
+fun suffix_right(): TypedFrame {
+    val id: Vec<Missing<Int64>> = vec![Missing::Present(1 as Int64), Missing::Present(2 as Int64)];
+    val x: Vec<Missing<String>> = vec![Missing::Present("r1".clone()), Missing::Present("r2".clone())];
+    val z: Vec<Missing<String>> = vec![Missing::Present("rz1".clone()), Missing::Present("rz2".clone())];
+    val cols: Vec<Column> = vec![Column::Int(id), Column::Str(x), Column::Str(z)];
+    val names: Vec<String> = vec!["id".clone(), "x".clone(), "z".clone()];
+    return unwrap_tf(tf_new(names, cols, 2 as Int64));
+}
+
+fun main() {
+    val l = suffix_left();
+    val r = suffix_right();
+    match (tf_join_inner(&l, vec!["id".clone()], &r, vec!["id".clone()])) {
+        Ok(j) -> { val f = tf_join_frame(&j); show(&f); },
+        Err(e) -> println(e),
+    };
+}

@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy policy · Valvet</title>
+<meta name="description" content="How the Valvet website handles data: no accounts, no analytics, local theme storage, GitHub Pages hosting, and Google Fonts.">
+<meta name="theme-color" content="#f7f3ff">
+<link rel="canonical" href="https://kenneth-cho-infosec.github.io/Valvet/privacy.html">
+<meta property="og:title" content="Privacy policy · Valvet">
+<meta property="og:description" content="How the Valvet website handles data: no accounts, no analytics, local theme storage, GitHub Pages hosting, and Google Fonts.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://kenneth-cho-infosec.github.io/Valvet/privacy.html">
+<meta property="og:site_name" content="Valvet">
+<meta property="og:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Valvet: Data work, compiled. A dark code window and lavender background.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Privacy policy · Valvet">
+<meta name="twitter:description" content="How the Valvet website handles data: no accounts, no analytics, local theme storage, GitHub Pages hosting, and Google Fonts.">
+<meta name="twitter:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
+<link rel="icon" href="assets/favicon.png" type="image/png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<noscript>
+<style>
+  .theme-toggle, .menu-toggle, .back-to-top, .copy-btn, .code-tabs, .pipeline-rail, .stdlib-toolbar, .docs-search, .filter-row, .toast { display: none !important; }
+  .code-panel[hidden], .stage-panel[hidden] { display: block !important; }
+  .stage-panel[hidden] { display: grid !important; }
+  .code-panel { margin-bottom: 18px; }
+  .stage-panel { margin-bottom: 18px; }
+  .docs-toc summary, .examples-toc summary { display: block !important; }
+</style>
+</noscript>
+<script>
+(function () {
+  document.documentElement.classList.add('js');
+  try {
+    var saved = localStorage.getItem('valvet-theme');
+    if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
+  } catch (error) {}
+})();
+</script>
+</head>
+<body class="page-privacy">
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-header" id="site-header">
+  <div class="container nav-shell">
+    <a class="brand" href="index.html" aria-label="Valvet home">
+      <img src="assets/logo-128.png" width="36" height="36" alt="">
+      <span class="brand-name">Valvet</span>
+      <span class="brand-version">0.3.0</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html#why">Why Valvet</a><a href="index.html#features">Features</a><a href="index.html#code">Code</a><a href="docs.html">Docs</a><a href="examples.html">Examples</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="icon-btn theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"/></svg>
+      </button>
+      <a class="btn btn-primary btn-small nav-install" href="index.html#install">Install</a>
+      <button class="icon-btn menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-menu">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobile-menu" hidden>
+    <nav class="container mobile-nav" aria-label="Mobile">
+      <a href="index.html#why">Why Valvet<span aria-hidden="true">↗</span></a>
+<a href="index.html#features">Features<span aria-hidden="true">↗</span></a>
+<a href="index.html#code">Code<span aria-hidden="true">↗</span></a>
+<a href="docs.html">Docs<span aria-hidden="true">↗</span></a>
+<a href="examples.html">Examples<span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub<span aria-hidden="true">↗</span></a>
+    </nav>
+    <div class="container mobile-menu-foot">
+      <a class="btn btn-primary" href="index.html#install">Install Valvet</a>
+      <p>Native binaries. No garbage collector. No runtime.</p>
+    </div>
+  </div>
+</header>
+<main id="main">
+
+<section class="page-hero privacy-hero">
+  <div class="container page-hero-inner">
+    <h1>Privacy policy</h1>
+    <p class="page-lede">The short version: no accounts, no analytics, no advertising, and no tracking cookies. This page explains the few technical details that do apply.</p>
+    <p class="page-meta">Last updated 20 October 2026. This policy applies to this website.</p>
+  </div>
+</section>
+<div class="container privacy-layout">
+  <article class="privacy-content">
+    <section class="doc-section reveal-up" id="who-runs-this-site">
+      <h2>Who runs this site</h2>
+      <p>Valvet is an open source project maintained by Kenneth Cho. This policy covers the website at <code>kenneth-cho-infosec.github.io/Valvet</code>. It does not cover other sites or services that link from this one.</p>
+      <p>The project has no account system. The best way to reach it is through <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/issues">the Valvet issue tracker on GitHub, where you can ask questions</a>.</p>
+    </section>
+    <section class="doc-section reveal-up" id="what-this-site-collects">
+      <h2>What this site collects</h2>
+      <p>Valvet does not collect personal information through this website.</p>
+      <ul>
+        <li>No accounts, sign-up forms, contact forms, newsletters, or comments.</li>
+        <li>No analytics, advertising, tracking pixels, or cross-site trackers.</li>
+        <li>No cookies set by this site.</li>
+        <li>Documentation search and example filters run in your browser. What you type is not sent to a server.</li>
+        <li>Copy buttons use your browser's clipboard. The copied text stays on your device.</li>
+      </ul>
+      <p>Valvet does not sell, rent, or share personal information.</p>
+    </section>
+    <section class="doc-section reveal-up" id="local-storage">
+      <h2>Local storage</h2>
+      <p>The site stores one preference in <code>localStorage</code> under the key <code>valvet-theme</code>. Its value is <code>light</code> or <code>dark</code>, and it keeps your theme choice between visits. It is not sent to Valvet or to any third party.</p>
+      <p>You can remove it by clearing site data for this domain in your browser.</p>
+    </section>
+    <section class="doc-section reveal-up" id="hosting">
+      <h2>Hosting</h2>
+      <p>This site is served by GitHub Pages. GitHub may collect technical request data such as IP address, user agent, and requested path to deliver the site and protect its infrastructure. Valvet does not receive or store those logs.</p>
+      <p>GitHub's handling of that data is described in the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub Privacy Statement</a>, including how request data is processed.</p>
+    </section>
+    <section class="doc-section reveal-up" id="fonts">
+      <h2>Fonts</h2>
+      <p>The site loads Sora and JetBrains Mono from Google Fonts. To show the fonts, your browser requests files from <code>fonts.googleapis.com</code> and <code>fonts.gstatic.com</code>. Google receives technical request data such as your IP address and browser information.</p>
+      <p>Google's handling of that data is described in the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>. If you block Google Fonts, the site falls back to system fonts and remains usable.</p>
+    </section>
+    <section class="doc-section reveal-up" id="external-links">
+      <h2>External links</h2>
+      <p>The site links to GitHub for source code, issues, and the license. If you follow an external link, the destination site's privacy policy applies.</p>
+    </section>
+    <section class="doc-section reveal-up" id="your-choices">
+      <h2>Your choices</h2>
+      <p>You can clear the theme preference through your browser's site data controls. You can block Google Fonts with a content blocker or privacy setting and still use the site.</p>
+      <p>Valvet has no account data, contact submissions, or analytics profile to export or delete. For data held by GitHub, use GitHub's privacy controls.</p>
+    </section>
+    <section class="doc-section reveal-up" id="children">
+      <h2>Children</h2>
+      <p>This site is a developer resource and is not directed at children under 13. It does not collect personal information from anyone, including children.</p>
+    </section>
+    <section class="doc-section reveal-up" id="changes">
+      <h2>Changes</h2>
+      <p>This policy may be updated when the site changes. The date at the top shows the latest revision. Material changes will be reflected on this page.</p>
+    </section>
+    <section class="doc-section reveal-up" id="contact">
+      <h2>Contact</h2>
+      <p>Questions or concerns about this policy can be raised in the <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/issues">Valvet issue tracker</a>.</p>
+    </section>
+  </article>
+  <aside class="privacy-aside">
+    <nav class="toc-group" aria-label="Privacy sections">
+      <p class="toc-group-title">On this page</p>
+      <a href="#who-runs-this-site">Who runs this site</a>
+      <a href="#what-this-site-collects">What this site collects</a>
+      <a href="#local-storage">Local storage</a>
+      <a href="#hosting">Hosting</a>
+      <a href="#fonts">Fonts</a>
+      <a href="#external-links">External links</a>
+      <a href="#your-choices">Your choices</a>
+      <a href="#children">Children</a>
+      <a href="#changes">Changes</a>
+      <a href="#contact">Contact</a>
+    </nav>
+    <div class="sidebar-note">
+      <p>Questions about this policy?</p>
+      <p>Open an issue on GitHub and describe what you need. This page is the only place the site explains its data practices.</p>
+      <p>No account data is stored here, so there is nothing to export or delete.</p>
+      <p>For data held by GitHub, use GitHub's privacy controls.</p>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/issues">Open an issue <span aria-hidden="true">→</span></a>
+    </div>
+  </aside>
+</div>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div class="footer-brand">
+      <a class="brand" href="index.html" aria-label="Valvet home">
+        <img src="assets/logo-128.png" width="40" height="40" alt="">
+        <span class="brand-name">Valvet</span>
+      </a>
+      <p>A small, safe, compiled language for data work.</p>
+      <p class="footer-note">Native binaries. No garbage collector. No runtime.</p>
+    </div>
+    <div class="footer-col">
+      <h2>Language</h2>
+      <a href="index.html#why">Why Valvet</a>
+      <a href="index.html#features">Features</a>
+      <a href="index.html#code">Code</a>
+      <a href="index.html#pipeline">How it runs</a>
+    </div>
+    <div class="footer-col">
+      <h2>Resources</h2>
+      <a href="docs.html">Documentation</a>
+      <a href="examples.html">Examples</a>
+      <a href="index.html#stdlib">Standard library</a>
+      <a href="index.html#install">Install</a>
+    </div>
+    <div class="footer-col">
+      <h2>Project</h2>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/blob/main/LICENSE">License</a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">Issues</a>
+      <a href="privacy.html">Privacy policy</a>
+    </div>
+  </div>
+  <div class="container footer-bottom">
+    <p>Copyright 2026 Kenneth Cho. All rights reserved.</p>
+    <p class="footer-built">Compiled through C11. Shipped as one binary.</p>
+  </div>
+  <div class="footer-wordmark" aria-hidden="true">VALVET</div>
+</footer>
+<div class="toast" role="status" aria-live="polite"></div>
+<button class="back-to-top" type="button" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+</button>
+<script src="app.js" defer></script>
+</body>
+</html>

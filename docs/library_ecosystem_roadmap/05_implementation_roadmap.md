@@ -50,6 +50,7 @@ residual helpers for the covered operations.
 | FND-03 | Guarded `sqrt` builtin and FP flags | M | Yes | Create `crates/valvet_core/tests/codegen_fp.rs`, `valvet-tests/compile-pass/sqrt_builtin.valvet` and `.stdout`; modify `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/codegen.rs`. |
 | COL-01 | Exact `vec![...]` and repeat literal | M | Yes | Create `valvet-tests/compile-pass/vec_repeat.valvet` and `.stdout`, `valvet-tests/compile-pass/vec_literal_owned.valvet` and `.stdout`; modify `crates/valvet_core/src/ast.rs`, `crates/valvet_core/src/parser.rs`, `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/codegen.rs`. |
 | COL-02 | `Vec` capacity, reserve, resize, fill, copy | M | Yes | Create `valvet-tests/compile-pass/vec_capacity.valvet` and `.stdout`, `valvet-tests/compile-pass/vec_owned_ops.valvet` and `.stdout`, `valvet-tests/compile-fail/vec_copy_from_short.valvet` and `.error`; modify `crates/valvet_core/src/ast.rs`, `crates/valvet_core/src/parser.rs`, `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/codegen.rs`. |
+| COL-03 | Ordered string-keyed index | M | No | Create `docs/implementation/DICT_SPEC.md`, front-end tests, seven compile-pass and seven compile-fail fixtures with sidecars; modify `crates/valvet_core/src/ast.rs`, `crates/valvet_core/src/parser.rs`, `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/ownership.rs`, `crates/valvet_core/src/codegen.rs`; update `README.md`, `docs/implementation/ARCHITECTURE.md`, and roadmap/status docs. See `docs/implementation/DICT_SPEC.md` for exact changes. |
 | NUM-01 | `std.numeric` exact-order vector core | M | Yes | Create `stdlib/numeric.valvet`, `valvet-tests/compile-pass/numeric_core.valvet` and `.stdout`. |
 | NUM-02 | `std.numeric` norms and scaled residuals | S | Yes | Modify `stdlib/numeric.valvet`; create `valvet-tests/compile-pass/numeric_residuals.valvet` and `.stdout`. |
 | IO-01 | Warning-free output and no-newline `write` | M | No | Create `valvet-tests/compile-pass/write_no_newline.valvet` and `.stdout`; modify `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/codegen.rs`. |
@@ -125,7 +126,9 @@ workarounds.
 | NUM-03 | Consolidate private stdlib vector/scalar helpers | M | No | Modify `stdlib/model.valvet`, `stdlib/plot.valvet`, `stdlib/infer.valvet`, `stdlib/numeric.valvet`; add `valvet-tests/compile-pass/numeric_reductions.valvet` and `.stdout`. |
 | ARR-01 | Fixed arrays `[T; N]` | L | Yes | Create `valvet-tests/compile-pass/fixed_array_basic.valvet` and `.stdout`, `valvet-tests/compile-pass/fixed_array_owned.valvet` and `.stdout`, `valvet-tests/compile-fail/fixed_array_len_mismatch.valvet` and `.error`; modify `crates/valvet_core/src/ast.rs`, `crates/valvet_core/src/parser.rs`, `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/ownership.rs`, `crates/valvet_core/src/codegen.rs`, `docs/implementation/ARCHITECTURE.md`. |
 | ARR-02 | Tuple returns and destructuring | L | Yes | Create `valvet-tests/compile-pass/tuple_return.valvet` and `.stdout`, `valvet-tests/compile-pass/tuple_owned.valvet` and `.stdout`, `valvet-tests/compile-fail/tuple_arity.valvet` and `.error`; modify `crates/valvet_core/src/ast.rs`, `crates/valvet_core/src/parser.rs`, `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/ownership.rs`, `crates/valvet_core/src/codegen.rs`. |
-| MAT-01 | `Mat` get/set | M | No | Create `valvet-tests/compile-pass/mat_get_set.valvet` and `.stdout`; modify `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/codegen.rs`. |
+| ARR-03 | Runtime-rank N-dimensional arrays `ArrayD<T>` | M | No | Create the `arrayd_*` compile-pass and compile-fail fixtures; modify `crates/valvet_core/src/parser.rs`, `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/ownership.rs`, `crates/valvet_core/src/codegen.rs`, `crates/valvet_core/tests/front_end.rs`, `docs/implementation/ARCHITECTURE.md`. |
+| ARR-04 | Compile-time-rank arrays `Array<T, N>` | L | No | Create `array_fixed_*` fixtures; modify `crates/valvet_core/src/ast.rs`, `crates/valvet_core/src/parser.rs`, `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/ownership.rs`, `crates/valvet_core/src/codegen.rs`, `docs/implementation/ARCHITECTURE.md`. |
+| MAT-01 | `Mat` multi-index get/set | M | No | Create `valvet-tests/compile-pass/mat_get_set.valvet` and `.stdout`, `valvet-tests/compile-pass/mat_index_oob.valvet` and `.exit`; create `valvet-tests/compile-fail/mat_index_arity.valvet` and `.error`, `valvet-tests/compile-fail/mat_index_type.valvet` and `.error`, `valvet-tests/compile-fail/vec_index_arity.valvet` and `.error`; modify `crates/valvet_core/src/ast.rs`, `crates/valvet_core/src/parser.rs`, `crates/valvet_core/src/resolver.rs`, `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/ownership.rs`, `crates/valvet_core/src/codegen.rs`, `crates/valvet_core/tests/front_end.rs`. |
 | LINALG-01 | Complex 2x2 solve wrapper | S | Yes | Create `stdlib/linalg.valvet`, `valvet-tests/compile-pass/linalg_complex2.valvet` and `.stdout`. Port 09 source is external. |
 | PERF-02 | Inline-friendly `Vec` kernels | M | Yes | Modify `crates/valvet_core/src/codegen.rs` (`emit_adts` prototype block, `emit_vec_fns`, `emit_vec_method`); add assertions to `crates/valvet_core/tests/codegen_fp.rs`. |
 | PERF-03 | Constant-index bounds elision or `@inbounds` | L | No | Create `valvet-tests/compile-pass/inbounds_array.valvet` and `.stdout`, `valvet-tests/compile-fail/inbounds_outside_fn.valvet` and `.error`; modify `crates/valvet_core/src/ast.rs`, `crates/valvet_core/src/parser.rs`, `crates/valvet_core/src/sema.rs`, `crates/valvet_core/src/ownership.rs`, `crates/valvet_core/src/codegen.rs`. |
@@ -327,7 +330,7 @@ flowchart LR
   A1[ARR-01 fixed arrays] --> A2[ARR-02 tuples]
   A2 --> F4
   A1 --> P3[PERF-03 bounds elision]
-  MAT[MAT-01 Mat get/set] --> LA
+  MAT[MAT-01 Mat multi-index get/set] --> LA
   IO[IO-01 output] --> P6[PERF-06 output allocation]
   IO --> H1[HARNESS-01]
   P6 --> H1
@@ -362,6 +365,7 @@ FND-02 sqrt tiny normals
 Collection path:
 COL-01 exact literals
 COL-02 Vec capacity
+COL-03 ordered string index
   -> NUM-01 vector core
 
 Join:
@@ -387,7 +391,7 @@ review:
 ```text
 ARR-01 fixed arrays -> ARR-02 tuples
 ARR-01 fixed arrays -> PERF-03 bounds elision
-MAT-01 Mat get/set -> LINALG-01 complex 2x2
+MAT-01 Mat multi-index get/set -> LINALG-01 complex 2x2
 ```
 
 The tooling path is:

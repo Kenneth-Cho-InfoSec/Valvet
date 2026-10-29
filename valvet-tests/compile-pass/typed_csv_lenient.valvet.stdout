@@ -1,0 +1,6 @@
+[id, score]
+3
+[int, float]
+[1, NA, 3]
+[1.5, 2.5, NA]
+typed csv: column id: row 1: not int

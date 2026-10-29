@@ -77,3 +77,81 @@ pub fun parse_bool_col(col: Vec<String>): Vec<Missing<Bool>> {
     }
     return out;
 }
+
+pub fun parse_str_col(col: Vec<String>): Vec<Missing<String>> {
+    var out: Vec<Missing<String>> = vec![];
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val cell = col[i].clone();
+        if (is_na(&cell)) {
+            out.push(Missing);
+        } else {
+            out.push(Missing::Present(cell));
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun parse_factor_col(col: Vec<String>): Factor {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val cell = col[i].clone();
+        if (is_na(&cell)) {
+            out.push("");
+        } else {
+            out.push(cell);
+        }
+        i = i + (1 as Int64);
+    }
+    return factor_from_strings(out);
+}
+
+pub fun check_int_col(col: Vec<String>): Option<String> {
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val cell = col[i].clone();
+        if (!is_na(&cell)) {
+            val ok = match (cell.parse_int()) { Some(v) -> true, None -> false, };
+            if (!ok) {
+                return Some("row " + to_string(i) + ": not int");
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    return None;
+}
+
+pub fun check_float_col(col: Vec<String>): Option<String> {
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val cell = col[i].clone();
+        if (!is_na(&cell)) {
+            val ok = match (cell.parse_float()) { Some(v) -> true, None -> false, };
+            if (!ok) {
+                return Some("row " + to_string(i) + ": not float");
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    return None;
+}
+
+pub fun check_bool_col(col: Vec<String>): Option<String> {
+    var i = 0 as Int64;
+    while (i < col.len()) {
+        val cell = col[i].clone();
+        if (!is_na(&cell)) {
+            if (cell != "true" && cell != "false") {
+                return Some("row " + to_string(i) + ": not bool");
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    return None;
+}
+
+pub fun check_factor_col(col: Vec<String>): Option<String> {
+    return None;
+}

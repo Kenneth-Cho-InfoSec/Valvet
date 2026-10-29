@@ -1,0 +1,18 @@
+[i, f, b, s, g]
+[int, float, bool, string, factor]
+3
+[1, 2, 3]
+[1.5, NA, 2.5]
+[true, false, NA]
+[a, NA, c]
+[x, y, x]
+[column, n, n_missing, mean, sd, min, max]
+[string, int, int, float, float, float, float]
+2
+[i, f]
+[3, 2]
+[0, 1]
+[2, 2]
+[1, 0.70710678118654757]
+[1, 1.5]
+[3, 2.5]

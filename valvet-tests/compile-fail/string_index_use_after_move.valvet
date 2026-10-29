@@ -1,0 +1,9 @@
+fun take(idx: StringIndex) {
+    println(idx.len());
+}
+
+fun main() {
+    val idx = StringIndex::new();
+    take(idx);
+    println(idx.len());
+}

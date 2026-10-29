@@ -1,0 +1,7 @@
+[part, g, ord, lag]
+3
+[string, factor, int, factor]
+[a, a, b]
+[x, y, x]
+[1, 2, 1]
+[NA, x, NA]

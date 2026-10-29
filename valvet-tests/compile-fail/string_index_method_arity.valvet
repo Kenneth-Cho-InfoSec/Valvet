@@ -1,0 +1,10 @@
+fun main() {
+    val idx = StringIndex::new();
+    idx.len(1);
+    idx.contains();
+    idx.get();
+    idx.get("a", "b");
+    idx.get_or_insert();
+    idx.keys(1);
+    idx.clone(1);
+}

@@ -1,0 +1,4 @@
+fun main() {
+    val a = Array<Float64, 9>::zeros(vec![1, 1, 1, 1, 1, 1, 1, 1, 1])
+    println(a.len())
+}

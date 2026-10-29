@@ -1,0 +1,1150 @@
+// std::parquet: narrow, dependency-free Parquet reader. Supported subset:
+// flat required/optional INT32/INT64/DOUBLE/BOOLEAN/UTF8 BYTE_ARRAY, PLAIN
+// DATA_PAGE v1, UNCOMPRESSED or SNAPPY. Nested, repeated, dictionary,
+// delta, and v2 pages are rejected with Err.
+module std.parquet;
+
+import std::bytes::bytes_bit;
+import std::bytes::bytes_finish;
+import std::bytes::bytes_from_string;
+import std::bytes::bytes_put_f64_le;
+import std::bytes::bytes_put_i64_le;
+import std::bytes::bytes_put_u32_le;
+import std::bytes::bytes_put_u8;
+import std::bytes::bytes_put_varint;
+import std::bytes::bytes_pow2;
+import std::bytes::bytes_i32_le;
+import std::bytes::bytes_i64_le;
+import std::bytes::bytes_slice;
+import std::bytes::bytes_u32_le;
+import std::bytes::bytes_u8;
+import std::bytes::Varint;
+import std::bytes::bytes_varint;
+import std::snappy::snappy_decompress;
+import std::thrift::ThriftField;
+import std::thrift::ThriftList;
+import std::thrift::ThriftReader;
+import std::thrift::thrift_last_ok;
+import std::thrift::thrift_list_count;
+import std::thrift::thrift_list_kind;
+import std::thrift::thrift_next_field;
+import std::thrift::thrift_pos;
+import std::thrift::thrift_read_binary;
+import std::thrift::thrift_read_field;
+import std::thrift::thrift_read_i32;
+import std::thrift::thrift_read_i64;
+import std::thrift::thrift_read_list_header;
+import std::thrift::thrift_reader;
+import std::thrift::thrift_reset_last;
+import std::thrift::ThriftWriter;
+import std::thrift::thrift_skip;
+import std::thrift::thrift_writer;
+import std::thrift::thrift_writer_clone;
+import std::thrift::thrift_write_binary;
+import std::thrift::thrift_write_binary_value;
+import std::thrift::thrift_write_finish;
+import std::thrift::thrift_write_i32;
+import std::thrift::thrift_write_i32_value;
+import std::thrift::thrift_write_i64;
+import std::thrift::thrift_write_list_header;
+import std::thrift::thrift_write_struct_element;
+import std::thrift::thrift_write_struct_end;
+import std::thrift::thrift_write_struct_field;
+import std::typed_frame::Column;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::tf_col_at;
+import std::typed_frame::tf_names;
+import std::typed_frame::tf_new;
+import std::typed_frame::tf_nrows;
+
+struct OptInt { ok: Bool, value: Int64 }
+struct OptFloat { ok: Bool, value: Float64 }
+struct OptStr { ok: Bool, value: String }
+struct OptList { ok: Bool, value: ThriftList }
+
+fun opt_int(v: Option<Int64>): OptInt {
+    match (v) {
+        Some(x) -> OptInt { ok: true, value: x },
+        None -> OptInt { ok: false, value: 0 as Int64 },
+    }
+}
+
+fun opt_float(v: Option<Float64>): OptFloat {
+    match (v) {
+        Some(x) -> OptFloat { ok: true, value: x },
+        None -> OptFloat { ok: false, value: 0.0 },
+    }
+}
+
+fun opt_str(v: Option<String>): OptStr {
+    match (v) {
+        Some(x) -> OptStr { ok: true, value: x },
+        None -> OptStr { ok: false, value: "" },
+    }
+}
+
+fun opt_list(v: Option<ThriftList>): OptList {
+    match (v) {
+        Some(x) -> OptList { ok: true, value: x },
+        None -> OptList { ok: false, value: ThriftList { kind: 0 as Int64, count: 0 as Int64 } },
+    }
+}
+
+fun parquet_max_file_bytes(): Int64 {
+    return 268435456 as Int64;
+}
+
+fun parquet_max_rows(): Int64 {
+    return 268435456 as Int64;
+}
+
+fun parquet_max_columns(): Int64 {
+    return 4096 as Int64;
+}
+
+fun parquet_max_page_bytes(): Int64 {
+    return 67108864 as Int64;
+}
+
+fun fail_if(cond: Bool, msg: String): Result<Bool, String> {
+    if (cond) {
+        return Err(msg);
+    }
+    return Ok(true);
+}
+
+struct SchemaElem {
+    typ: Int64,
+    rep: Int64,
+    name: String,
+    nchildren: Int64,
+    converted: Int64,
+}
+
+struct PqSchema {
+    name: String,
+    kind: Int64,
+    optional: Bool,
+}
+
+struct ChunkMeta {
+    kind: Int64,
+    codec: Int64,
+    num_values: Int64,
+    data_offset: Int64,
+    dict_offset: Int64,
+    comp_size: Int64,
+    path: Vec<String>,
+}
+
+struct RowGroupMeta {
+    num_rows: Int64,
+    chunks: Vec<ChunkMeta>,
+}
+
+struct PqMeta {
+    nrows: Int64,
+    schema: Vec<PqSchema>,
+    groups: Vec<RowGroupMeta>,
+}
+
+struct PqCol {
+    name: String,
+    kind: Int64,
+    optional: Bool,
+    ints: Vec<Missing<Int64>>,
+    floats: Vec<Missing<Float64>>,
+    bools: Vec<Missing<Bool>>,
+    strs: Vec<Missing<String>>,
+}
+
+fun next_field(r: &mut ThriftReader): Result<ThriftField, String> {
+    var local = *r;
+    val f = thrift_next_field(&mut local);
+    fail_if(!thrift_last_ok(&mut local), "parquet: truncated thrift field")?;
+    *r = local;
+    return Ok(f);
+}
+
+fun read_i32(r: &mut ThriftReader): Result<Int64, String> {
+    val v = opt_int(thrift_read_i32(r));
+    fail_if(!v.ok, "parquet: truncated i32")?;
+    return Ok(v.value);
+}
+
+fun read_i64(r: &mut ThriftReader): Result<Int64, String> {
+    val v = opt_int(thrift_read_i64(r));
+    fail_if(!v.ok, "parquet: truncated i64")?;
+    return Ok(v.value);
+}
+
+fun read_str(r: &mut ThriftReader): Result<String, String> {
+    val v = opt_str(thrift_read_binary(r));
+    fail_if(!v.ok, "parquet: truncated binary")?;
+    return Ok(v.value);
+}
+
+fun read_list(r: &mut ThriftReader): Result<ThriftList, String> {
+    val v = opt_list(thrift_read_list_header(r));
+    fail_if(!v.ok, "parquet: truncated list")?;
+    fail_if(thrift_list_count(&v.value) < (0 as Int64), "parquet: negative list count")?;
+    return Ok(v.value);
+}
+
+fun parse_schema_element(r: &mut ThriftReader): Result<SchemaElem, String> {
+    var local = *r;
+    val parent_last = (*r).last_id;
+    thrift_reset_last(&mut local);
+    var typ = 0 - (1 as Int64);
+    var rep = 0 as Int64;
+    var name = "";
+    var nchildren = 0 as Int64;
+    var converted = 0 - (1 as Int64);
+    var done = false;
+    while (!done) {
+        val f = next_field(&mut local)?;
+        if (f.kind == (0 as Int64)) {
+            done = true;
+        } else if (f.id == (1 as Int64)) {
+            typ = read_i32(&mut local)?;
+        } else if (f.id == (3 as Int64)) {
+            rep = read_i32(&mut local)?;
+        } else if (f.id == (4 as Int64)) {
+            name = read_str(&mut local)?;
+        } else if (f.id == (5 as Int64)) {
+            nchildren = read_i32(&mut local)?;
+        } else if (f.id == (6 as Int64)) {
+            converted = read_i32(&mut local)?;
+        } else {
+            fail_if(!thrift_skip(&mut local, f.kind), "parquet: bad schema field")?;
+        }
+    }
+    local.last_id = parent_last;
+    *r = local;
+    return Ok(SchemaElem { typ: typ, rep: rep, name: name, nchildren: nchildren, converted: converted });
+}
+
+fun parse_string_list(r: &mut ThriftReader): Result<Vec<String>, String> {
+    var local = *r;
+    val l = read_list(&mut local)?;
+    fail_if(thrift_list_kind(&l) != (8 as Int64), "parquet: expected binary list")?;
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < thrift_list_count(&l)) {
+        out.push(read_str(&mut local)?);
+        i = i + (1 as Int64);
+    }
+    *r = local;
+    return Ok(out);
+}
+
+fun parse_column_metadata(r: &mut ThriftReader): Result<ChunkMeta, String> {
+    var local = *r;
+    val parent_last = (*r).last_id;
+    thrift_reset_last(&mut local);
+    var kind = 0 - (1 as Int64);
+    var codec = 0 as Int64;
+    var num_values = 0 as Int64;
+    var data_offset = 0 as Int64;
+    var dict_offset = 0 - (1 as Int64);
+    var comp_size = 0 as Int64;
+    var path: Vec<String> = vec![];
+    var done = false;
+    while (!done) {
+        val f = next_field(&mut local)?;
+        if (f.kind == (0 as Int64)) {
+            done = true;
+        } else if (f.id == (1 as Int64)) {
+            kind = read_i32(&mut local)?;
+        } else if (f.id == (3 as Int64)) {
+            path = parse_string_list(&mut local)?;
+        } else if (f.id == (4 as Int64)) {
+            codec = read_i32(&mut local)?;
+        } else if (f.id == (5 as Int64)) {
+            num_values = read_i64(&mut local)?;
+        } else if (f.id == (7 as Int64)) {
+            comp_size = read_i64(&mut local)?;
+        } else if (f.id == (9 as Int64)) {
+            data_offset = read_i64(&mut local)?;
+        } else if (f.id == (11 as Int64)) {
+            dict_offset = read_i64(&mut local)?;
+        } else {
+            fail_if(!thrift_skip(&mut local, f.kind), "parquet: bad column metadata field")?;
+        }
+    }
+    local.last_id = parent_last;
+    *r = local;
+    return Ok(ChunkMeta {
+        kind: kind,
+        codec: codec,
+        num_values: num_values,
+        data_offset: data_offset,
+        dict_offset: dict_offset,
+        comp_size: comp_size,
+        path: path,
+    });
+}
+
+fun parse_column_chunk(r: &mut ThriftReader): Result<ChunkMeta, String> {
+    var local = *r;
+    val parent_last = (*r).last_id;
+    thrift_reset_last(&mut local);
+    val no_path: Vec<String> = vec![];
+    var meta = ChunkMeta { kind: 0 - (1 as Int64), codec: 0 as Int64, num_values: 0 as Int64, data_offset: 0 as Int64, dict_offset: 0 - (1 as Int64), comp_size: 0 as Int64, path: no_path };
+    var done = false;
+    while (!done) {
+        val f = next_field(&mut local)?;
+        if (f.kind == (0 as Int64)) {
+            done = true;
+        } else if (f.id == (3 as Int64)) {
+            meta = parse_column_metadata(&mut local)?;
+        } else {
+            fail_if(!thrift_skip(&mut local, f.kind), "parquet: bad column chunk field")?;
+        }
+    }
+    local.last_id = parent_last;
+    *r = local;
+    return Ok(meta);
+}
+
+fun parse_row_group(r: &mut ThriftReader): Result<RowGroupMeta, String> {
+    var local = *r;
+    val parent_last = (*r).last_id;
+    thrift_reset_last(&mut local);
+    var nrows = 0 as Int64;
+    var chunks: Vec<ChunkMeta> = vec![];
+    var done = false;
+    while (!done) {
+        val f = next_field(&mut local)?;
+        if (f.kind == (0 as Int64)) {
+            done = true;
+        } else if (f.id == (1 as Int64)) {
+            val l = read_list(&mut local)?;
+            fail_if(thrift_list_kind(&l) != (12 as Int64), "parquet: expected column chunk list")?;
+            var i = 0 as Int64;
+            while (i < thrift_list_count(&l)) {
+                chunks.push(parse_column_chunk(&mut local)?);
+                i = i + (1 as Int64);
+            }
+        } else if (f.id == (3 as Int64)) {
+            nrows = read_i64(&mut local)?;
+        } else {
+            fail_if(!thrift_skip(&mut local, f.kind), "parquet: bad row group field")?;
+        }
+    }
+    local.last_id = parent_last;
+    *r = local;
+    return Ok(RowGroupMeta { num_rows: nrows, chunks: chunks });
+}
+
+fun parse_file_metadata(r: &mut ThriftReader): Result<PqMeta, String> {
+    var local = *r;
+    val parent_last = (*r).last_id;
+    thrift_reset_last(&mut local);
+    var nrows = 0 as Int64;
+    var schema: Vec<PqSchema> = vec![];
+    var groups: Vec<RowGroupMeta> = vec![];
+    var done = false;
+    while (!done) {
+        val f = next_field(&mut local)?;
+        if (f.kind == (0 as Int64)) {
+            done = true;
+        } else if (f.id == (2 as Int64)) {
+            val l = read_list(&mut local)?;
+            fail_if(thrift_list_kind(&l) != (12 as Int64), "parquet: expected schema list")?;
+            val count = thrift_list_count(&l);
+            fail_if(count <= (0 as Int64) || count > parquet_max_columns() + (1 as Int64), "parquet: bad schema size")?;
+            var elems: Vec<SchemaElem> = vec![];
+            var i = 0 as Int64;
+            while (i < count) {
+                elems.push(parse_schema_element(&mut local)?);
+                i = i + (1 as Int64);
+            }
+            val root = elems[0];
+            fail_if(root.nchildren <= (0 as Int64) || root.nchildren + (1 as Int64) != count, "parquet: nested schema is unsupported")?;
+            var k = 1 as Int64;
+            while (k < elems.len()) {
+                val e = elems[k];
+                fail_if(e.nchildren > (0 as Int64) || e.rep == (2 as Int64), "parquet: nested or repeated schema is unsupported")?;
+                fail_if(e.typ == (3 as Int64) || e.typ == (4 as Int64) || e.typ == (7 as Int64), "parquet: unsupported column type")?;
+                fail_if(e.typ != (0 as Int64) && e.typ != (1 as Int64) && e.typ != (2 as Int64) && e.typ != (5 as Int64) && e.typ != (6 as Int64), "parquet: unsupported column type")?;
+                schema.push(PqSchema { name: e.name.clone(), kind: e.typ, optional: e.rep == (1 as Int64) });
+                k = k + (1 as Int64);
+            }
+        } else if (f.id == (3 as Int64)) {
+            nrows = read_i64(&mut local)?;
+        } else if (f.id == (4 as Int64)) {
+            val l = read_list(&mut local)?;
+            fail_if(thrift_list_kind(&l) != (12 as Int64), "parquet: expected row group list")?;
+            var i = 0 as Int64;
+            while (i < thrift_list_count(&l)) {
+                groups.push(parse_row_group(&mut local)?);
+                i = i + (1 as Int64);
+            }
+        } else {
+            fail_if(!thrift_skip(&mut local, f.kind), "parquet: bad file metadata field")?;
+        }
+    }
+    fail_if(schema.len() == (0 as Int64) || schema.len() > parquet_max_columns(), "parquet: bad column count")?;
+    fail_if(nrows < (0 as Int64) || nrows > parquet_max_rows(), "parquet: bad row count")?;
+    val seen = StringIndex::new();
+    var s = 0 as Int64;
+    while (s < schema.len()) {
+        val pos = seen.get_or_insert(schema[s].name.clone());
+        fail_if(pos != s, "parquet: duplicate column name: " + schema[s].name.clone())?;
+        s = s + (1 as Int64);
+    }
+    local.last_id = parent_last;
+    *r = local;
+    return Ok(PqMeta { nrows: nrows, schema: schema, groups: groups });
+}
+
+struct PageHeader {
+    typ: Int64,
+    uncomp: Int64,
+    comp: Int64,
+    num_values: Int64,
+    encoding: Int64,
+    def_encoding: Int64,
+    rep_encoding: Int64,
+}
+
+fun parse_data_page_header(r: &mut ThriftReader): Result<PageHeader, String> {
+    var local = *r;
+    val parent_last = (*r).last_id;
+    thrift_reset_last(&mut local);
+    var num_values = 0 as Int64;
+    var encoding = 0 as Int64;
+    var def_encoding = 0 as Int64;
+    var rep_encoding = 0 as Int64;
+    var done = false;
+    while (!done) {
+        val f = next_field(&mut local)?;
+        if (f.kind == (0 as Int64)) {
+            done = true;
+        } else if (f.id == (1 as Int64)) {
+            num_values = read_i32(&mut local)?;
+        } else if (f.id == (2 as Int64)) {
+            encoding = read_i32(&mut local)?;
+        } else if (f.id == (3 as Int64)) {
+            def_encoding = read_i32(&mut local)?;
+        } else if (f.id == (4 as Int64)) {
+            rep_encoding = read_i32(&mut local)?;
+        } else {
+            fail_if(!thrift_skip(&mut local, f.kind), "parquet: bad data page header")?;
+        }
+    }
+    local.last_id = parent_last;
+    *r = local;
+    return Ok(PageHeader { typ: 0 as Int64, uncomp: 0 as Int64, comp: 0 as Int64, num_values: num_values, encoding: encoding, def_encoding: def_encoding, rep_encoding: rep_encoding });
+}
+
+fun parse_page_header(r: &mut ThriftReader): Result<PageHeader, String> {
+    var local = *r;
+    val parent_last = (*r).last_id;
+    thrift_reset_last(&mut local);
+    var typ = 0 - (1 as Int64);
+    var uncomp = 0 as Int64;
+    var comp = 0 as Int64;
+    var num_values = 0 as Int64;
+    var encoding = 0 as Int64;
+    var def_encoding = 0 as Int64;
+    var rep_encoding = 0 as Int64;
+    var done = false;
+    while (!done) {
+        val f = next_field(&mut local)?;
+        if (f.kind == (0 as Int64)) {
+            done = true;
+        } else if (f.id == (1 as Int64)) {
+            typ = read_i32(&mut local)?;
+        } else if (f.id == (2 as Int64)) {
+            uncomp = read_i32(&mut local)?;
+        } else if (f.id == (3 as Int64)) {
+            comp = read_i32(&mut local)?;
+        } else if (f.id == (5 as Int64)) {
+            val d = parse_data_page_header(&mut local)?;
+            num_values = d.num_values;
+            encoding = d.encoding;
+            def_encoding = d.def_encoding;
+            rep_encoding = d.rep_encoding;
+        } else {
+            fail_if(!thrift_skip(&mut local, f.kind), "parquet: bad page header")?;
+        }
+    }
+    local.last_id = parent_last;
+    *r = local;
+    return Ok(PageHeader { typ: typ, uncomp: uncomp, comp: comp, num_values: num_values, encoding: encoding, def_encoding: def_encoding, rep_encoding: rep_encoding });
+}
+
+fun pow2(n: Int64): Int64 {
+    var v = 1 as Int64;
+    var i = 0 as Int64;
+    while (i < n) {
+        v = v * (2 as Int64);
+        i = i + (1 as Int64);
+    }
+    return v;
+}
+
+fun pow2f(n: Int64): Float64 {
+    var v = 1.0;
+    var i = 0 as Int64;
+    if (n >= (0 as Int64)) {
+        while (i < n) {
+            v = v * 2.0;
+            i = i + (1 as Int64);
+        }
+    } else {
+        while (i < (0 as Int64) - n) {
+            v = v / 2.0;
+            i = i + (1 as Int64);
+        }
+    }
+    return v;
+}
+
+fun double_from_bytes(s: &String, at: Int64): Option<Float64> {
+    if (at < (0 as Int64) || at + (8 as Int64) > (*s).len()) {
+        return None;
+    }
+    var b: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < (8 as Int64)) {
+        val x = bytes_u8(s, at + i);
+        val ok = match (x) { Some(v) -> true, None -> false, };
+        if (!ok) {
+            return None;
+        }
+        val v = match (bytes_u8(s, at + i)) { Some(v) -> v, None -> 0 as Int64, };
+        b.push(v);
+        i = i + (1 as Int64);
+    }
+    val sign = if (b[7] >= (128 as Int64)) { 0.0 - 1.0 } else { 1.0 };
+    val exp = (b[7] % (128 as Int64)) * (16 as Int64) + b[6] / (16 as Int64);
+    val mant = (b[6] % (16 as Int64)) * pow2(48) + b[5] * pow2(40) + b[4] * pow2(32) + b[3] * pow2(24) + b[2] * pow2(16) + b[1] * pow2(8) + b[0];
+    if (exp == (2047 as Int64)) {
+        if (mant == (0 as Int64)) {
+            return Some(sign * (1.0 / 0.0));
+        }
+        return Some(0.0 / 0.0);
+    }
+    if (exp == (0 as Int64)) {
+        return Some(sign * (mant as Float64) * pow2f((0 as Int64) - (1074 as Int64)));
+    }
+    return Some(sign * (1.0 + (mant as Float64) / pow2f(52)) * pow2f(exp - (1023 as Int64)));
+}
+
+fun decode_def_levels(data: &String, n: Int64): Result<Vec<Int64>, String> {
+    val lv = opt_int(bytes_u32_le(data, 0 as Int64));
+    fail_if(!lv.ok, "parquet: missing definition level length")?;
+    fail_if(lv.value < (0 as Int64) || lv.value + (4 as Int64) > (*data).len(), "parquet: bad definition level length")?;
+    val enc = opt_str(bytes_slice(data, 4 as Int64, 4 as Int64 + lv.value));
+    fail_if(!enc.ok, "parquet: bad definition level slice")?;
+    var out: Vec<Int64> = vec![];
+    var pos = 0 as Int64;
+    while (out.len() < n) {
+        val hv = opt_int_opt(bytes_varint(&enc.value, pos));
+        fail_if(!hv.ok, "parquet: bad definition level header")?;
+        val header = hv.value;
+        pos = hv.next;
+        if (header % (2 as Int64) == (0 as Int64)) {
+            val run = header / (2 as Int64);
+            fail_if(run < (0 as Int64) || pos >= enc.value.len(), "parquet: bad rle run")?;
+            val v = opt_int(bytes_u8(&enc.value, pos));
+            fail_if(!v.ok, "parquet: bad rle value")?;
+            pos = pos + (1 as Int64);
+            var j = 0 as Int64;
+            while (j < run && out.len() < n) {
+                out.push(v.value);
+                j = j + (1 as Int64);
+            }
+        } else {
+            val groups = header / (2 as Int64);
+            fail_if(groups < (0 as Int64) || pos + groups > enc.value.len(), "parquet: bad bit-packed run")?;
+            var j = 0 as Int64;
+            val total = groups * (8 as Int64);
+            while (j < total && out.len() < n) {
+                val bit = opt_bool(bytes_bit(&enc.value, pos * (8 as Int64) + j));
+                fail_if(!bit.ok, "parquet: bad definition bit")?;
+                out.push(if (bit.value) { 1 as Int64 } else { 0 as Int64 });
+                j = j + (1 as Int64);
+            }
+            pos = pos + groups;
+        }
+    }
+    return Ok(out);
+}
+
+struct OptBool { ok: Bool, value: Bool }
+struct OptVarint { ok: Bool, value: Int64, next: Int64 }
+
+fun opt_bool(v: Option<Bool>): OptBool {
+    match (v) {
+        Some(x) -> OptBool { ok: true, value: x },
+        None -> OptBool { ok: false, value: false },
+    }
+}
+
+fun opt_int_opt(v: Option<Varint>): OptVarint {
+    match (v) {
+        Some(x) -> OptVarint { ok: true, value: x.value, next: x.next },
+        None -> OptVarint { ok: false, value: 0 as Int64, next: 0 as Int64 },
+    }
+}
+
+fun new_pqcol(s: PqSchema): PqCol {
+    val PqSchema { name, kind, optional } = s;
+    val ints: Vec<Missing<Int64>> = vec![];
+    val floats: Vec<Missing<Float64>> = vec![];
+    val bools: Vec<Missing<Bool>> = vec![];
+    val strs: Vec<Missing<String>> = vec![];
+    return PqCol { name: name, kind: kind, optional: optional, ints: ints, floats: floats, bools: bools, strs: strs };
+}
+
+fun decode_values(data: &String, at: Int64, kind: Int64, n: Int64, defs: Vec<Int64>, optional: Bool, col: &mut PqCol): Result<Bool, String> {
+    var pos = at;
+    var bitpos = at * (8 as Int64);
+    var row = 0 as Int64;
+    while (row < n) {
+        var present = true;
+        if (optional) {
+            if (defs[row] == (0 as Int64)) {
+                present = false;
+            }
+        }
+        if (!present) {
+            if (kind == (1 as Int64) || kind == (2 as Int64)) {
+                (*col).ints.push(Missing);
+            } else if (kind == (5 as Int64)) {
+                (*col).floats.push(Missing);
+            } else if (kind == (0 as Int64)) {
+                (*col).bools.push(Missing);
+            } else {
+                (*col).strs.push(Missing);
+            }
+        } else if (kind == (1 as Int64)) {
+            val v = opt_int(bytes_i32_le(data, pos));
+            fail_if(!v.ok, "parquet: truncated int32")?;
+            (*col).ints.push(Missing::Present(v.value));
+            pos = pos + (4 as Int64);
+        } else if (kind == (2 as Int64)) {
+            val v = opt_int(bytes_i64_le(data, pos));
+            fail_if(!v.ok, "parquet: truncated int64")?;
+            (*col).ints.push(Missing::Present(v.value));
+            pos = pos + (8 as Int64);
+        } else if (kind == (5 as Int64)) {
+            val v = opt_float(double_from_bytes(data, pos));
+            fail_if(!v.ok, "parquet: truncated double")?;
+            (*col).floats.push(Missing::Present(v.value));
+            pos = pos + (8 as Int64);
+        } else if (kind == (0 as Int64)) {
+            val v = opt_bool(bytes_bit(data, bitpos));
+            fail_if(!v.ok, "parquet: truncated boolean")?;
+            (*col).bools.push(Missing::Present(v.value));
+            bitpos = bitpos + (1 as Int64);
+        } else if (kind == (6 as Int64)) {
+            val lv = opt_int(bytes_u32_le(data, pos));
+            fail_if(!lv.ok, "parquet: truncated byte array length")?;
+            pos = pos + (4 as Int64);
+            fail_if(lv.value < (0 as Int64) || pos + lv.value > (*data).len(), "parquet: truncated byte array")?;
+            val s = opt_str(bytes_slice(data, pos, pos + lv.value));
+            fail_if(!s.ok, "parquet: bad byte array")?;
+            (*col).strs.push(Missing::Present(s.value));
+            pos = pos + lv.value;
+        } else {
+            fail_if(true, "parquet: unsupported value type")?;
+        }
+        row = row + (1 as Int64);
+    }
+    return Ok(true);
+}
+
+fun read_column_chunk(file: &String, c: ChunkMeta, col: &mut PqCol): Result<Bool, String> {
+    fail_if(c.num_values < (0 as Int64) || c.num_values > parquet_max_rows(), "parquet: bad column value count")?;
+    var start = c.data_offset;
+    if (c.dict_offset >= (0 as Int64) && c.dict_offset < start) {
+        start = c.dict_offset;
+    }
+    fail_if(start < (0 as Int64) || start >= (*file).len(), "parquet: bad column offset")?;
+    var seen = 0 as Int64;
+    while (seen < c.num_values) {
+        fail_if(start < (0 as Int64) || start >= (*file).len(), "parquet: page offset out of range")?;
+        val hb = opt_str(bytes_slice(file, start, (*file).len()));
+        fail_if(!hb.ok, "parquet: bad page header slice")?;
+        var hr = thrift_reader(hb.value);
+        val ph = parse_page_header(&mut hr)?;
+        val hlen = thrift_pos(&mut hr);
+        fail_if(hlen < (0 as Int64) || start + hlen > (*file).len(), "parquet: bad page header length")?;
+        fail_if(ph.typ == (2 as Int64), "parquet: dictionary page is unsupported")?;
+        fail_if(ph.typ == (3 as Int64), "parquet: data page v2 is unsupported")?;
+        fail_if(ph.typ != (0 as Int64), "parquet: unsupported page type")?;
+        fail_if(ph.encoding != (0 as Int64), "parquet: non-plain encoding is unsupported")?;
+        fail_if(ph.num_values <= (0 as Int64) || ph.comp <= (0 as Int64) || ph.uncomp < (0 as Int64), "parquet: bad page sizes")?;
+        fail_if(ph.comp > parquet_max_page_bytes() || ph.uncomp > parquet_max_page_bytes(), "parquet: page exceeds cap")?;
+        val data_start = start + hlen;
+        fail_if(data_start + ph.comp > (*file).len(), "parquet: truncated page")?;
+        val raw = opt_str(bytes_slice(file, data_start, data_start + ph.comp));
+        fail_if(!raw.ok, "parquet: bad page slice")?;
+        var page = raw.value;
+        fail_if(c.codec != (0 as Int64) && c.codec != (1 as Int64), "parquet: unsupported compression codec")?;
+        if (c.codec == (1 as Int64)) {
+            page = snappy_decompress(page, ph.uncomp)?;
+        }
+        var values_at = 0 as Int64;
+        var defs: Vec<Int64> = vec![];
+        if ((*col).optional) {
+            defs = decode_def_levels(&page, ph.num_values)?;
+            val dl = opt_int(bytes_u32_le(&page, 0 as Int64));
+            fail_if(!dl.ok, "parquet: bad definition length")?;
+            values_at = 4 as Int64 + dl.value;
+        }
+        decode_values(&page, values_at, c.kind, ph.num_values, defs, (*col).optional, col)?;
+        seen = seen + ph.num_values;
+        start = data_start + ph.comp;
+    }
+    fail_if(seen != c.num_values, "parquet: value count mismatch")?;
+    return Ok(true);
+}
+
+fun pqcol_to_column(c: PqCol): Column {
+    if (c.kind == (0 as Int64)) {
+        return Column::Bool(c.bools);
+    }
+    if (c.kind == (1 as Int64) || c.kind == (2 as Int64)) {
+        return Column::Int(c.ints);
+    }
+    if (c.kind == (5 as Int64)) {
+        return Column::Float(c.floats);
+    }
+    return Column::Str(c.strs);
+}
+
+fun load_meta(path: String): Result<PqMeta, String> {
+    val file = read_file_limit(path.clone(), parquet_max_file_bytes())?;
+    val n = file.len();
+    fail_if(n < (12 as Int64), "parquet: file too small")?;
+    val m0 = opt_str(bytes_slice(&file, 0 as Int64, 4 as Int64));
+    fail_if(!m0.ok || m0.value != "PAR1", "parquet: bad leading magic")?;
+    val m1 = opt_str(bytes_slice(&file, n - (4 as Int64), n));
+    fail_if(!m1.ok || m1.value != "PAR1", "parquet: bad trailing magic")?;
+    val ml = opt_int(bytes_u32_le(&file, n - (8 as Int64)));
+    fail_if(!ml.ok || ml.value < (0 as Int64) || ml.value > n - (8 as Int64), "parquet: bad footer length")?;
+    val ms = opt_str(bytes_slice(&file, n - (8 as Int64) - ml.value, n - (8 as Int64)));
+    fail_if(!ms.ok, "parquet: bad footer slice")?;
+    var r = thrift_reader(ms.value);
+    return parse_file_metadata(&mut r);
+}
+
+pub fun read_parquet_schema(path: String): Result<Vec<String>, String> {
+    val meta = load_meta(path)?;
+    var names: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < meta.schema.len()) {
+        names.push(meta.schema[i].name.clone());
+        i = i + (1 as Int64);
+    }
+    return Ok(names);
+}
+
+pub fun read_parquet(path: String): Result<TypedFrame, String> {
+    val meta = load_meta(path.clone())?;
+    val file = read_file_limit(path, parquet_max_file_bytes())?;
+    var names: Vec<String> = vec![];
+    var cols: Vec<Column> = vec![];
+    var i = 0 as Int64;
+    while (i < meta.schema.len()) {
+        val s = meta.schema[i];
+        names.push(s.name.clone());
+        var c = new_pqcol(s);
+        var g = 0 as Int64;
+        while (g < meta.groups.len()) {
+            val rg = meta.groups[g];
+            fail_if(rg.chunks.len() != meta.schema.len(), "parquet: column chunk count mismatch")?;
+            val ch = rg.chunks[i];
+            fail_if(ch.kind != c.kind, "parquet: column type mismatch")?;
+            fail_if(ch.path.len() != (1 as Int64) || ch.path[0] != c.name, "parquet: nested or mismatched column path")?;
+            read_column_chunk(&file, ch, &mut c)?;
+            g = g + (1 as Int64);
+        }
+        cols.push(pqcol_to_column(c));
+        i = i + (1 as Int64);
+    }
+    return tf_new(names, cols, meta.nrows);
+}
+
+struct PqWriteCol {
+    name: String,
+    kind: Int64,
+    optional: Bool,
+    ints: Vec<Missing<Int64>>,
+    floats: Vec<Missing<Float64>>,
+    bools: Vec<Missing<Bool>>,
+    strs: Vec<Missing<String>>,
+}
+
+struct PqChunkOut {
+    offset: Int64,
+    size: Int64,
+}
+
+fun pqw_append_string(out: &mut Vec<Int64>, s: String) {
+    var i = 0 as Int64;
+    while (i < s.len()) {
+        (*out).push(s.byte_at(i));
+        i = i + (1 as Int64);
+    }
+}
+
+fun pqw_append_vec(out: &mut Vec<Int64>, v: Vec<Int64>) {
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        (*out).push(v[i]);
+        i = i + (1 as Int64);
+    }
+}
+
+fun pqw_any_missing_int(v: &Vec<Missing<Int64>>): Bool {
+    var i = 0 as Int64;
+    while (i < (*v).len()) {
+        match ((*v)[i]) {
+            Missing::Present(x) -> { },
+            Missing -> { return true; },
+        };
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun pqw_any_missing_float(v: &Vec<Missing<Float64>>): Bool {
+    var i = 0 as Int64;
+    while (i < (*v).len()) {
+        match ((*v)[i]) {
+            Missing::Present(x) -> { },
+            Missing -> { return true; },
+        };
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun pqw_any_missing_bool(v: &Vec<Missing<Bool>>): Bool {
+    var i = 0 as Int64;
+    while (i < (*v).len()) {
+        match ((*v)[i]) {
+            Missing::Present(x) -> { },
+            Missing -> { return true; },
+        };
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun pqw_any_missing_str(v: &Vec<Missing<String>>): Bool {
+    var i = 0 as Int64;
+    while (i < (*v).len()) {
+        match ((*v)[i]) {
+            Missing::Present(x) -> { },
+            Missing -> { return true; },
+        };
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun pqw_int_col(name: String, v: Vec<Missing<Int64>>): PqWriteCol {
+    val opt = pqw_any_missing_int(&v);
+    val f: Vec<Missing<Float64>> = vec![];
+    val b: Vec<Missing<Bool>> = vec![];
+    val s: Vec<Missing<String>> = vec![];
+    return PqWriteCol { name: name, kind: 2 as Int64, optional: opt, ints: v, floats: f, bools: b, strs: s };
+}
+
+fun pqw_float_col(name: String, v: Vec<Missing<Float64>>): PqWriteCol {
+    val opt = pqw_any_missing_float(&v);
+    val i: Vec<Missing<Int64>> = vec![];
+    val b: Vec<Missing<Bool>> = vec![];
+    val s: Vec<Missing<String>> = vec![];
+    return PqWriteCol { name: name, kind: 5 as Int64, optional: opt, ints: i, floats: v, bools: b, strs: s };
+}
+
+fun pqw_bool_col(name: String, v: Vec<Missing<Bool>>): PqWriteCol {
+    val opt = pqw_any_missing_bool(&v);
+    val i: Vec<Missing<Int64>> = vec![];
+    val f: Vec<Missing<Float64>> = vec![];
+    val s: Vec<Missing<String>> = vec![];
+    return PqWriteCol { name: name, kind: 0 as Int64, optional: opt, ints: i, floats: f, bools: v, strs: s };
+}
+
+fun pqw_str_col(name: String, v: Vec<Missing<String>>): PqWriteCol {
+    val opt = pqw_any_missing_str(&v);
+    val i: Vec<Missing<Int64>> = vec![];
+    val f: Vec<Missing<Float64>> = vec![];
+    val b: Vec<Missing<Bool>> = vec![];
+    return PqWriteCol { name: name, kind: 6 as Int64, optional: opt, ints: i, floats: f, bools: b, strs: v };
+}
+
+fun pqw_factor_col(name: String, f: Factor): PqWriteCol {
+    val lv = f.levels();
+    val cd = f.codes();
+    var v: Vec<Missing<String>> = vec![];
+    var i = 0 as Int64;
+    while (i < cd.len()) {
+        if (cd[i] == (0 as Int32)) {
+            v.push(Missing);
+        } else {
+            v.push(Missing::Present(lv[(cd[i] as Int64) - (1 as Int64)].clone()));
+        }
+        i = i + (1 as Int64);
+    }
+    return pqw_str_col(name, v);
+}
+
+fun pqw_ok(c: PqWriteCol): Result<PqWriteCol, String> {
+    return Ok(c);
+}
+
+fun pqw_col(name: String, c: Column): Result<PqWriteCol, String> {
+    match (c) {
+        Column::Int(v) -> pqw_ok(pqw_int_col(name, v)),
+        Column::Float(v) -> pqw_ok(pqw_float_col(name, v)),
+        Column::Bool(v) -> pqw_ok(pqw_bool_col(name, v)),
+        Column::Str(v) -> pqw_ok(pqw_str_col(name, v)),
+        Column::Factor(f) -> pqw_ok(pqw_factor_col(name, f)),
+    }
+}
+
+fun pqw_page_body(c: PqWriteCol, n: Int64): Result<Vec<Int64>, String> {
+    var body: Vec<Int64> = vec![];
+    if (c.optional) {
+        var enc: Vec<Int64> = vec![];
+        val groups = (n + (7 as Int64)) / (8 as Int64);
+        bytes_put_varint(&mut enc, groups * (2 as Int64) + (1 as Int64));
+        var g = 0 as Int64;
+        while (g < groups) {
+            var b = 0 as Int64;
+            var j = 0 as Int64;
+            while (j < (8 as Int64)) {
+                val row = g * (8 as Int64) + j;
+                if (row < n) {
+                    var present = false;
+                    if (c.kind == (0 as Int64)) {
+                        match (c.bools[row]) {
+                            Missing::Present(x) -> { present = true; },
+                            Missing -> { },
+                        };
+                    } else if (c.kind == (2 as Int64)) {
+                        match (c.ints[row]) {
+                            Missing::Present(x) -> { present = true; },
+                            Missing -> { },
+                        };
+                    } else if (c.kind == (5 as Int64)) {
+                        match (c.floats[row]) {
+                            Missing::Present(x) -> { present = true; },
+                            Missing -> { },
+                        };
+                    } else {
+                        match (c.strs[row]) {
+                            Missing::Present(x) -> { present = true; },
+                            Missing -> { },
+                        };
+                    }
+                    if (present) {
+                        b = b + bytes_pow2(j);
+                    }
+                }
+                j = j + (1 as Int64);
+            }
+            enc.push(b);
+            g = g + (1 as Int64);
+        }
+        bytes_put_u32_le(&mut body, enc.len());
+        pqw_append_vec(&mut body, enc);
+    }
+    if (c.kind == (2 as Int64)) {
+        var i = 0 as Int64;
+        while (i < n) {
+            match (c.ints[i]) {
+                Missing::Present(x) -> bytes_put_i64_le(&mut body, x),
+                Missing -> { },
+            };
+            i = i + (1 as Int64);
+        }
+    } else if (c.kind == (5 as Int64)) {
+        var i = 0 as Int64;
+        while (i < n) {
+            match (c.floats[i]) {
+                Missing::Present(x) -> {
+                    val ok = bytes_put_f64_le(&mut body, x)?;
+                },
+                Missing -> { },
+            };
+            i = i + (1 as Int64);
+        }
+    } else if (c.kind == (0 as Int64)) {
+        var bits: Vec<Int64> = vec![];
+        var acc = 0 as Int64;
+        var k = 0 as Int64;
+        var i = 0 as Int64;
+        while (i < n) {
+            match (c.bools[i]) {
+                Missing::Present(x) -> {
+                    if (x) {
+                        acc = acc + bytes_pow2(k % (8 as Int64));
+                    }
+                    k = k + (1 as Int64);
+                    if (k % (8 as Int64) == (0 as Int64)) {
+                        bits.push(acc);
+                        acc = 0 as Int64;
+                    }
+                },
+                Missing -> { },
+            };
+            i = i + (1 as Int64);
+        }
+        if (k % (8 as Int64) != (0 as Int64)) {
+            bits.push(acc);
+        }
+        pqw_append_vec(&mut body, bits);
+    } else {
+        var i = 0 as Int64;
+        while (i < n) {
+            match (c.strs[i]) {
+                Missing::Present(x) -> {
+                    bytes_put_u32_le(&mut body, x.len());
+                    pqw_append_string(&mut body, x);
+                },
+                Missing -> { },
+            };
+            i = i + (1 as Int64);
+        }
+    }
+    return Ok(body);
+}
+
+fun pqw_page(c: PqWriteCol, n: Int64): Result<Vec<Int64>, String> {
+    val body = pqw_page_body(c, n)?;
+    fail_if(body.len() > parquet_max_page_bytes(), "parquet: page exceeds cap")?;
+    var hw = thrift_writer();
+    thrift_write_i32(&mut hw, 1 as Int64, 0 as Int64);
+    thrift_write_i32(&mut hw, 2 as Int64, body.len());
+    thrift_write_i32(&mut hw, 3 as Int64, body.len());
+    thrift_write_struct_field(&mut hw, 5 as Int64);
+    thrift_write_i32(&mut hw, 1 as Int64, n);
+    thrift_write_i32(&mut hw, 2 as Int64, 0 as Int64);
+    thrift_write_i32(&mut hw, 3 as Int64, 3 as Int64);
+    thrift_write_i32(&mut hw, 4 as Int64, 3 as Int64);
+    thrift_write_struct_end(&mut hw);
+    thrift_write_struct_end(&mut hw);
+    val hs = thrift_write_finish(hw)?;
+    var out: Vec<Int64> = vec![];
+    pqw_append_string(&mut out, hs);
+    pqw_append_vec(&mut out, body);
+    return Ok(out);
+}
+
+fun pqw_write_schema(w: &mut ThriftWriter, cols: &Vec<PqWriteCol>) {
+    var local = thrift_writer_clone(w);
+    thrift_write_i32(&mut local, 1 as Int64, 1 as Int64);
+    thrift_write_list_header(&mut local, 2 as Int64, (*cols).len() + (1 as Int64), 12 as Int64);
+    thrift_write_struct_element(&mut local);
+    thrift_write_binary(&mut local, 4 as Int64, "schema".clone());
+    thrift_write_i32(&mut local, 5 as Int64, (*cols).len());
+    thrift_write_struct_end(&mut local);
+    var i = 0 as Int64;
+    while (i < (*cols).len()) {
+        val c = (*cols)[i];
+        thrift_write_struct_element(&mut local);
+        thrift_write_i32(&mut local, 1 as Int64, c.kind);
+        thrift_write_i32(&mut local, 3 as Int64, if (c.optional) { 1 as Int64 } else { 0 as Int64 });
+        thrift_write_binary(&mut local, 4 as Int64, c.name.clone());
+        if (c.kind == (6 as Int64)) {
+            thrift_write_i32(&mut local, 6 as Int64, 0 as Int64);
+        }
+        thrift_write_struct_end(&mut local);
+        i = i + (1 as Int64);
+    }
+    *w = local;
+}
+
+fun pqw_write_chunk_meta(w: &mut ThriftWriter, c: PqWriteCol, off: Int64, size: Int64, n: Int64) {
+    var local = thrift_writer_clone(w);
+    thrift_write_i32(&mut local, 1 as Int64, c.kind);
+    thrift_write_list_header(&mut local, 2 as Int64, 1 as Int64, 5 as Int64);
+    thrift_write_i32_value(&mut local, 0 as Int64);
+    thrift_write_list_header(&mut local, 3 as Int64, 1 as Int64, 8 as Int64);
+    thrift_write_binary_value(&mut local, c.name.clone());
+    thrift_write_i32(&mut local, 4 as Int64, 0 as Int64);
+    thrift_write_i64(&mut local, 5 as Int64, n);
+    thrift_write_i64(&mut local, 6 as Int64, size);
+    thrift_write_i64(&mut local, 7 as Int64, size);
+    thrift_write_i64(&mut local, 9 as Int64, off);
+    *w = local;
+}
+
+fun pqw_write_metadata(cols: Vec<PqWriteCol>, chunks: Vec<PqChunkOut>, n: Int64): Result<String, String> {
+    var w = thrift_writer();
+    pqw_write_schema(&mut w, &cols);
+    thrift_write_i64(&mut w, 3 as Int64, n);
+    thrift_write_list_header(&mut w, 4 as Int64, 1 as Int64, 12 as Int64);
+    thrift_write_struct_element(&mut w);
+    thrift_write_list_header(&mut w, 1 as Int64, cols.len(), 12 as Int64);
+    var total = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < cols.len()) {
+        val c = cols[i];
+        val ch = chunks[i];
+        thrift_write_struct_element(&mut w);
+        thrift_write_i64(&mut w, 2 as Int64, ch.offset);
+        thrift_write_struct_field(&mut w, 3 as Int64);
+        pqw_write_chunk_meta(&mut w, c, ch.offset, ch.size, n);
+        thrift_write_struct_end(&mut w);
+        thrift_write_struct_end(&mut w);
+        total = total + ch.size;
+        i = i + (1 as Int64);
+    }
+    thrift_write_i64(&mut w, 2 as Int64, total);
+    thrift_write_i64(&mut w, 3 as Int64, n);
+    thrift_write_struct_end(&mut w);
+    thrift_write_binary(&mut w, 6 as Int64, "valvet".clone());
+    thrift_write_struct_end(&mut w);
+    return thrift_write_finish(w);
+}
+
+pub fun write_parquet(f: &TypedFrame, path: String): Result<Int64, String> {
+    val names = tf_names(f);
+    val nrows = tf_nrows(f);
+    fail_if(names.len() > parquet_max_columns(), "parquet: too many columns")?;
+    fail_if(nrows < (0 as Int64) || nrows > parquet_max_rows(), "parquet: too many rows")?;
+    var cols: Vec<PqWriteCol> = vec![];
+    val empty_int: Vec<Missing<Int64>> = vec![];
+    var i = 0 as Int64;
+    while (i < names.len()) {
+        val c = tf_col_at(f, i);
+        val cok = match (c) { Some(v) -> true, None -> false, };
+        fail_if(!cok, "parquet: missing column")?;
+        val col = match (tf_col_at(f, i)) { Some(v) -> v, None -> Column::Int(empty_int) };
+        val wc = pqw_col(names[i].clone(), col)?;
+        cols.push(wc);
+        i = i + (1 as Int64);
+    }
+    var out: Vec<Int64> = vec![];
+    pqw_append_string(&mut out, "PAR1".clone());
+    var chunks: Vec<PqChunkOut> = vec![];
+    i = 0 as Int64;
+    while (i < cols.len()) {
+        val c = cols[i];
+        val pg = pqw_page(c, nrows)?;
+        val off = out.len();
+        val sz = pg.len();
+        pqw_append_vec(&mut out, pg);
+        chunks.push(PqChunkOut { offset: off, size: sz });
+        i = i + (1 as Int64);
+    }
+    val meta = pqw_write_metadata(cols, chunks, nrows)?;
+    pqw_append_string(&mut out, meta.clone());
+    bytes_put_u32_le(&mut out, meta.len());
+    pqw_append_string(&mut out, "PAR1".clone());
+    fail_if(out.len() > parquet_max_file_bytes(), "parquet: file exceeds cap")?;
+    val data = bytes_finish(out)?;
+    return write_file(path, data);
+}

@@ -1,0 +1,111 @@
+VALVET WEBSITE TEXT SNAPSHOT
+
+Live site: https://kenneth-cho-infosec.github.io/Valvet/
+Source branch: website @ e040a3a
+Fetched: 2026-10-20
+
+PURPOSE
+  Plain-text extraction of the deployed Pages site, for a website revamp.
+  HTML tags, navigation chrome, buttons, and scripts are removed.
+  Section hierarchy, paragraphs, lists, tables, links, and code blocks are kept.
+
+FILES
+  index.txt        500 words,  3 code blocks,   3441 chars
+  docs.txt        5905 words, 64 code blocks,  36478 chars
+  examples.txt    1822 words, 34 code blocks,  11046 chars
+  all-pages.txt  all three pages in one file
+  style-css.txt  raw stylesheet, unchanged
+  site-outline.txt  this file
+  README.txt       provenance and refresh steps
+  _extract_pages.py  extraction script
+
+FETCHED SOURCE HASHES (SHA-256)
+  b67c180dafa0237488ae0f0ee2f4a73c19baf86459ac5c7932ad2203a873ea28  index.html
+  58fc8a3790080765fb63f74517973298e6a82e2d712f65664505caa81ef0fcbc  docs.html
+  68f09770dc6becf14f905559416418b2bbf9ea8fa30ca5ee79e7120572ed4f05  examples.html
+  b2f85e8e5e2a5954cb3f9ee3eecb268bd56a7b2bd31e87a9f4a50bf817210d4a  style.css
+
+GLOBAL NAVIGATION
+  The Valvet Programming Language -> index.html
+  Home -> index.html
+  Docs -> docs.html
+  Examples -> examples.html
+  GitHub -> https://github.com/Kenneth-Cho-InfoSec/valvet
+
+PAGE OUTLINE
+
+  index.txt  (Valvet: a small, safe, compiled language for data work)
+    # Valvet
+      ## Why Valvet
+        ### Safe
+        ### Fast
+        ### Small
+      ## Thirty seconds
+      ## How programs run
+        ### 1. Parse
+        ### 2. Check
+        ### 3. Lower
+        ### 4. Link
+      ## Proven on real analyses
+      ## New in 0.3.0
+        ### Models
+        ### SQL
+        ### Inference
+        ### Ergonomics
+      ## New in 0.2.0
+        ### Units
+        ### Frames
+        ### Autodiff
+        ### Parallel
+      ## Install
+
+  docs.txt  (Valvet Docs)
+      ## Documentation
+        ### Getting started  [#start]
+        ### Script and explicit modes  [#modes]
+        ### Lexical structure  [#lex]
+        ### Values and types  [#types]
+        ### Variables  [#vars]
+        ### Functions
+        ### Operators and precedence  [#ops]
+        ### Control flow  [#flow]
+        ### Structs and enums  [#structs]
+        ### Pattern matching  [#match]
+        ### Vectors  [#vec]
+        ### Ownership  [#own]
+        ### References  [#refs]
+        ### Memory model  [#memory]
+        ### Modules  [#modules]
+        ### Units of measure  [#units]
+        ### Frames and audited joins  [#frames]
+        ### Forward differentiation  [#autodiff]
+        ### Deterministic parallelism  [#parallel]
+        ### Standard library and REPL  [#stdlib]
+      ## Build pipeline  [#pipeline]
+      ## Testing  [#testing]
+      ## CLI  [#cli]
+        ### Errors  [#errors]
+      ## Scope  [#scope]
+
+  examples.txt  (Valvet Examples)
+      ## Examples
+        ### Hello
+        ### Fibonacci and pattern matching
+        ### Mean of a vector
+        ### FizzBuzz
+        ### Newton square root
+        ### Vector dot product
+        ### Shapes and areas
+        ### Loop with a break value
+        ### Strings
+        ### Least-squares slope
+        ### Script and explicit modes
+        ### Units of measure
+        ### Frames and grouping
+        ### SQL over frames
+
+NOTES
+  * The live pages are byte-identical to the site/ directory on the website branch.
+  * Internal anchor links are preserved as [text](#anchor).
+  * Code block labels are the original UI labels (Input, Output, Bash, Error).
+  * The logo asset is not duplicated here; it is site/assets/logo.png upstream.

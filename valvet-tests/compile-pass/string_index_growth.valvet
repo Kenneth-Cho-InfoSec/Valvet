@@ -1,0 +1,22 @@
+fun main() {
+    val idx = StringIndex::new();
+    for (i in 0..20) {
+        val key = "k" + to_string(i);
+        val at = idx.get_or_insert(key);
+        if (at != (i as Int64)) {
+            println("bad");
+        }
+    }
+    println(idx.len());
+    println(idx.get_or_insert("k0"));
+    println(idx.get_or_insert("k19"));
+    println(idx.contains("k7"));
+    println(idx.get("k20"));
+    val ks = idx.keys();
+    println(ks.len());
+    println(ks[0]);
+    println(ks[19]);
+    val copy = idx.clone();
+    println(copy.len());
+    println(copy.get_or_insert("k0"));
+}

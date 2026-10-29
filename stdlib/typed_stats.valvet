@@ -1,0 +1,228 @@
+// std::typed_stats: missing-aware statistics over typed frames.
+// Numeric columns are Int or Float; Int is promoted to Float64 for these
+// summary statistics. Non-numeric columns are rejected by describe and by
+// the numeric-only accessors. No dynamic string round-trip is used.
+module std.typed_stats;
+
+import std::stats::MissingPolicy;
+import std::stats::cor;
+import std::stats::cov;
+import std::stats::max_v;
+import std::stats::mean;
+import std::stats::median;
+import std::stats::min_v;
+import std::stats::n_missing;
+import std::stats::quantile;
+import std::stats::sd;
+import std::stats::sum_v;
+import std::stats::var_v;
+import std::typed_frame::Column;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::col_missing_mask;
+import std::typed_frame::tf_col;
+import std::typed_frame::tf_float_col;
+import std::typed_frame::tf_nrows;
+import std::typed_frame::tf_new;
+
+fun empty_float_values(): Vec<Missing<Float64>> {
+    return vec![];
+}
+
+fun empty_int_values(): Vec<Missing<Int64>> {
+    return vec![];
+}
+
+fun has_float_col(f: &TypedFrame, name: String): Bool {
+    val c = tf_float_col(f, name);
+    match (c) {
+        Some(v) -> true,
+        None -> false,
+    }
+}
+
+fun require_float_col(f: &TypedFrame, name: String): Result<Vec<Missing<Float64>>, String> {
+    val have = has_float_col(f, name.clone());
+    if (!have) {
+        return Err("typed stats: non-numeric column: " + name);
+    }
+    val c = tf_float_col(f, name);
+    val out = match (c) {
+        Some(v) -> v,
+        None -> empty_float_values(),
+    };
+    return Ok(out);
+}
+
+fun missing_float(): Missing<Float64> {
+    return Missing;
+}
+
+fun opt_float(o: Option<Float64>): Missing<Float64> {
+    match (o) {
+        Some(v) -> Missing::Present(v),
+        None -> missing_float(),
+    }
+}
+
+fun count_true(v: Vec<Bool>): Int64 {
+    var n = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (v[i]) {
+            n = n + (1 as Int64);
+        }
+        i = i + (1 as Int64);
+    }
+    return n;
+}
+
+pub fun tf_n_missing(f: &TypedFrame, col: String): Option<Int64> {
+    val c = tf_col(f, col.clone());
+    val have = match (c) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return None;
+    }
+    val c2 = tf_col(f, col);
+    val column = match (c2) { Some(v) -> v, None -> Column::Int(empty_int_values()) };
+    val mask = col_missing_mask(column);
+    return Some(count_true(mask));
+}
+
+pub fun tf_mean(f: &TypedFrame, col: String, policy: MissingPolicy): Option<Float64> {
+    val have = has_float_col(f, col.clone());
+    if (!have) {
+        return None;
+    }
+    val c = match (tf_float_col(f, col)) { Some(v) -> v, None -> empty_float_values() };
+    return mean(c, policy);
+}
+
+pub fun tf_sum(f: &TypedFrame, col: String, policy: MissingPolicy): Option<Float64> {
+    val have = has_float_col(f, col.clone());
+    if (!have) {
+        return None;
+    }
+    val c = match (tf_float_col(f, col)) { Some(v) -> v, None -> empty_float_values() };
+    return sum_v(c, policy);
+}
+
+pub fun tf_var(f: &TypedFrame, col: String, policy: MissingPolicy): Option<Float64> {
+    val have = has_float_col(f, col.clone());
+    if (!have) {
+        return None;
+    }
+    val c = match (tf_float_col(f, col)) { Some(v) -> v, None -> empty_float_values() };
+    return var_v(c, policy);
+}
+
+pub fun tf_sd(f: &TypedFrame, col: String, policy: MissingPolicy): Option<Float64> {
+    val have = has_float_col(f, col.clone());
+    if (!have) {
+        return None;
+    }
+    val c = match (tf_float_col(f, col)) { Some(v) -> v, None -> empty_float_values() };
+    return sd(c, policy);
+}
+
+pub fun tf_quantile(f: &TypedFrame, col: String, policy: MissingPolicy, q: Float64): Option<Float64> {
+    val have = has_float_col(f, col.clone());
+    if (!have) {
+        return None;
+    }
+    val c = match (tf_float_col(f, col)) { Some(v) -> v, None -> empty_float_values() };
+    return quantile(c, policy, q);
+}
+
+pub fun tf_cov(f: &TypedFrame, x: String, y: String, policy: MissingPolicy): Option<Float64> {
+    val hx = has_float_col(f, x.clone());
+    if (!hx) {
+        return None;
+    }
+    val hy = has_float_col(f, y.clone());
+    if (!hy) {
+        return None;
+    }
+    val cx = match (tf_float_col(f, x)) { Some(v) -> v, None -> empty_float_values() };
+    val cy = match (tf_float_col(f, y)) { Some(v) -> v, None -> empty_float_values() };
+    return cov(cx, cy, policy);
+}
+
+pub fun tf_min(f: &TypedFrame, col: String, policy: MissingPolicy): Option<Float64> {
+    val have = has_float_col(f, col.clone());
+    if (!have) {
+        return None;
+    }
+    val c = match (tf_float_col(f, col)) { Some(v) -> v, None -> empty_float_values() };
+    return min_v(c, policy);
+}
+
+pub fun tf_max(f: &TypedFrame, col: String, policy: MissingPolicy): Option<Float64> {
+    val have = has_float_col(f, col.clone());
+    if (!have) {
+        return None;
+    }
+    val c = match (tf_float_col(f, col)) { Some(v) -> v, None -> empty_float_values() };
+    return max_v(c, policy);
+}
+
+pub fun tf_median(f: &TypedFrame, col: String, policy: MissingPolicy): Option<Float64> {
+    val have = has_float_col(f, col.clone());
+    if (!have) {
+        return None;
+    }
+    val c = match (tf_float_col(f, col)) { Some(v) -> v, None -> empty_float_values() };
+    return median(c, policy);
+}
+
+pub fun tf_cor(f: &TypedFrame, x: String, y: String, policy: MissingPolicy): Option<Float64> {
+    val hx = has_float_col(f, x.clone());
+    if (!hx) {
+        return None;
+    }
+    val hy = has_float_col(f, y.clone());
+    if (!hy) {
+        return None;
+    }
+    val cx = match (tf_float_col(f, x)) { Some(v) -> v, None -> empty_float_values() };
+    val cy = match (tf_float_col(f, y)) { Some(v) -> v, None -> empty_float_values() };
+    return cor(cx, cy, policy);
+}
+
+pub fun tf_describe(f: &TypedFrame, cols: Vec<String>): Result<TypedFrame, String> {
+    return tf_describe_policy(f, cols, MissingPolicy::Skip);
+}
+
+pub fun tf_describe_policy(f: &TypedFrame, cols: Vec<String>, policy: MissingPolicy): Result<TypedFrame, String> {
+    var names: Vec<Missing<String>> = vec![];
+    var counts: Vec<Missing<Int64>> = vec![];
+    var missing: Vec<Missing<Int64>> = vec![];
+    var means: Vec<Missing<Float64>> = vec![];
+    var sds: Vec<Missing<Float64>> = vec![];
+    var mins: Vec<Missing<Float64>> = vec![];
+    var maxs: Vec<Missing<Float64>> = vec![];
+    var i = 0 as Int64;
+    while (i < cols.len()) {
+        val name = cols[i].clone();
+        val c = require_float_col(f, name.clone())?;
+        val nm = n_missing(c.clone());
+        val n = tf_nrows(f) - nm;
+        names.push(Missing::Present(name));
+        counts.push(Missing::Present(n));
+        missing.push(Missing::Present(nm));
+        means.push(opt_float(mean(c.clone(), policy)));
+        sds.push(opt_float(sd(c.clone(), policy)));
+        mins.push(opt_float(min_v(c.clone(), policy)));
+        maxs.push(opt_float(max_v(c.clone(), policy)));
+        i = i + (1 as Int64);
+    }
+    val names2: Vec<String> = vec!["column", "n", "n_missing", "mean", "sd", "min", "max"];
+    return tf_new(names2, vec![
+        Column::Str(names),
+        Column::Int(counts),
+        Column::Int(missing),
+        Column::Float(means),
+        Column::Float(sds),
+        Column::Float(mins),
+        Column::Float(maxs),
+    ], cols.len());
+}

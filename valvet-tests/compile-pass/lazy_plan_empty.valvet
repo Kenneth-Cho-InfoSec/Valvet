@@ -1,0 +1,137 @@
+import std::frame::DynamicFrame;
+import std::schema::check_bool_col;
+import std::schema::check_float_col;
+import std::schema::check_int_col;
+import std::schema::parse_factor_col;
+import std::schema::parse_str_col;
+import std::stats::MissingPolicy;
+import std::stats::mean;
+import std::stats::n_missing;
+import std::stats::sd;
+import std::stats::sum_v;
+import std::stats::var_v;
+import std::typed_frame::Column;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::col_bool;
+import std::typed_frame::col_float;
+import std::typed_frame::col_int;
+import std::typed_frame::col_is_missing;
+import std::typed_frame::col_kind;
+import std::typed_frame::col_len;
+import std::typed_frame::col_str;
+import std::typed_frame::col_strings;
+import std::typed_frame::col_to_string;
+import std::typed_frame::tf_arrange_keys;
+import std::typed_frame::tf_clone;
+import std::typed_frame::tf_col;
+import std::typed_frame::tf_col_at;
+import std::typed_frame::tf_col_index;
+import std::typed_stats::tf_describe;
+import std::typed_frame::tf_drop_na;
+import std::typed_frame::tf_factor_col;
+import std::typed_frame::tf_filter_mask;
+import std::typed_frame::tf_from_dynamic;
+import std::typed_frame::tf_has_col;
+import std::typed_frame::tf_kind;
+import std::typed_frame::tf_kinds;
+import std::typed_frame::tf_names;
+import std::typed_frame::tf_new;
+import std::typed_frame::tf_nrows;
+import std::typed_frame::tf_order_rows;
+import std::typed_frame::tf_schema;
+import std::typed_frame::tf_select;
+import std::typed_frame::tf_set_column;
+import std::typed_frame::tf_take_rows;
+import std::typed_frame::tf_to_dynamic;
+import std::typed_frame::sort_key;
+import std::typed_stats::tf_n_missing;
+import std::grouped::AggSpec;
+import std::grouped::agg_count;
+import std::grouped::agg_sum;
+import std::grouped::agg_spec;
+import std::grouped::tf_group_by;
+import std::grouped::tf_summarise;
+import std::lazy::FilterTerm;
+import std::lazy::LazyFrame;
+import std::lazy::filter_term;
+import std::lazy::lazy_arrange;
+import std::lazy::lazy_collect;
+import std::lazy::lazy_csv;
+import std::lazy::lazy_csv_infer;
+import std::lazy::lazy_explain;
+import std::lazy::lazy_filter_all;
+import std::lazy::lazy_from_frame;
+import std::lazy::lazy_join_inner;
+import std::lazy::lazy_limit;
+import std::lazy::lazy_optimize;
+import std::lazy::lazy_select;
+import std::lazy::lazy_summarise;
+import std::typed_csv::read_csv_typed;
+import std::typed_join::tf_join_frame;
+import std::typed_join::tf_join_inner;
+
+fun empty_names(): Vec<String> { return vec![]; }
+fun empty_cols(): Vec<Column> { return vec![]; }
+
+fun unwrap_tf(r: Result<TypedFrame, String>): TypedFrame {
+    match (r) {
+        Ok(t) -> t,
+        Err(e) -> { println(e); TypedFrame { names: empty_names(), cols: empty_cols(), nrows: 0 as Int64 } },
+    }
+}
+
+fun show(t: &TypedFrame) {
+    println(tf_names(t));
+    println(tf_nrows(t));
+    println(tf_kinds(t));
+    var i = 0 as Int64;
+    while (i < tf_names(t).len()) {
+        val c = tf_col_at(t, i);
+        match (c) {
+            Some(col) -> println(col_strings(col)),
+            None -> println("missing"),
+        };
+        i = i + (1 as Int64);
+    }
+}
+
+fun show_opt_f(o: Option<Float64>) {
+    match (o) { Some(v) -> println(v), None -> println("NA") };
+}
+
+fun show_opt_i(o: Option<Int64>) {
+    match (o) { Some(v) -> println(v), None -> println("NA") };
+}
+
+fun show_err(r: Result<TypedFrame, String>) {
+    match (r) { Ok(t) -> show(&t), Err(e) -> println(e) };
+}
+
+fun base_frame(): TypedFrame {
+    val ints: Vec<Missing<Int64>> = vec![Missing::Present(1 as Int64), Missing, Missing::Present(3 as Int64), Missing::Present(4 as Int64)];
+    val floats: Vec<Missing<Float64>> = vec![Missing::Present(1.5), Missing, Missing::Present(2.5), Missing::Present(4.0)];
+    val bools: Vec<Missing<Bool>> = vec![Missing::Present(true), Missing, Missing::Present(false), Missing::Present(true)];
+    val strs: Vec<Missing<String>> = vec![Missing::Present("a".clone()), Missing, Missing::Present("".clone()), Missing::Present("c".clone())];
+    val fac = parse_factor_col(vec!["a".clone(), "b".clone(), "a".clone(), "".clone()]);
+    val cols: Vec<Column> = vec![Column::Int(ints), Column::Float(floats), Column::Bool(bools), Column::Str(strs), Column::Factor(fac)];
+    val names: Vec<String> = vec!["i".clone(), "f".clone(), "b".clone(), "s".clone(), "g".clone()];
+    return unwrap_tf(tf_new(names, cols, 4 as Int64));
+}
+
+fun show_lazy(l: LazyFrame) {
+    val t = unwrap_tf(lazy_collect(l));
+    show(&t);
+}
+
+fun main() {
+    val schema: Vec<String> = vec!["int".clone(), "string".clone()];
+    val l = lazy_csv("valvet-tests/data/typed_empty.csv".clone(), schema, false);
+    show_lazy(l);
+    val l2 = lazy_csv("valvet-tests/data/typed_empty.csv".clone(), vec!["int".clone(), "string".clone()], false);
+    val no_cols: Vec<String> = vec![];
+    val l3 = lazy_select(l2, no_cols);
+    show_lazy(l3);
+    val l4 = lazy_csv("valvet-tests/data/typed_empty.csv".clone(), vec!["int".clone(), "string".clone()], false);
+    val l5 = lazy_limit(l4, 0 as Int64);
+    show_lazy(l5);
+}

@@ -1,0 +1,13 @@
+[csv path=valvet-tests/data/typed_infer.csv schema=[int,float,bool,string] strict=false, summarise keys=[ok] aggs=[n,si]]
+[ok, n, si]
+2
+[bool, int, int]
+[true, false]
+[2, 2]
+[4, 6]
+[ok, n, si]
+2
+[bool, int, int]
+[true, false]
+[2, 2]
+[4, 6]

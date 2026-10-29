@@ -3,7 +3,7 @@ use std::process::Command;
 
 use valvet_core::{codegen, pipeline};
 
-const VERSION: &str = "0.4.0";
+const VERSION: &str = "0.5.0";
 
 fn main() {
     let code = run(std::env::args().skip(1).collect());
@@ -29,6 +29,9 @@ fn run(args: Vec<String>) -> i32 {
     if hermetic {
         std::env::set_var("VALVET_HERMETIC", "1");
     }
+    if args[..dash].contains(&"--allow-stdlib-shadow".to_string()) {
+        std::env::set_var("VALVET_ALLOW_STDLIB_SHADOW", "1");
+    }
     if args[..dash].contains(&"--all-features".to_string()) {
         std::env::set_var("VALVET_FEATURES", "*");
     } else if let Some(v) = test_flag(&args, "--features") {
@@ -42,7 +45,7 @@ fn run(args: Vec<String>) -> i32 {
     let args: Vec<String> = args
         .into_iter()
         .enumerate()
-        .filter(|(i, a)| *i >= dash || a != "--offline")
+        .filter(|(i, a)| *i >= dash || (a != "--offline" && a != "--allow-stdlib-shadow"))
         .map(|(_, a)| a)
         .collect();
     let args = match apply_target(&args) {
@@ -83,7 +86,11 @@ fn run(args: Vec<String>) -> i32 {
                         skip = true;
                         continue;
                     }
-                    if a != "--frozen" && a != "--all-features" && a != "--hermetic" {
+                    if a != "--frozen"
+                        && a != "--all-features"
+                        && a != "--hermetic"
+                        && a != "--allow-stdlib-shadow"
+                    {
                         clean.push(a.clone());
                     }
                 }
@@ -129,6 +136,7 @@ fn get_path(args: &[String]) -> &str {
             s if s == "--frozen"
                 || s == "--offline"
                 || s == "--hermetic"
+                || s == "--allow-stdlib-shadow"
                 || s == "--watch"
                 || s == "--bench"
                 || s == "--all-features"
@@ -171,7 +179,8 @@ fn print_help() {
     println!("    --profile dev|release        C opt level (manifest [profile] default)");
     println!("    --target <triple>            use <triple>-gcc as the C driver");
     println!("    --jobs N                     fixture threads (test)");
-    println!("    run --hermetic               strict entry, no subprocess or env reads");
+    println!("    run --hermetic               strict entry; deny subprocess, env, file I/O, cwd");
+    println!("    --allow-stdlib-shadow        opt in to a local `std/` shadowing the stdlib");
     println!("    --features a,b / --all-features  enable manifest features");
     println!("    --bench [--bench-max-ms N]   time fixture exes, bound them");
     println!("    valvet repl                  interactive session (definitions persist)");
@@ -308,7 +317,23 @@ fn opts_for(entry: &str, args: &[String], quiet: bool, frozen: bool) -> BuildOpt
     }
 }
 
+/// A target triple is a driver-name component, never a shell fragment:
+/// ASCII letters, digits, `-`, `_`, `.`, and `+`, starting alphanumeric.
+fn valid_target_triple(triple: &str) -> bool {
+    !triple.is_empty()
+        && triple.len() <= 128
+        && triple
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphanumeric())
+        && triple
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'+'))
+}
+
 /// `--target <triple>` resolves `<triple>-gcc` on PATH into VALVET_CC.
+/// No shell is involved; the triple is validated before it becomes a
+/// program name, and `find_program` searches PATH directly.
 fn apply_target(args: &[String]) -> Result<Vec<String>, i32> {
     let dash = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let pos = args[..dash].iter().position(|a| *a == "--target");
@@ -320,20 +345,19 @@ fn apply_target(args: &[String]) -> Result<Vec<String>, i32> {
         eprintln!("error: --target needs a triple");
         return Err(2);
     }
+    if !valid_target_triple(triple) {
+        eprintln!("error: invalid target triple `{}`", triple);
+        return Err(2);
+    }
     let driver = format!("{}-gcc", triple);
-    let found = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {}", driver))
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !found {
+    let Some(found) = codegen::find_program(&driver) else {
         eprintln!(
             "error: no driver `{}` on PATH (host toolchains only)",
             driver
         );
         return Err(2);
-    }
-    std::env::set_var("VALVET_CC", driver);
+    };
+    std::env::set_var("VALVET_CC", &found);
     let mut out = args.to_vec();
     out.drain(p..p + 2);
     Ok(out)

@@ -1,0 +1,4 @@
+fun main() {
+    val m = mat_identity(2)
+    println(m[0])
+}

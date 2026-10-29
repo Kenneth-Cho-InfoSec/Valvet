@@ -1,0 +1,298 @@
+// std::bytes: checked little-endian and bit-level reads over a String's
+// exact byte length. Every reader returns Option and never traps on
+// malformed input; callers decide whether a missing value is fatal.
+module std.bytes;
+
+pub struct Varint {
+    value: Int64,
+    next: Int64,
+}
+
+pub fun bytes_len(s: &String): Int64 {
+    return (*s).len();
+}
+
+pub fun bytes_u8(s: &String, at: Int64): Option<Int64> {
+    if (at < (0 as Int64) || at >= (*s).len()) {
+        return None;
+    }
+    return Some((*s).byte_at(at));
+}
+
+pub fun bytes_u16_le(s: &String, at: Int64): Option<Int64> {
+    if (at < (0 as Int64) || at + (2 as Int64) > (*s).len()) {
+        return None;
+    }
+    val a = (*s).byte_at(at);
+    val b = (*s).byte_at(at + (1 as Int64));
+    return Some(a + b * (256 as Int64));
+}
+
+pub fun bytes_u32_le(s: &String, at: Int64): Option<Int64> {
+    if (at < (0 as Int64) || at + (4 as Int64) > (*s).len()) {
+        return None;
+    }
+    var v = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < (4 as Int64)) {
+        v = v + (*s).byte_at(at + i) * pow2(i * (8 as Int64));
+        i = i + (1 as Int64);
+    }
+    return Some(v);
+}
+
+pub fun bytes_i32_le(s: &String, at: Int64): Option<Int64> {
+    val u = bytes_u32_le(s, at);
+    val ok = match (u) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val v = match (bytes_u32_le(s, at)) { Some(x) -> x, None -> 0 as Int64, };
+    if (v >= (2147483648 as Int64)) {
+        return Some(v - (4294967296 as Int64));
+    }
+    return Some(v);
+}
+
+pub fun bytes_u64_le(s: &String, at: Int64): Option<Int64> {
+    if (at < (0 as Int64) || at + (8 as Int64) > (*s).len()) {
+        return None;
+    }
+    var v = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < (8 as Int64)) {
+        val b = (*s).byte_at(at + i);
+        if (i == (7 as Int64) && b >= (128 as Int64)) {
+            return None;
+        }
+        v = v + b * pow2(i * (8 as Int64));
+        i = i + (1 as Int64);
+    }
+    return Some(v);
+}
+
+pub fun bytes_i64_le(s: &String, at: Int64): Option<Int64> {
+    if (at < (0 as Int64) || at + (8 as Int64) > (*s).len()) {
+        return None;
+    }
+    var v = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < (8 as Int64)) {
+        v = v + (*s).byte_at(at + i) * pow2(i * (8 as Int64));
+        i = i + (1 as Int64);
+    }
+    return Some(v);
+}
+
+pub fun bytes_varint(s: &String, at: Int64): Option<Varint> {
+    if (at < (0 as Int64) || at >= (*s).len()) {
+        return None;
+    }
+    var value = 0 as Int64;
+    var shift = 0 as Int64;
+    var pos = at;
+    var i = 0 as Int64;
+    while (i < (10 as Int64)) {
+        val b = bytes_u8(s, pos);
+        val ok = match (b) { Some(v) -> true, None -> false, };
+        if (!ok) {
+            return None;
+        }
+        val x = match (bytes_u8(s, pos)) { Some(v) -> v, None -> 0 as Int64, };
+        val part = x % (128 as Int64);
+        value = value + part * pow2(shift);
+        if (x < (128 as Int64)) {
+            return Some(Varint { value: value, next: pos + (1 as Int64) });
+        }
+        shift = shift + (7 as Int64);
+        pos = pos + (1 as Int64);
+        i = i + (1 as Int64);
+    }
+    return None;
+}
+
+pub fun bytes_zigzag(n: Int64): Int64 {
+    if (n >= (0 as Int64)) {
+        return n * (2 as Int64);
+    }
+    return (0 as Int64) - (n * (2 as Int64)) - (1 as Int64);
+}
+
+pub fun bytes_bit(s: &String, bit: Int64): Option<Bool> {
+    if (bit < (0 as Int64)) {
+        return None;
+    }
+    val byte_at = bit / (8 as Int64);
+    if (byte_at >= (*s).len()) {
+        return None;
+    }
+    val b = (*s).byte_at(byte_at);
+    val q = b / pow2(bit % (8 as Int64));
+    return Some(q % (2 as Int64) == (1 as Int64));
+}
+
+pub fun bytes_bitpacked(s: &String, bit_offset: Int64, width: Int64): Option<Int64> {
+    if (bit_offset < (0 as Int64) || width < (0 as Int64) || width > (63 as Int64)) {
+        return None;
+    }
+    if (bit_offset + width > (*s).len() * (8 as Int64)) {
+        return None;
+    }
+    var v = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < width) {
+        val b = bytes_bit(s, bit_offset + i);
+        val ok = match (b) { Some(v) -> true, None -> false, };
+        if (!ok) {
+            return None;
+        }
+        val one = match (bytes_bit(s, bit_offset + i)) { Some(v) -> v, None -> false, };
+        if (one) {
+            v = v + pow2(i);
+        }
+        i = i + (1 as Int64);
+    }
+    return Some(v);
+}
+
+pub fun bytes_slice(s: &String, start: Int64, end: Int64): Option<String> {
+    if (start < (0 as Int64) || end < start || end > (*s).len()) {
+        return None;
+    }
+    return Some((*s).slice(start, end));
+}
+
+pub fun bytes_from_string(s: &String): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < (*s).len()) {
+        out.push((*s).byte_at(i));
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun bytes_pow2(n: Int64): Int64 {
+    return pow2(n);
+}
+
+fun pow2(n: Int64): Int64 {
+    var v = 1 as Int64;
+    var i = 0 as Int64;
+    while (i < n) {
+        v = v * (2 as Int64);
+        i = i + (1 as Int64);
+    }
+    return v;
+}
+
+pub fun bytes_put_u8(out: &mut Vec<Int64>, v: Int64) {
+    (*out).push(v % (256 as Int64));
+}
+
+pub fun bytes_put_u32_le(out: &mut Vec<Int64>, v: Int64) {
+    var x = v;
+    var i = 0 as Int64;
+    while (i < (4 as Int64)) {
+        val b = ((x % (256 as Int64)) + (256 as Int64)) % (256 as Int64);
+        (*out).push(b);
+        x = (x - b) / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun bytes_put_i64_le(out: &mut Vec<Int64>, v: Int64) {
+    var x = v;
+    var i = 0 as Int64;
+    while (i < (8 as Int64)) {
+        val b = ((x % (256 as Int64)) + (256 as Int64)) % (256 as Int64);
+        (*out).push(b);
+        x = (x - b) / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun bytes_put_varint(out: &mut Vec<Int64>, v: Int64) {
+    var x = v;
+    if (x < (0 as Int64)) {
+        x = 0 as Int64;
+    }
+    var done = false;
+    while (!done) {
+        if (x < (128 as Int64)) {
+            (*out).push(x);
+            done = true;
+        } else {
+            (*out).push(x % (128 as Int64) + (128 as Int64));
+            x = x / (128 as Int64);
+        }
+    }
+}
+
+pub fun bytes_put_zigzag(out: &mut Vec<Int64>, v: Int64) {
+    bytes_put_varint(out, bytes_zigzag(v));
+}
+
+fun bytes_f64_pow2(n: Int64): Float64 {
+    var v = 1.0;
+    var i = 0 as Int64;
+    if (n >= (0 as Int64)) {
+        while (i < n) {
+            v = v * 2.0;
+            i = i + (1 as Int64);
+        }
+    } else {
+        while (i < (0 as Int64) - n) {
+            v = v / 2.0;
+            i = i + (1 as Int64);
+        }
+    }
+    return v;
+}
+
+pub fun bytes_put_f64_le(out: &mut Vec<Int64>, v: Float64): Result<Bool, String> {
+    val neg = v < 0.0;
+    var x = if (neg) { 0.0 - v } else { v };
+    if (x != x) {
+        return Err("bytes: cannot encode NaN");
+    }
+    if (x > 1.0e308) {
+        return Err("bytes: cannot encode non-finite float");
+    }
+    if (x == 0.0) {
+        var z = 0 as Int64;
+        while (z < (8 as Int64)) {
+            (*out).push(0 as Int64);
+            z = z + (1 as Int64);
+        }
+        return Ok(true);
+    }
+    var e = 0 as Int64;
+    while (x >= 2.0) {
+        x = x / 2.0;
+        e = e + (1 as Int64);
+    }
+    while (x < 1.0) {
+        x = x * 2.0;
+        e = e - (1 as Int64);
+    }
+    val eb = e + (1023 as Int64);
+    if (eb <= (0 as Int64) || eb >= (2047 as Int64)) {
+        return Err("bytes: float exponent out of range");
+    }
+    val mant = ((x - 1.0) * bytes_f64_pow2(52 as Int64)) as Int64;
+    var m = mant;
+    var i = 0 as Int64;
+    while (i < (6 as Int64)) {
+        (*out).push(m % (256 as Int64));
+        m = m / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+    (*out).push((m % (16 as Int64)) + (eb % (16 as Int64)) * (16 as Int64));
+    (*out).push(eb / (16 as Int64) + (if (neg) { 128 as Int64 } else { 0 as Int64 }));
+    return Ok(true);
+}
+
+pub fun bytes_finish(out: Vec<Int64>): Result<String, String> {
+    return bytes_to_string(out);
+}

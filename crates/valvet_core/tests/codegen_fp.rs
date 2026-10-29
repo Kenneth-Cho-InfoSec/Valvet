@@ -112,3 +112,54 @@ fn dev_profile_garbage_collects_unused_sections_only() {
     assert!(!release.contains(&"-fdata-sections".to_string()));
     assert!(!release.contains(&"-Wl,--gc-sections".to_string()));
 }
+
+#[test]
+fn string_literals_preserve_nul_and_escape_trigraphs() {
+    let c = lower("fun main() { println(\"a\\0b\"); println(\"??/\") }\n");
+    assert!(
+        c.contains("vstr_from_bytes(\"a\\000b\", 3)"),
+        "NUL must be a fixed-width octal escape and keep its byte length: {c}"
+    );
+    assert!(
+        c.contains("vstr_from_bytes(\"\\?\\?/\", 3)"),
+        "question marks must be escaped against trigraph replacement: {c}"
+    );
+    assert!(
+        !c.contains("\\x00"),
+        "greedy hex escapes must not be emitted"
+    );
+}
+
+#[test]
+fn while_condition_temporaries_are_freed_before_break() {
+    let c = lower(
+        "fun main() {\n\
+         var i = 0 as Int64;\n\
+         while (i < vec![\"a\".clone()].len()) {\n\
+         i = i + (1 as Int64);\n\
+         }\n\
+         }\n",
+    );
+    let main = c.split("int main(").nth(1).expect("main");
+    let drop_at = main
+        .find("v_drop_Vec_String(&_vt")
+        .expect("condition temporary must be dropped");
+    let break_at = main.find("if (!(_vt").expect("while condition break");
+    assert!(
+        drop_at < break_at,
+        "condition temporary must be freed before break: {main}"
+    );
+}
+
+#[test]
+fn matrix_shapes_use_checked_helpers() {
+    let c = lower("fun main() { val m = mat_zeros(2, 2); println(m.rows()) }\n");
+    assert!(c.contains("#define VMAT_MAX_ELEMENTS"));
+    assert!(c.contains("vmat_checked_mul"));
+    assert!(c.contains("vmat_checked_elems"));
+    assert!(c.contains("vmat_alloc("));
+    assert!(
+        !c.contains("int64_t n = r * c;"),
+        "matrix constructors must not multiply dimensions directly"
+    );
+}

@@ -270,9 +270,11 @@ fn number_uses(
                 }
                 ExprKind::Field { base, .. } => self.walk_expr(base),
                 ExprKind::OptField { base, .. } => self.walk_expr(base),
-                ExprKind::Index { base, idx } => {
+                ExprKind::Index { base, indices } => {
                     self.walk_expr(base);
-                    self.walk_expr(idx);
+                    for idx in indices {
+                        self.walk_expr(idx);
+                    }
                 }
                 ExprKind::Variant { args, .. } => {
                     for a in args {
@@ -309,9 +311,11 @@ fn number_uses(
                 Place::Var(_, _) => {}
                 Place::Field { base, .. } => Self::walk_place_idx(base, w),
                 Place::Deref { inner, .. } => Self::walk_place_idx(inner, w),
-                Place::Index { base, idx, .. } => {
+                Place::Index { base, indices, .. } => {
                     Self::walk_place_idx(base, w);
-                    w.walk_expr(idx);
+                    for idx in indices {
+                        w.walk_expr(idx);
+                    }
                 }
             }
         }
@@ -472,6 +476,7 @@ impl<'a> Cx<'a> {
             Ty::Generic { base, args } if base == "Vec" && args.len() == 1 => false,
             Ty::Generic { base, args } if base == "Mat" && args.is_empty() => false,
             Ty::Generic { base, args } if base == "Factor" && args.is_empty() => false,
+            Ty::Generic { base, args } if base == "StringIndex" && args.is_empty() => false,
             Ty::Str => false,
             Ty::Generic { base, args } if base == "Rng" && args.is_empty() => false,
             Ty::Error => false,
@@ -584,9 +589,9 @@ impl<'a> Cx<'a> {
     /// Index expressions inside a place (read in borrow position).
     fn place_indices<'p>(target: &'p Place, out: &mut Vec<&'p Expr>) {
         match target {
-            Place::Index { base, idx, .. } => {
+            Place::Index { base, indices, .. } => {
                 Self::place_indices(base, out);
-                out.push(idx);
+                out.extend(indices.iter());
             }
             Place::Field { base, .. } => Self::place_indices(base, out),
             Place::Deref { inner, .. } => Self::place_indices(inner, out),
@@ -1274,9 +1279,11 @@ impl<'a> Cx<'a> {
                 }
             }
             ExprKind::Field { base, .. } => Self::collect_ref_vars(base, cx, out),
-            ExprKind::Index { base, idx } => {
+            ExprKind::Index { base, indices } => {
                 Self::collect_ref_vars(base, cx, out);
-                Self::collect_ref_vars(idx, cx, out);
+                for idx in indices {
+                    Self::collect_ref_vars(idx, cx, out);
+                }
             }
             ExprKind::OptField { base, .. } => Self::collect_ref_vars(base, cx, out),
             ExprKind::Variant { args, .. } => {
@@ -1894,11 +1901,13 @@ impl<'a> Cx<'a> {
                 // Dimension assertion/conversion borrows (numerics are `Copy`).
                 self.check_expr(expr, false);
             }
-            ExprKind::Index { base, idx } => {
+            ExprKind::Index { base, indices } => {
                 // Element reads never move out (codegen clones owned
-                // elements, exactly like `get`); both sides borrow.
+                // elements, exactly like `get`); every operand borrows.
                 self.check_expr(base, false);
-                self.check_expr(idx, false);
+                for idx in indices {
+                    self.check_expr(idx, false);
+                }
             }
             ExprKind::StructLit { fields, .. } => {
                 // Literal construction consumes non-Copy field values (like args).
@@ -2025,8 +2034,14 @@ impl<'a> Cx<'a> {
             }
             ExprKind::VecRepeat { value, .. } => self.check_expr(value, false),
             ExprKind::AssocCall(call) => {
-                for a in &call.args {
-                    self.check_expr(a, false);
+                for (i, a) in call.args.iter().enumerate() {
+                    // Array `from_vec` takes ownership of its data vector;
+                    // shape and fill arguments are read-only.
+                    let moves = (call.base == "ArrayD"
+                        || crate::ast::array_rank(&call.base).is_some())
+                        && call.method == "from_vec"
+                        && i == 1;
+                    self.check_expr(a, moves);
                 }
             }
             ExprKind::Method {
@@ -2044,8 +2059,9 @@ impl<'a> Cx<'a> {
                     }
                     return;
                 }
-                // Receivers borrow (pointer model — never moves). Only `push`
-                // moves its element argument in.
+                // Receivers borrow (pointer model: never moves). Only `push`
+                // moves its element argument in; `StringIndex` key arguments
+                // are borrowed and cloned by the index on insertion.
                 self.check_expr(receiver, false);
                 for a in args {
                     let moves = method == "push"

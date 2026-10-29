@@ -1,0 +1,662 @@
+// std::lazy: flat, non-recursive lazy plans over TypedFrame sources.
+// Construction stores only a source description; lazy_collect reads and
+// applies steps in order. The optimizer is deliberately small and local.
+module std.lazy;
+
+import std::arrow::read_arrow;
+import std::grouped::AggSpec;
+import std::grouped::agg_spec_name;
+import std::grouped::tf_group_by;
+import std::grouped::tf_summarise;
+import std::parquet::read_parquet;
+import std::typed_csv::read_csv_typed;
+import std::typed_csv::read_csv_typed_infer;
+import std::typed_frame::SortKey;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::sort_key_asc;
+import std::typed_frame::sort_key_col;
+import std::typed_frame::tf_arrange_keys;
+import std::typed_frame::tf_bool_col;
+import std::typed_frame::tf_factor_col;
+import std::typed_frame::tf_filter_mask;
+import std::typed_frame::tf_float_col;
+import std::typed_frame::tf_int_col;
+import std::typed_frame::tf_kind;
+import std::typed_frame::tf_names;
+import std::typed_frame::tf_nrows;
+import std::typed_frame::tf_select;
+import std::typed_frame::tf_str_col;
+import std::typed_frame::tf_take_rows;
+import std::typed_join::TypedJoinResult;
+import std::typed_join::tf_join_frame;
+import std::typed_join::tf_join_inner;
+
+pub enum LazySource {
+    Csv(String, Vec<String>, Bool),
+    CsvInfer(String, Bool),
+    Parquet(String),
+    Arrow(String),
+    Memory(TypedFrame),
+}
+
+pub struct FilterTerm {
+    col: String,
+    op: String,
+    value: String,
+}
+
+pub enum PlanStep {
+    Select(Vec<String>),
+    FilterAll(Vec<FilterTerm>),
+    Summarise(Vec<String>, Vec<AggSpec>),
+    JoinInner(TypedFrame, Vec<String>, Vec<String>),
+    Arrange(Vec<SortKey>),
+    Limit(Int64),
+}
+
+pub struct LazyFrame {
+    source: LazySource,
+    steps: Vec<PlanStep>,
+    source_desc: String,
+    known_cols: Vec<String>,
+    known: Bool,
+}
+
+pub fun filter_term(col: String, op: String, value: String): FilterTerm {
+    return FilterTerm { col: col, op: op, value: value };
+}
+
+fun join_strings(v: Vec<String>): String {
+    var s = "";
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (i > (0 as Int64)) {
+            s = s + ",";
+        }
+        s = s + v[i].clone();
+        i = i + (1 as Int64);
+    }
+    return s;
+}
+
+fun schema_desc(v: Vec<String>): String {
+    return "[" + join_strings(v) + "]";
+}
+
+fun empty_steps(): Vec<PlanStep> {
+    return vec![];
+}
+
+pub fun lazy_csv(path: String, schema: Vec<String>, strict: Bool): LazyFrame {
+    val desc = "csv path=" + path.clone() + " schema=" + schema_desc(schema.clone()) + " strict=" + to_string(strict);
+    return LazyFrame {
+        source: LazySource::Csv(path, schema.clone(), strict),
+        steps: empty_steps(),
+        source_desc: desc,
+        known_cols: schema,
+        known: true,
+    };
+}
+
+pub fun lazy_csv_infer(path: String, strict: Bool): LazyFrame {
+    val desc = "csv_infer path=" + path.clone() + " strict=" + to_string(strict);
+    val empty: Vec<String> = vec![];
+    return LazyFrame {
+        source: LazySource::CsvInfer(path, strict),
+        steps: empty_steps(),
+        source_desc: desc,
+        known_cols: empty,
+        known: false,
+    };
+}
+
+pub fun lazy_parquet(path: String): LazyFrame {
+    val desc = "parquet path=" + path.clone();
+    val empty: Vec<String> = vec![];
+    return LazyFrame {
+        source: LazySource::Parquet(path),
+        steps: empty_steps(),
+        source_desc: desc,
+        known_cols: empty,
+        known: false,
+    };
+}
+
+pub fun lazy_arrow(path: String): LazyFrame {
+    val desc = "arrow path=" + path.clone();
+    val empty: Vec<String> = vec![];
+    return LazyFrame {
+        source: LazySource::Arrow(path),
+        steps: empty_steps(),
+        source_desc: desc,
+        known_cols: empty,
+        known: false,
+    };
+}
+
+pub fun lazy_from_frame(f: TypedFrame): LazyFrame {
+    val names = tf_names(&f);
+    val desc = "memory rows=" + to_string(tf_nrows(&f)) + " cols=" + schema_desc(names.clone());
+    return LazyFrame {
+        source: LazySource::Memory(f),
+        steps: empty_steps(),
+        source_desc: desc,
+        known_cols: names,
+        known: true,
+    };
+}
+
+fun lazy_with_step(f: LazyFrame, step: PlanStep): LazyFrame {
+    val LazyFrame { source, steps, source_desc, known_cols, known } = f;
+    var next = steps;
+    next.push(step);
+    return LazyFrame {
+        source: source,
+        steps: next,
+        source_desc: source_desc,
+        known_cols: known_cols,
+        known: known,
+    };
+}
+
+pub fun lazy_select(f: LazyFrame, cols: Vec<String>): LazyFrame {
+    return lazy_with_step(f, PlanStep::Select(cols));
+}
+
+pub fun lazy_filter_all(f: LazyFrame, terms: Vec<FilterTerm>): LazyFrame {
+    return lazy_with_step(f, PlanStep::FilterAll(terms));
+}
+
+pub fun lazy_summarise(f: LazyFrame, keys: Vec<String>, specs: Vec<AggSpec>): LazyFrame {
+    return lazy_with_step(f, PlanStep::Summarise(keys, specs));
+}
+
+pub fun lazy_join_inner(f: LazyFrame, lkeys: Vec<String>, right: TypedFrame, rkeys: Vec<String>): LazyFrame {
+    return lazy_with_step(f, PlanStep::JoinInner(right, lkeys, rkeys));
+}
+
+pub fun lazy_arrange(f: LazyFrame, keys: Vec<SortKey>): LazyFrame {
+    return lazy_with_step(f, PlanStep::Arrange(keys));
+}
+
+pub fun lazy_limit(f: LazyFrame, n: Int64): LazyFrame {
+    return lazy_with_step(f, PlanStep::Limit(n));
+}
+
+fun empty_strings(): Vec<String> {
+    return vec![];
+}
+
+fun empty_int_values(): Vec<Missing<Int64>> {
+    return vec![];
+}
+
+fun empty_float_values(): Vec<Missing<Float64>> {
+    return vec![];
+}
+
+fun empty_bool_values(): Vec<Missing<Bool>> {
+    return vec![];
+}
+
+fun empty_str_values(): Vec<Missing<String>> {
+    return vec![];
+}
+
+fun missing_float(): Missing<Float64> {
+    return Missing;
+}
+
+fun missing_int(): Missing<Int64> {
+    return Missing;
+}
+
+fun missing_bool(): Missing<Bool> {
+    return Missing;
+}
+
+fun missing_str(): Missing<String> {
+    return Missing;
+}
+
+fun parse_bool_value(s: String): Option<Bool> {
+    if (s == "true" || s == "1") {
+        return Some(true);
+    }
+    if (s == "false" || s == "0") {
+        return Some(false);
+    }
+    return None;
+}
+
+fun require_int_value(s: String): Result<Int64, String> {
+    val p = s.parse_int();
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return Err("lazy: bad int filter value: " + s);
+    }
+    val v = match (s.parse_int()) { Some(x) -> x, None -> 0 as Int64, };
+    return Ok(v);
+}
+
+fun require_float_value(s: String): Result<Float64, String> {
+    val p = s.parse_float();
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return Err("lazy: bad float filter value: " + s);
+    }
+    val v = match (s.parse_float()) { Some(x) -> x, None -> 0.0, };
+    return Ok(v);
+}
+
+fun require_bool_value(s: String): Result<Bool, String> {
+    val p = parse_bool_value(s.clone());
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return Err("lazy: bad bool filter value: " + s);
+    }
+    val v = match (parse_bool_value(s.clone())) { Some(x) -> x, None -> false, };
+    return Ok(v);
+}
+
+fun int_cmp(x: Int64, op: String, pv: Int64): Bool {
+    if (op == "=") { return x == pv; }
+    if (op == "!=") { return x != pv; }
+    if (op == "<") { return x < pv; }
+    if (op == "<=") { return x <= pv; }
+    if (op == ">") { return x > pv; }
+    if (op == ">=") { return x >= pv; }
+    return false;
+}
+
+fun float_cmp(x: Float64, op: String, pv: Float64): Bool {
+    if (op == "=") { return x == pv; }
+    if (op == "!=") { return x != pv; }
+    if (op == "<") { return x < pv; }
+    if (op == "<=") { return x <= pv; }
+    if (op == ">") { return x > pv; }
+    if (op == ">=") { return x >= pv; }
+    return false;
+}
+
+fun str_lt(a: String, b: String): Bool {
+    var i = 0 as Int64;
+    while (i < a.len() && i < b.len()) {
+        val ca = a.byte_at(i);
+        val cb = b.byte_at(i);
+        if (ca < cb) {
+            return true;
+        }
+        if (ca > cb) {
+            return false;
+        }
+        i = i + (1 as Int64);
+    }
+    return a.len() < b.len();
+}
+
+fun str_cmp(x: String, op: String, pv: String): Bool {
+    if (op == "=") { return x == pv; }
+    if (op == "!=") { return x != pv; }
+    if (op == "<") { return str_lt(x, pv); }
+    if (op == "<=") { return !str_lt(pv, x); }
+    if (op == ">") { return str_lt(pv, x); }
+    if (op == ">=") { return !str_lt(x, pv); }
+    return false;
+}
+
+fun bool_cmp(x: Bool, op: String, pv: Bool): Bool {
+    if (op == "=") { return x == pv; }
+    if (op == "!=") { return x != pv; }
+    return false;
+}
+
+fun filter_int(v: Vec<Missing<Int64>>, op: String, pv: Int64): Result<Vec<Bool>, String> {
+    if (op != "=" && op != "!=" && op != "<" && op != "<=" && op != ">" && op != ">=") {
+        return Err("lazy: bad filter operator: " + op);
+    }
+    var out: Vec<Bool> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        match (v[i]) {
+            Missing::Present(x) -> out.push(int_cmp(x, op.clone(), pv)),
+            Missing -> out.push(false),
+        };
+        i = i + (1 as Int64);
+    }
+    return Ok(out);
+}
+
+fun filter_float(v: Vec<Missing<Float64>>, op: String, pv: Float64): Result<Vec<Bool>, String> {
+    if (op != "=" && op != "!=" && op != "<" && op != "<=" && op != ">" && op != ">=") {
+        return Err("lazy: bad filter operator: " + op);
+    }
+    var out: Vec<Bool> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        match (v[i]) {
+            Missing::Present(x) -> {
+                if (x != x) {
+                    out.push(false);
+                } else {
+                    out.push(float_cmp(x, op.clone(), pv));
+                }
+            },
+            Missing -> out.push(false),
+        };
+        i = i + (1 as Int64);
+    }
+    return Ok(out);
+}
+
+fun filter_str(v: Vec<Missing<String>>, op: String, pv: String): Result<Vec<Bool>, String> {
+    if (op != "=" && op != "!=" && op != "<" && op != "<=" && op != ">" && op != ">=") {
+        return Err("lazy: bad filter operator: " + op);
+    }
+    var out: Vec<Bool> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        match (v[i]) {
+            Missing::Present(x) -> out.push(str_cmp(x, op.clone(), pv.clone())),
+            Missing -> out.push(false),
+        };
+        i = i + (1 as Int64);
+    }
+    return Ok(out);
+}
+
+fun filter_bool(v: Vec<Missing<Bool>>, op: String, pv: Bool): Result<Vec<Bool>, String> {
+    if (op != "=" && op != "!=") {
+        return Err("lazy: bool filter supports only = and !=");
+    }
+    var out: Vec<Bool> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        match (v[i]) {
+            Missing::Present(x) -> out.push(bool_cmp(x, op.clone(), pv)),
+            Missing -> out.push(false),
+        };
+        i = i + (1 as Int64);
+    }
+    return Ok(out);
+}
+
+fun filter_factor(f: Factor, op: String, pv: String): Result<Vec<Bool>, String> {
+    val s = f.as_strings();
+    val cd = f.codes();
+    var vals: Vec<Missing<String>> = vec![];
+    var i = 0 as Int64;
+    while (i < s.len()) {
+        if (cd[i] == (0 as Int32)) {
+            vals.push(Missing);
+        } else {
+            vals.push(Missing::Present(s[i].clone()));
+        }
+        i = i + (1 as Int64);
+    }
+    return filter_str(vals, op, pv);
+}
+
+fun apply_term(f: &TypedFrame, term: FilterTerm): Result<Vec<Bool>, String> {
+    val kk = match (tf_kind(f, term.col.clone())) { Some(v) -> v, None -> "", };
+    if (kk == "") {
+        return Err("lazy: filter column not found: " + term.col);
+    }
+    if (kk == "int") {
+        val pv = require_int_value(term.value.clone())?;
+        val v = match (tf_int_col(f, term.col.clone())) { Some(x) -> x, None -> empty_int_values(), };
+        return filter_int(v, term.op.clone(), pv);
+    }
+    if (kk == "float") {
+        val pv = require_float_value(term.value.clone())?;
+        val v = match (tf_float_col(f, term.col.clone())) { Some(x) -> x, None -> empty_float_values(), };
+        return filter_float(v, term.op.clone(), pv);
+    }
+    if (kk == "bool") {
+        val pv = require_bool_value(term.value.clone())?;
+        val v = match (tf_bool_col(f, term.col.clone())) { Some(x) -> x, None -> empty_bool_values(), };
+        return filter_bool(v, term.op.clone(), pv);
+    }
+    if (kk == "string") {
+        val v = match (tf_str_col(f, term.col.clone())) { Some(x) -> x, None -> empty_str_values(), };
+        return filter_str(v, term.op.clone(), term.value.clone());
+    }
+    if (kk == "factor") {
+        val fac = match (tf_factor_col(f, term.col.clone())) { Some(x) -> x, None -> factor_from_strings(empty_strings()), };
+        return filter_factor(fac, term.op.clone(), term.value.clone());
+    }
+    return Err("lazy: unsupported filter column type: " + kk);
+}
+
+fun apply_filter(f: TypedFrame, terms: Vec<FilterTerm>): Result<TypedFrame, String> {
+    var keep: Vec<Bool> = vec![];
+    var i = 0 as Int64;
+    while (i < tf_nrows(&f)) {
+        keep.push(true);
+        i = i + (1 as Int64);
+    }
+    var t = 0 as Int64;
+    while (t < terms.len()) {
+        val term = terms[t];
+        val tk = apply_term(&f, term)?;
+        i = 0 as Int64;
+        while (i < keep.len() && i < tk.len()) {
+            if (!tk[i]) {
+                keep[i] = false;
+            }
+            i = i + (1 as Int64);
+        }
+        t = t + (1 as Int64);
+    }
+    return Ok(tf_filter_mask(&f, keep));
+}
+
+fun ok_frame(f: TypedFrame): Result<TypedFrame, String> {
+    return Ok(f);
+}
+
+fun err_frame(e: String): Result<TypedFrame, String> {
+    return Err(e);
+}
+
+fun ok_join_frame(v: TypedJoinResult): Result<TypedFrame, String> {
+    return Ok(tf_join_frame(&v));
+}
+
+fun load_source(src: LazySource): Result<TypedFrame, String> {
+    var r: Result<TypedFrame, String> = err_frame("lazy: empty source");
+    match (src) {
+        LazySource::Csv(path, schema, strict) -> { r = read_csv_typed(path, schema, strict); },
+        LazySource::CsvInfer(path, strict) -> { r = read_csv_typed_infer(path, strict); },
+        LazySource::Parquet(path) -> { r = read_parquet(path); },
+        LazySource::Arrow(path) -> { r = read_arrow(path); },
+        LazySource::Memory(f) -> { r = ok_frame(f); },
+    };
+    return r;
+}
+
+fun join_frame_result(r: Result<TypedJoinResult, String>): Result<TypedFrame, String> {
+    var out: Result<TypedFrame, String> = err_frame("lazy: empty join");
+    match (r) {
+        Ok(v) -> { out = ok_join_frame(v); },
+        Err(e) -> { out = err_frame(e); },
+    };
+    return out;
+}
+
+fun apply_step(f: TypedFrame, step: PlanStep): Result<TypedFrame, String> {
+    match (step) {
+        PlanStep::Select(cols) -> tf_select(&f, cols),
+        PlanStep::FilterAll(terms) -> apply_filter(f, terms),
+        PlanStep::Summarise(keys, specs) -> {
+            val g = tf_group_by(f, keys)?;
+            tf_summarise(g, specs)
+        },
+        PlanStep::JoinInner(right, lkeys, rkeys) -> {
+            join_frame_result(tf_join_inner(&f, lkeys, &right, rkeys))
+        },
+        PlanStep::Arrange(keys) -> tf_arrange_keys(&f, keys),
+        PlanStep::Limit(n) -> {
+            val lim = if (n < (0 as Int64)) { 0 as Int64 } else { n };
+            var rows: Vec<Int64> = vec![];
+            var i = 0 as Int64;
+            while (i < lim && i < tf_nrows(&f)) {
+                rows.push(i);
+                i = i + (1 as Int64);
+            }
+            tf_take_rows(&f, rows)
+        },
+    }
+}
+
+pub fun lazy_collect(l: LazyFrame): Result<TypedFrame, String> {
+    val LazyFrame { source, steps, source_desc, known_cols, known } = l;
+    var f = load_source(source)?;
+    for (step in steps) {
+        f = apply_step(f, step)?;
+    }
+    return Ok(f);
+}
+
+fun contains_name(v: Vec<String>, s: String): Bool {
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (v[i] == s) {
+            return true;
+        }
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun contains_all(v: Vec<String>, wanted: Vec<String>): Bool {
+    var i = 0 as Int64;
+    while (i < wanted.len()) {
+        if (!contains_name(v.clone(), wanted[i].clone())) {
+            return false;
+        }
+        i = i + (1 as Int64);
+    }
+    return true;
+}
+
+fun intersect_later(later: Vec<String>, earlier: Vec<String>): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < later.len()) {
+        if (contains_name(earlier.clone(), later[i].clone())) {
+            out.push(later[i].clone());
+        }
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun lazy_optimize(l: LazyFrame): LazyFrame {
+    val LazyFrame { source, steps, source_desc, known_cols, known } = l;
+    var out: Vec<PlanStep> = vec![];
+    for (step in steps) {
+        match (step) {
+            PlanStep::Select(cols) -> {
+                if (known && contains_all(cols.clone(), known_cols.clone())) {
+                    // Keep the source columns; the select is redundant.
+                } else {
+                    var merged = false;
+                    if (out.len() > (0 as Int64)) {
+                        val last = out[out.len() - (1 as Int64)];
+                        val last_is = match (last) { PlanStep::Select(c) -> true, _ -> false, };
+                        if (last_is) {
+                            val prev = match (out[out.len() - (1 as Int64)]) { PlanStep::Select(c) -> c, _ -> empty_strings(), };
+                            val m = intersect_later(cols.clone(), prev);
+                            out[out.len() - (1 as Int64)] = PlanStep::Select(m);
+                            merged = true;
+                        }
+                    }
+                    if (!merged) {
+                        out.push(PlanStep::Select(cols));
+                    }
+                }
+            },
+            PlanStep::FilterAll(t) -> out.push(PlanStep::FilterAll(t)),
+            PlanStep::Summarise(k, s) -> out.push(PlanStep::Summarise(k, s)),
+            PlanStep::JoinInner(r, lk, rk) -> out.push(PlanStep::JoinInner(r, lk, rk)),
+            PlanStep::Arrange(k) -> out.push(PlanStep::Arrange(k)),
+            PlanStep::Limit(n) -> out.push(PlanStep::Limit(n)),
+        };
+    }
+    var i = 0 as Int64;
+    while (i + (1 as Int64) < out.len()) {
+        val a_is = match (out[i]) { PlanStep::Select(c) -> true, _ -> false, };
+        val b_is = match (out[i + (1 as Int64)]) { PlanStep::Limit(n) -> true, _ -> false, };
+        if (a_is && b_is) {
+            val cols = match (out[i]) { PlanStep::Select(c) -> c, _ -> empty_strings(), };
+            val lim = match (out[i + (1 as Int64)]) { PlanStep::Limit(n) -> n, _ -> 0 as Int64, };
+            out[i] = PlanStep::Limit(lim);
+            out[i + (1 as Int64)] = PlanStep::Select(cols);
+            i = i + (2 as Int64);
+        } else {
+            i = i + (1 as Int64);
+        }
+    }
+    return LazyFrame {
+        source: source,
+        steps: out,
+        source_desc: source_desc,
+        known_cols: known_cols,
+        known: known,
+    };
+}
+
+fun step_desc(step: PlanStep): String {
+    match (step) {
+        PlanStep::Select(c) -> "select " + schema_desc(c),
+        PlanStep::FilterAll(terms) -> {
+            var s = "filter ";
+            var i = 0 as Int64;
+            while (i < terms.len()) {
+                if (i > (0 as Int64)) {
+                    s = s + "; ";
+                }
+                s = s + terms[i].col.clone() + " " + terms[i].op.clone() + " " + terms[i].value.clone();
+                i = i + (1 as Int64);
+            }
+            s
+        },
+        PlanStep::Summarise(keys, specs) -> {
+            var names: Vec<String> = vec![];
+            var i = 0 as Int64;
+            while (i < specs.len()) {
+                val sp = specs[i]; names.push(agg_spec_name(&sp));
+                i = i + (1 as Int64);
+            }
+            "summarise keys=" + schema_desc(keys) + " aggs=" + schema_desc(names)
+        },
+        PlanStep::JoinInner(right, lk, rk) -> "join_inner left_keys=" + schema_desc(lk) + " right_keys=" + schema_desc(rk) + " right_rows=" + to_string(tf_nrows(&right)),
+        PlanStep::Arrange(keys) -> {
+            var s = "arrange ";
+            var i = 0 as Int64;
+            while (i < keys.len()) {
+                if (i > (0 as Int64)) {
+                    s = s + "; ";
+                }
+                val k = keys[i];
+                val asc = sort_key_asc(&k);
+                s = s + sort_key_col(&k) + " " + to_string(asc);
+                i = i + (1 as Int64);
+            }
+            s
+        },
+        PlanStep::Limit(n) -> "limit " + to_string(n),
+    }
+}
+
+pub fun lazy_explain(f: &LazyFrame): Vec<String> {
+    var out: Vec<String> = vec![];
+    out.push(f.source_desc.clone());
+    var i = 0 as Int64;
+    while (i < f.steps.len()) {
+        out.push(step_desc(f.steps[i]));
+        i = i + (1 as Int64);
+    }
+    return out;
+}

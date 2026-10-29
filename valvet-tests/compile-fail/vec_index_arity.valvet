@@ -1,0 +1,4 @@
+fun main() {
+    val v = vec![1 as Int64, 2 as Int64]
+    println(v[0, 1])
+}

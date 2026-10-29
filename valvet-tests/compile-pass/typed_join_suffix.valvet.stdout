@@ -1,0 +1,9 @@
+[id, x, x_right, z, x_2, z_right]
+2
+[int, string, string, string, string, string]
+[1, 2]
+[l1, l2]
+[lr1, lr2]
+[lz1, lz2]
+[r1, r2]
+[rz1, rz2]

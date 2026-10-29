@@ -1,0 +1,8 @@
+[id, score, flag, name]
+[id, score, flag, name]
+4
+[int, float, bool, string]
+[1, 2, 3, 4]
+[1.5, 2.5, 3.5, 4.5]
+[true, false, true, false]
+[a, b, c, d]

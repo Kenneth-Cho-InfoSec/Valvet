@@ -1,0 +1,9 @@
+matched=5 left_only=2 right_only=2 out=7
+[id, x, v, x_right, w]
+7
+[int, string, int, string, int]
+[2, 2, 3, 2, 2, NA, NA]
+[b, b, c, e, e, NA, NA]
+[20, 20, 30, 50, 50, NA, NA]
+[r2, r2b, r3, r2, r2b, r4, rm]
+[200, 600, 300, 200, 600, 400, 500]

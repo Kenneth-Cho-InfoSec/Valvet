@@ -269,6 +269,17 @@ fun col_index(names: Vec<String>, want: String): Int64 {
     return (0 - 1) as Int64
 }
 
+pub fun join_audit_new(matched: Int64, left_only: Int64, right_only: Int64, left_rows: Int64, right_rows: Int64, out_rows: Int64): JoinAudit {
+    return JoinAudit {
+        matched: matched,
+        left_only: left_only,
+        right_only: right_only,
+        left_rows: left_rows,
+        right_rows: right_rows,
+        out_rows: out_rows,
+    };
+}
+
 pub fun audit_summary(a: &JoinAudit): String {
     val s1 = "matched=" + to_string(a.matched) + " left_only=" + to_string(a.left_only);
     val s2 = s1 + " right_only=" + to_string(a.right_only) + " out=" + to_string(a.out_rows);

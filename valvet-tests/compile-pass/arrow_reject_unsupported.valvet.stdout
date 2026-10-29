@@ -1,0 +1,4 @@
+arrow: unsupported int width
+arrow: nested fields are unsupported
+arrow: dictionary fields are unsupported
+arrow: expected exactly one record batch

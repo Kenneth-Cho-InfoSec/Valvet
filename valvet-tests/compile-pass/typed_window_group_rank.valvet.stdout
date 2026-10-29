@@ -1,0 +1,6 @@
+[part, x, rank]
+7
+[string, int, float]
+[a, a, a, b, b, NA, a]
+[10, 10, 20, 5, NA, 7, NA]
+[1.5, 1.5, 3, 1, NA, 1, NA]

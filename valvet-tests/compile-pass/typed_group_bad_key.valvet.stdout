@@ -1,0 +1,3 @@
+grouped: missing key column: nope
+grouped: duplicate key column: k1
+grouped: duplicate output column: a

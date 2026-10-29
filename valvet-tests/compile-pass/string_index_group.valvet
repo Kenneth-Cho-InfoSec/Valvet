@@ -1,0 +1,15 @@
+fun main() {
+    val keys = vec!["east", "west", "east", "north", "west", "east"];
+    val vals: Vec<Int64> = vec![10, 5, 10, 40, 15, 0];
+    val idx = StringIndex::new();
+    var sums: Vec<Int64> = vec![];
+    for (i in 0..6) {
+        val pos = idx.get_or_insert(keys[i]);
+        if (pos >= sums.len()) {
+            sums.resize(pos + 1, 0 as Int64);
+        }
+        sums[pos] = sums[pos] + vals[i];
+    }
+    println(idx.keys());
+    println(sums);
+}

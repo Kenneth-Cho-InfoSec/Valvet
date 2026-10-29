@@ -1,0 +1,4 @@
+typed join: left key column not found: nope
+typed join: key count mismatch
+typed join: key count mismatch
+typed join: key type mismatch: id int vs x string

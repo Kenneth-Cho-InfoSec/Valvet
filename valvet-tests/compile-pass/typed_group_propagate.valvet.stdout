@@ -1,0 +1,12 @@
+[k1, s_skip, s_prop, m_skip, m_prop, v_skip, v_prop, d_skip, d_prop]
+3
+[string, float, float, float, float, float, float, float, float]
+[b, a, NA]
+[11.5, 2.5, 5.5]
+[11.5, NA, 5.5]
+[3.8333333333333335, 2.5, 5.5]
+[3.8333333333333335, NA, 5.5]
+[6.3333333333333339, NA, NA]
+[6.3333333333333339, NA, NA]
+[2.5166114784235836, NA, NA]
+[2.5166114784235836, NA, NA]

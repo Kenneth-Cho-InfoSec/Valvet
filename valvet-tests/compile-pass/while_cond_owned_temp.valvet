@@ -1,0 +1,16 @@
+fun main() {
+    var i = 0 as Int64;
+    while (i < vec!["a".clone(), "b".clone(), "c".clone()].len()) {
+        println(i);
+        i = i + (1 as Int64);
+    }
+    var j = 0 as Int64;
+    while (j < vec!["x".clone(), "y".clone()].len()) {
+        if (j == (0 as Int64)) {
+            j = j + (1 as Int64);
+            continue;
+        }
+        println("stop");
+        break;
+    }
+}

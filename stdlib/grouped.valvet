@@ -1,0 +1,718 @@
+// std::grouped: multi-key typed grouping and first-order aggregation.
+// Composite keys are length-prefixed strings held only in a local
+// StringIndex; GroupIndex stores integer ids, first rows, and the count.
+module std.grouped;
+
+import std::stats::MissingPolicy;
+import std::stats::max_v;
+import std::stats::mean;
+import std::stats::min_v;
+import std::stats::sd;
+import std::stats::sum_v;
+import std::stats::var_v;
+import std::typed_frame::Column;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::col_key_tokens;
+import std::typed_frame::col_missing_mask;
+import std::typed_frame::tf_bool_col;
+import std::typed_frame::tf_col;
+import std::typed_frame::tf_float_col;
+import std::typed_frame::tf_int_col;
+import std::typed_frame::tf_kind;
+import std::typed_frame::tf_nrows;
+import std::typed_frame::tf_select;
+import std::typed_frame::tf_set_column;
+import std::typed_frame::tf_str_col;
+import std::typed_frame::tf_take_rows;
+
+pub enum Agg {
+    Count,
+    CountNonMissing(String),
+    NMissing(String),
+    Sum(String, MissingPolicy),
+    Mean(String, MissingPolicy),
+    Min(String, MissingPolicy),
+    Max(String, MissingPolicy),
+    Var(String, MissingPolicy),
+    Sd(String, MissingPolicy),
+}
+
+pub struct AggSpec {
+    name: String,
+    kind: Int64,
+    col: String,
+    policy: MissingPolicy,
+}
+
+pub struct GroupIndex {
+    ids: Vec<Int64>,
+    first_rows: Vec<Int64>,
+    n_groups: Int64,
+}
+
+pub struct GroupedFrame {
+    frame: TypedFrame,
+    keys: Vec<String>,
+    index: GroupIndex,
+}
+
+pub fun agg_count(): Agg {
+    return Agg::Count;
+}
+
+pub fun agg_count_non_missing(col: String): Agg {
+    return Agg::CountNonMissing(col);
+}
+
+pub fun agg_n_missing(col: String): Agg {
+    return Agg::NMissing(col);
+}
+
+pub fun agg_sum(col: String): Agg {
+    return Agg::Sum(col, MissingPolicy::Skip);
+}
+
+pub fun agg_mean(col: String): Agg {
+    return Agg::Mean(col, MissingPolicy::Skip);
+}
+
+pub fun agg_min(col: String): Agg {
+    return Agg::Min(col, MissingPolicy::Skip);
+}
+
+pub fun agg_max(col: String): Agg {
+    return Agg::Max(col, MissingPolicy::Skip);
+}
+
+pub fun agg_var(col: String): Agg {
+    return Agg::Var(col, MissingPolicy::Skip);
+}
+
+pub fun agg_sd(col: String): Agg {
+    return Agg::Sd(col, MissingPolicy::Skip);
+}
+
+pub fun agg_spec(name: String, agg: Agg): AggSpec {
+    match (agg) {
+        Agg::Count -> AggSpec { name: name, kind: 0 as Int64, col: "", policy: MissingPolicy::Skip },
+        Agg::CountNonMissing(c) -> AggSpec { name: name, kind: 1 as Int64, col: c, policy: MissingPolicy::Skip },
+        Agg::NMissing(c) -> AggSpec { name: name, kind: 2 as Int64, col: c, policy: MissingPolicy::Skip },
+        Agg::Sum(c, p) -> AggSpec { name: name, kind: 3 as Int64, col: c, policy: p },
+        Agg::Mean(c, p) -> AggSpec { name: name, kind: 4 as Int64, col: c, policy: p },
+        Agg::Min(c, p) -> AggSpec { name: name, kind: 5 as Int64, col: c, policy: p },
+        Agg::Max(c, p) -> AggSpec { name: name, kind: 6 as Int64, col: c, policy: p },
+        Agg::Var(c, p) -> AggSpec { name: name, kind: 7 as Int64, col: c, policy: p },
+        Agg::Sd(c, p) -> AggSpec { name: name, kind: 8 as Int64, col: c, policy: p },
+    }
+}
+
+pub fun agg_spec_name(s: &AggSpec): String {
+    s.name.clone()
+}
+
+pub fun group_index_n_groups(g: &GroupIndex): Int64 {
+    g.n_groups
+}
+
+pub fun group_index_ids(g: &GroupIndex): Vec<Int64> {
+    g.ids.clone()
+}
+
+pub fun group_index_first_rows(g: &GroupIndex): Vec<Int64> {
+    g.first_rows.clone()
+}
+
+pub fun grouped_keys(g: &GroupedFrame): Vec<String> {
+    g.keys.clone()
+}
+
+pub fun grouped_n_groups(g: &GroupedFrame): Int64 {
+    g.index.n_groups
+}
+
+pub fun grouped_group_ids(g: &GroupedFrame): Vec<Int64> {
+    g.index.ids.clone()
+}
+
+pub fun grouped_first_rows(g: &GroupedFrame): Vec<Int64> {
+    g.index.first_rows.clone()
+}
+
+fun empty_int_values(): Vec<Missing<Int64>> {
+    return vec![];
+}
+
+fun empty_column(): Column {
+    return Column::Int(empty_int_values());
+}
+
+fun empty_float_values(): Vec<Missing<Float64>> {
+    return vec![];
+}
+
+fun empty_str_values(): Vec<Missing<String>> {
+    return vec![];
+}
+
+fun empty_bool_values(): Vec<Missing<Bool>> {
+    return vec![];
+}
+
+fun require_column(f: &TypedFrame, name: String): Result<Column, String> {
+    val c = tf_col(f, name.clone());
+    val have = match (c) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return Err("grouped: missing column: " + name);
+    }
+    val c2 = tf_col(f, name);
+    val v = match (c2) { Some(v) -> v, None -> empty_column(), };
+    return Ok(v);
+}
+
+pub fun tf_group_index(f: &TypedFrame, keys: Vec<String>): Result<GroupIndex, String> {
+    val seen = StringIndex::new();
+    var k = 0 as Int64;
+    while (k < keys.len()) {
+        if (!tf_has_col_checked(f, keys[k].clone())) {
+            return Err("grouped: missing key column: " + keys[k].clone());
+        }
+        val pos = seen.get_or_insert(keys[k].clone());
+        if (pos != k) {
+            return Err("grouped: duplicate key column: " + keys[k].clone());
+        }
+        k = k + (1 as Int64);
+    }
+    val n = tf_nrows(f);
+    if (keys.len() == (0 as Int64)) {
+        var ids: Vec<Int64> = vec![];
+        var first: Vec<Int64> = vec![];
+        var r = 0 as Int64;
+        while (r < n) {
+            ids.push(0 as Int64);
+            if (r == (0 as Int64)) {
+                first.push(0 as Int64);
+            }
+            r = r + (1 as Int64);
+        }
+        val ng = if (n > (0 as Int64)) { 1 as Int64 } else { 0 as Int64 };
+        return Ok(GroupIndex { ids: ids, first_rows: first, n_groups: ng });
+    }
+    var key_tokens: Vec<Vec<String>> = vec![];
+    k = 0 as Int64;
+    while (k < keys.len()) {
+        val c = require_column(f, keys[k].clone())?;
+        key_tokens.push(col_key_tokens(c));
+        k = k + (1 as Int64);
+    }
+    var row_keys: Vec<String> = vec![];
+    var r = 0 as Int64;
+    while (r < n) {
+        var s = "";
+        k = 0 as Int64;
+        while (k < key_tokens.len()) {
+            val t = key_tokens[k][r].clone();
+            s = s + to_string(t.len()) + ":" + t;
+            k = k + (1 as Int64);
+        }
+        row_keys.push(s);
+        r = r + (1 as Int64);
+    }
+    val idx = StringIndex::new();
+    var ids: Vec<Int64> = vec![];
+    var first: Vec<Int64> = vec![];
+    var ng = 0 as Int64;
+    r = 0 as Int64;
+    while (r < n) {
+        val g = idx.get_or_insert(row_keys[r].clone());
+        if (g == ng) {
+            first.push(r);
+            ng = ng + (1 as Int64);
+        }
+        ids.push(g);
+        r = r + (1 as Int64);
+    }
+    return Ok(GroupIndex { ids: ids, first_rows: first, n_groups: ng });
+}
+
+fun tf_has_col_checked(f: &TypedFrame, name: String): Bool {
+    val k = tf_kind(f, name);
+    match (k) {
+        Some(v) -> true,
+        None -> false,
+    }
+}
+
+pub fun tf_group_by(f: TypedFrame, keys: Vec<String>): Result<GroupedFrame, String> {
+    val idx = tf_group_index(&f, keys.clone())?;
+    return Ok(GroupedFrame { frame: f, keys: keys, index: idx });
+}
+
+fun group_rows(index: &GroupIndex, n: Int64): Vec<Vec<Int64>> {
+    var groups: Vec<Vec<Int64>> = vec![];
+    var g = 0 as Int64;
+    while (g < index.n_groups) {
+        var e: Vec<Int64> = vec![];
+        var r = 0 as Int64;
+        while (r < n) {
+            if (index.ids[r] == g) {
+                e.push(r);
+            }
+            r = r + (1 as Int64);
+        }
+        groups.push(e);
+        g = g + (1 as Int64);
+    }
+    return groups;
+}
+
+fun missing_float(): Missing<Float64> {
+    return Missing;
+}
+
+fun opt_float(o: Option<Float64>): Missing<Float64> {
+    match (o) {
+        Some(v) -> Missing::Present(v),
+        None -> missing_float(),
+    }
+}
+
+fun int_min(v: Vec<Int64>): Int64 {
+    var m = v[0];
+    var i = 1 as Int64;
+    while (i < v.len()) {
+        if (v[i] < m) {
+            m = v[i];
+        }
+        i = i + (1 as Int64);
+    }
+    return m;
+}
+
+fun int_max(v: Vec<Int64>): Int64 {
+    var m = v[0];
+    var i = 1 as Int64;
+    while (i < v.len()) {
+        if (v[i] > m) {
+            m = v[i];
+        }
+        i = i + (1 as Int64);
+    }
+    return m;
+}
+
+fun str_min(v: Vec<String>): String {
+    val ord = v.order();
+    return v[ord[0]].clone();
+}
+
+fun str_max(v: Vec<String>): String {
+    val ord = v.order();
+    return v[ord[ord.len() - (1 as Int64)]].clone();
+}
+
+fun agg_count_column(grows: Vec<Vec<Int64>>): Column {
+    var out: Vec<Missing<Int64>> = vec![];
+    var g = 0 as Int64;
+    while (g < grows.len()) {
+        out.push(Missing::Present(grows[g].len()));
+        g = g + (1 as Int64);
+    }
+    return Column::Int(out);
+}
+
+fun agg_nonmissing_column(grows: Vec<Vec<Int64>>, c: Column): Column {
+    val mask = col_missing_mask(c);
+    var out: Vec<Missing<Int64>> = vec![];
+    var g = 0 as Int64;
+    while (g < grows.len()) {
+        var n = 0 as Int64;
+        var i = 0 as Int64;
+        while (i < grows[g].len()) {
+            if (!mask[grows[g][i]]) {
+                n = n + (1 as Int64);
+            }
+            i = i + (1 as Int64);
+        }
+        out.push(Missing::Present(n));
+        g = g + (1 as Int64);
+    }
+    return Column::Int(out);
+}
+
+fun agg_missing_column(grows: Vec<Vec<Int64>>, c: Column): Column {
+    val mask = col_missing_mask(c);
+    var out: Vec<Missing<Int64>> = vec![];
+    var g = 0 as Int64;
+    while (g < grows.len()) {
+        var n = 0 as Int64;
+        var i = 0 as Int64;
+        while (i < grows[g].len()) {
+            if (mask[grows[g][i]]) {
+                n = n + (1 as Int64);
+            }
+            i = i + (1 as Int64);
+        }
+        out.push(Missing::Present(n));
+        g = g + (1 as Int64);
+    }
+    return Column::Int(out);
+}
+
+fun agg_sum_int(grows: Vec<Vec<Int64>>, v: Vec<Missing<Int64>>, policy: MissingPolicy): Column {
+    val skip = match (policy) { MissingPolicy::Skip -> true, MissingPolicy::Propagate -> false, };
+    var out: Vec<Missing<Int64>> = vec![];
+    var g = 0 as Int64;
+    while (g < grows.len()) {
+        var sum = 0 as Int64;
+        var n = 0 as Int64;
+        var bad = false;
+        var i = 0 as Int64;
+        while (i < grows[g].len()) {
+            val r = grows[g][i];
+            match (v[r]) {
+                Missing::Present(x) -> {
+                    sum = sum + x;
+                    n = n + (1 as Int64);
+                },
+                Missing -> {
+                    if (!skip) {
+                        bad = true;
+                    }
+                },
+            };
+            i = i + (1 as Int64);
+        }
+        if (bad || n == (0 as Int64)) {
+            out.push(Missing);
+        } else {
+            out.push(Missing::Present(sum));
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Int(out);
+}
+
+fun agg_mean_int(grows: Vec<Vec<Int64>>, v: Vec<Missing<Int64>>, policy: MissingPolicy): Column {
+    val skip = match (policy) { MissingPolicy::Skip -> true, MissingPolicy::Propagate -> false, };
+    var out: Vec<Missing<Float64>> = vec![];
+    var g = 0 as Int64;
+    while (g < grows.len()) {
+        var sum = 0 as Int64;
+        var n = 0 as Int64;
+        var bad = false;
+        var i = 0 as Int64;
+        while (i < grows[g].len()) {
+            val r = grows[g][i];
+            match (v[r]) {
+                Missing::Present(x) -> {
+                    sum = sum + x;
+                    n = n + (1 as Int64);
+                },
+                Missing -> {
+                    if (!skip) {
+                        bad = true;
+                    }
+                },
+            };
+            i = i + (1 as Int64);
+        }
+        if (bad || n == (0 as Int64)) {
+            out.push(missing_float());
+        } else {
+            out.push(Missing::Present((sum as Float64) / (n as Float64)));
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Float(out);
+}
+
+fun agg_float_column(grows: Vec<Vec<Int64>>, v: Vec<Missing<Float64>>, policy: MissingPolicy, which: Int64): Column {
+    var out: Vec<Missing<Float64>> = vec![];
+    var g = 0 as Int64;
+    while (g < grows.len()) {
+        var vals: Vec<Missing<Float64>> = vec![];
+        var i = 0 as Int64;
+        while (i < grows[g].len()) {
+            vals.push(v[grows[g][i]]);
+            i = i + (1 as Int64);
+        }
+        if (which == (0 as Int64)) {
+            out.push(opt_float(sum_v(vals, policy)));
+        } else if (which == (1 as Int64)) {
+            out.push(opt_float(mean(vals, policy)));
+        } else if (which == (2 as Int64)) {
+            out.push(opt_float(min_v(vals, policy)));
+        } else if (which == (3 as Int64)) {
+            out.push(opt_float(max_v(vals, policy)));
+        } else if (which == (4 as Int64)) {
+            out.push(opt_float(var_v(vals, policy)));
+        } else {
+            out.push(opt_float(sd(vals, policy)));
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Float(out);
+}
+
+fun agg_min_int(grows: Vec<Vec<Int64>>, v: Vec<Missing<Int64>>, policy: MissingPolicy, is_max: Bool): Column {
+    val skip = match (policy) { MissingPolicy::Skip -> true, MissingPolicy::Propagate -> false, };
+    var out: Vec<Missing<Int64>> = vec![];
+    var g = 0 as Int64;
+    while (g < grows.len()) {
+        var vals: Vec<Int64> = vec![];
+        var bad = false;
+        var i = 0 as Int64;
+        while (i < grows[g].len()) {
+            val r = grows[g][i];
+            match (v[r]) {
+                Missing::Present(x) -> vals.push(x),
+                Missing -> {
+                    if (!skip) {
+                        bad = true;
+                    }
+                },
+            };
+            i = i + (1 as Int64);
+        }
+        if (bad || vals.len() == (0 as Int64)) {
+            out.push(Missing);
+        } else {
+            if (is_max) {
+                out.push(Missing::Present(int_max(vals)));
+            } else {
+                out.push(Missing::Present(int_min(vals)));
+            }
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Int(out);
+}
+
+fun agg_min_float(grows: Vec<Vec<Int64>>, v: Vec<Missing<Float64>>, policy: MissingPolicy, is_max: Bool): Column {
+    var out: Vec<Missing<Float64>> = vec![];
+    var g = 0 as Int64;
+    while (g < grows.len()) {
+        var vals: Vec<Missing<Float64>> = vec![];
+        var i = 0 as Int64;
+        while (i < grows[g].len()) {
+            vals.push(v[grows[g][i]]);
+            i = i + (1 as Int64);
+        }
+        if (is_max) {
+            out.push(opt_float(max_v(vals, policy)));
+        } else {
+            out.push(opt_float(min_v(vals, policy)));
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Float(out);
+}
+
+fun agg_min_str(grows: Vec<Vec<Int64>>, v: Vec<Missing<String>>, policy: MissingPolicy, is_max: Bool): Column {
+    val skip = match (policy) { MissingPolicy::Skip -> true, MissingPolicy::Propagate -> false, };
+    var out: Vec<Missing<String>> = vec![];
+    var g = 0 as Int64;
+    while (g < grows.len()) {
+        var vals: Vec<String> = vec![];
+        var bad = false;
+        var i = 0 as Int64;
+        while (i < grows[g].len()) {
+            val r = grows[g][i];
+            match (v[r]) {
+                Missing::Present(x) -> vals.push(x),
+                Missing -> {
+                    if (!skip) {
+                        bad = true;
+                    }
+                },
+            };
+            i = i + (1 as Int64);
+        }
+        if (bad || vals.len() == (0 as Int64)) {
+            out.push(Missing);
+        } else {
+            if (is_max) {
+                out.push(Missing::Present(str_max(vals)));
+            } else {
+                out.push(Missing::Present(str_min(vals)));
+            }
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Str(out);
+}
+
+fun agg_min_bool(grows: Vec<Vec<Int64>>, v: Vec<Missing<Bool>>, policy: MissingPolicy, is_max: Bool): Column {
+    val skip = match (policy) { MissingPolicy::Skip -> true, MissingPolicy::Propagate -> false, };
+    var out: Vec<Missing<Bool>> = vec![];
+    var g = 0 as Int64;
+    while (g < grows.len()) {
+        var any = false;
+        var best = false;
+        var bad = false;
+        var i = 0 as Int64;
+        while (i < grows[g].len()) {
+            val r = grows[g][i];
+            match (v[r]) {
+                Missing::Present(x) -> {
+                    if (!any) {
+                        best = x;
+                        any = true;
+                    } else if (is_max) {
+                        if (x) {
+                            best = true;
+                        }
+                    } else {
+                        if (!x) {
+                            best = false;
+                        }
+                    }
+                },
+                Missing -> {
+                    if (!skip) {
+                        bad = true;
+                    }
+                },
+            };
+            i = i + (1 as Int64);
+        }
+        if (bad || !any) {
+            out.push(Missing);
+        } else {
+            out.push(Missing::Present(best));
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Bool(out);
+}
+
+fun agg_float_from_int(grows: Vec<Vec<Int64>>, v: Vec<Missing<Int64>>, policy: MissingPolicy, which: Int64): Column {
+    var vals: Vec<Missing<Float64>> = vec![];
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        match (v[i]) {
+            Missing::Present(x) -> vals.push(Missing::Present(x as Float64)),
+            Missing -> vals.push(missing_float()),
+        };
+        i = i + (1 as Int64);
+    }
+    return agg_float_column(grows, vals, policy, which);
+}
+
+fun agg_column(f: &TypedFrame, grows: Vec<Vec<Int64>>, kind: Int64, name: String, policy: MissingPolicy): Result<Column, String> {
+    if (kind == (0 as Int64)) {
+        return Ok(agg_count_column(grows));
+    }
+    if (kind == (1 as Int64)) {
+        val c = require_column(f, name)?;
+        return Ok(agg_nonmissing_column(grows, c));
+    }
+    if (kind == (2 as Int64)) {
+        val c = require_column(f, name)?;
+        return Ok(agg_missing_column(grows, c));
+    }
+    val kk = match (tf_kind(f, name.clone())) { Some(v) -> v, None -> "", };
+    if (kk == "") {
+        return Err("grouped: missing column: " + name);
+    }
+    if (kind == (3 as Int64)) {
+        if (kk == "int") {
+            val v = match (tf_int_col(f, name)) { Some(x) -> x, None -> empty_int_values(), };
+            return Ok(agg_sum_int(grows, v, policy));
+        }
+        if (kk == "float") {
+            val v = match (tf_float_col(f, name)) { Some(x) -> x, None -> empty_float_values(), };
+            return Ok(agg_float_column(grows, v, policy, 0 as Int64));
+        }
+        return Err("grouped: sum requires numeric column: " + name);
+    }
+    if (kind == (4 as Int64)) {
+        if (kk == "int") {
+            val v = match (tf_int_col(f, name)) { Some(x) -> x, None -> empty_int_values(), };
+            return Ok(agg_mean_int(grows, v, policy));
+        }
+        if (kk == "float") {
+            val v = match (tf_float_col(f, name)) { Some(x) -> x, None -> empty_float_values(), };
+            return Ok(agg_float_column(grows, v, policy, 1 as Int64));
+        }
+        return Err("grouped: mean requires numeric column: " + name);
+    }
+    if (kind == (5 as Int64) || kind == (6 as Int64)) {
+        val is_max = kind == (6 as Int64);
+        if (kk == "int") {
+            val v = match (tf_int_col(f, name)) { Some(x) -> x, None -> empty_int_values(), };
+            return Ok(agg_min_int(grows, v, policy, is_max));
+        }
+        if (kk == "float") {
+            val v = match (tf_float_col(f, name)) { Some(x) -> x, None -> empty_float_values(), };
+            return Ok(agg_min_float(grows, v, policy, is_max));
+        }
+        if (kk == "string") {
+            val v = match (tf_str_col(f, name)) { Some(x) -> x, None -> empty_str_values(), };
+            return Ok(agg_min_str(grows, v, policy, is_max));
+        }
+        if (kk == "bool") {
+            val v = match (tf_bool_col(f, name)) { Some(x) -> x, None -> empty_bool_values(), };
+            return Ok(agg_min_bool(grows, v, policy, is_max));
+        }
+        return Err("grouped: min/max requires int/float/string/bool: " + name);
+    }
+    if (kind == (7 as Int64)) {
+        if (kk == "int") {
+            val v = match (tf_int_col(f, name)) { Some(x) -> x, None -> empty_int_values(), };
+            return Ok(agg_float_from_int(grows, v, policy, 4 as Int64));
+        }
+        if (kk == "float") {
+            val v = match (tf_float_col(f, name)) { Some(x) -> x, None -> empty_float_values(), };
+            return Ok(agg_float_column(grows, v, policy, 4 as Int64));
+        }
+        return Err("grouped: var requires numeric column: " + name);
+    }
+    if (kind == (8 as Int64)) {
+        if (kk == "int") {
+            val v = match (tf_int_col(f, name)) { Some(x) -> x, None -> empty_int_values(), };
+            return Ok(agg_float_from_int(grows, v, policy, 5 as Int64));
+        }
+        if (kk == "float") {
+            val v = match (tf_float_col(f, name)) { Some(x) -> x, None -> empty_float_values(), };
+            return Ok(agg_float_column(grows, v, policy, 5 as Int64));
+        }
+        return Err("grouped: sd requires numeric column: " + name);
+    }
+    return Err("grouped: unsupported aggregation");
+}
+
+pub fun tf_summarise(g: GroupedFrame, specs: Vec<AggSpec>): Result<TypedFrame, String> {
+    val seen = StringIndex::new();
+    var k = 0 as Int64;
+    while (k < g.keys.len()) {
+        val pos = seen.get_or_insert(g.keys[k].clone());
+        if (pos != k) {
+            return Err("grouped: duplicate key column: " + g.keys[k].clone());
+        }
+        k = k + (1 as Int64);
+    }
+    var s = 0 as Int64;
+    while (s < specs.len()) {
+        val pos = seen.get_or_insert(specs[s].name.clone());
+        if (pos != g.keys.len() + s) {
+            return Err("grouped: duplicate output column: " + specs[s].name.clone());
+        }
+        s = s + (1 as Int64);
+    }
+    val grows = group_rows(&g.index, tf_nrows(&g.frame));
+    val keyframe = tf_take_rows(&g.frame, g.index.first_rows.clone())?;
+    var out = tf_select(&keyframe, g.keys.clone())?;
+    s = 0 as Int64;
+    while (s < specs.len()) {
+        val spec = specs[s];
+        val col = agg_column(&g.frame, grows.clone(), spec.kind, spec.col.clone(), spec.policy)?;
+        out = tf_set_column(out, spec.name, col)?;
+        s = s + (1 as Int64);
+    }
+    return Ok(out);
+}
+
+pub fun tf_group_count(g: GroupedFrame): Result<TypedFrame, String> {
+    return tf_summarise(g, vec![agg_spec("count", agg_count())]);
+}

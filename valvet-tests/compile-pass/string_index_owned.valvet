@@ -1,0 +1,22 @@
+struct Holder { idx: StringIndex }
+
+fun main() {
+    val idx = StringIndex::new();
+    val p = idx.get_or_insert("a");
+    val h = Holder { idx: idx };
+    val ks = h.idx.keys();
+    val cp = h.idx.clone();
+    val q = h.idx.get_or_insert("b");
+    val r = cp.get_or_insert("b");
+    val s = cp.get_or_insert("c");
+    println(p);
+    println(q);
+    println(r);
+    println(s);
+    println(ks.len());
+    println(ks[0]);
+    println(h.idx.len());
+    println(cp.len());
+    println(h.idx.keys());
+    println(cp.keys());
+}

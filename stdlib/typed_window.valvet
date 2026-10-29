@@ -1,0 +1,393 @@
+// std::typed_window: partitioned window columns over TypedFrame. The frame
+// row order is never changed; values are scattered back by original row id.
+module std.typed_window;
+
+import std::grouped::GroupIndex;
+import std::grouped::group_index_ids;
+import std::grouped::group_index_n_groups;
+import std::grouped::tf_group_index;
+import std::typed_frame::Column;
+import std::typed_frame::SortKey;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::sort_key;
+import std::typed_frame::tf_col;
+import std::typed_frame::tf_float_col;
+import std::typed_frame::tf_int_col;
+import std::typed_frame::tf_kind;
+import std::typed_frame::tf_nrows;
+import std::typed_frame::tf_order_rows;
+import std::typed_frame::tf_require_col;
+import std::typed_frame::tf_set_column;
+
+pub enum WindowExpr {
+    Lag(String, Int64),
+    Lead(String, Int64),
+    RowNum,
+    Cumsum(String),
+    Rank(String),
+}
+
+pub struct WindowSpec {
+    partition: Vec<String>,
+    order_by: Vec<SortKey>,
+}
+
+struct WindowPlan {
+    kind: Int64,
+    col: String,
+    k: Int64,
+}
+
+pub fun window_spec(partition: Vec<String>, order_by: Vec<SortKey>): WindowSpec {
+    return WindowSpec { partition: partition, order_by: order_by };
+}
+
+fun window_plan(expr: WindowExpr): WindowPlan {
+    match (expr) {
+        WindowExpr::Lag(c, k) -> WindowPlan { kind: 0 as Int64, col: c, k: k },
+        WindowExpr::Lead(c, k) -> WindowPlan { kind: 1 as Int64, col: c, k: k },
+        WindowExpr::RowNum -> WindowPlan { kind: 2 as Int64, col: "", k: 0 as Int64 },
+        WindowExpr::Cumsum(c) -> WindowPlan { kind: 3 as Int64, col: c, k: 0 as Int64 },
+        WindowExpr::Rank(c) -> WindowPlan { kind: 4 as Int64, col: c, k: 0 as Int64 },
+    }
+}
+
+fun empty_int(n: Int64): Vec<Missing<Int64>> {
+    var out: Vec<Missing<Int64>> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        out.push(Missing);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun empty_float(n: Int64): Vec<Missing<Float64>> {
+    var out: Vec<Missing<Float64>> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        out.push(Missing);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun empty_bool(n: Int64): Vec<Missing<Bool>> {
+    var out: Vec<Missing<Bool>> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        out.push(Missing);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun empty_str(n: Int64): Vec<Missing<String>> {
+    var out: Vec<Missing<String>> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        out.push(Missing);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun missing_int_value(): Missing<Int64> {
+    return Missing;
+}
+
+fun missing_float_value(): Missing<Float64> {
+    return Missing;
+}
+
+fun shift_int(v: Vec<Missing<Int64>>, parts: Vec<Vec<Int64>>, k: Int64, lead: Bool, n: Int64): Column {
+    var out = empty_int(n);
+    var g = 0 as Int64;
+    while (g < parts.len()) {
+        val rows = parts[g].clone();
+        var p = 0 as Int64;
+        while (p < rows.len()) {
+            val srcp = if (lead) { p + k } else { p - k };
+            if (srcp >= (0 as Int64) && srcp < rows.len()) {
+                out[rows[p]] = v[rows[srcp]];
+            }
+            p = p + (1 as Int64);
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Int(out);
+}
+
+fun shift_float(v: Vec<Missing<Float64>>, parts: Vec<Vec<Int64>>, k: Int64, lead: Bool, n: Int64): Column {
+    var out = empty_float(n);
+    var g = 0 as Int64;
+    while (g < parts.len()) {
+        val rows = parts[g].clone();
+        var p = 0 as Int64;
+        while (p < rows.len()) {
+            val srcp = if (lead) { p + k } else { p - k };
+            if (srcp >= (0 as Int64) && srcp < rows.len()) {
+                out[rows[p]] = v[rows[srcp]];
+            }
+            p = p + (1 as Int64);
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Float(out);
+}
+
+fun shift_bool(v: Vec<Missing<Bool>>, parts: Vec<Vec<Int64>>, k: Int64, lead: Bool, n: Int64): Column {
+    var out = empty_bool(n);
+    var g = 0 as Int64;
+    while (g < parts.len()) {
+        val rows = parts[g].clone();
+        var p = 0 as Int64;
+        while (p < rows.len()) {
+            val srcp = if (lead) { p + k } else { p - k };
+            if (srcp >= (0 as Int64) && srcp < rows.len()) {
+                out[rows[p]] = v[rows[srcp]];
+            }
+            p = p + (1 as Int64);
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Bool(out);
+}
+
+fun shift_str(v: Vec<Missing<String>>, parts: Vec<Vec<Int64>>, k: Int64, lead: Bool, n: Int64): Column {
+    var out = empty_str(n);
+    var g = 0 as Int64;
+    while (g < parts.len()) {
+        val rows = parts[g].clone();
+        var p = 0 as Int64;
+        while (p < rows.len()) {
+            val srcp = if (lead) { p + k } else { p - k };
+            if (srcp >= (0 as Int64) && srcp < rows.len()) {
+                out[rows[p]] = v[rows[srcp]];
+            }
+            p = p + (1 as Int64);
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Str(out);
+}
+
+fun shift_factor(f: Factor, parts: Vec<Vec<Int64>>, k: Int64, lead: Bool, n: Int64): Column {
+    val src = f.as_strings();
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        out.push("");
+        i = i + (1 as Int64);
+    }
+    var g = 0 as Int64;
+    while (g < parts.len()) {
+        val rows = parts[g].clone();
+        var p = 0 as Int64;
+        while (p < rows.len()) {
+            val srcp = if (lead) { p + k } else { p - k };
+            if (srcp >= (0 as Int64) && srcp < rows.len()) {
+                out[rows[p]] = src[rows[srcp]].clone();
+            }
+            p = p + (1 as Int64);
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Factor(factor_from_strings(out));
+}
+
+fun window_shift(src: Column, parts: Vec<Vec<Int64>>, k: Int64, lead: Bool, n: Int64): Column {
+    match (src) {
+        Column::Int(v) -> shift_int(v, parts, k, lead, n),
+        Column::Float(v) -> shift_float(v, parts, k, lead, n),
+        Column::Bool(v) -> shift_bool(v, parts, k, lead, n),
+        Column::Str(v) -> shift_str(v, parts, k, lead, n),
+        Column::Factor(v) -> shift_factor(v, parts, k, lead, n),
+    }
+}
+
+fun window_rownum(parts: Vec<Vec<Int64>>, n: Int64): Column {
+    var out = empty_int(n);
+    var g = 0 as Int64;
+    while (g < parts.len()) {
+        val rows = parts[g].clone();
+        var p = 0 as Int64;
+        while (p < rows.len()) {
+            out[rows[p]] = Missing::Present(p + (1 as Int64));
+            p = p + (1 as Int64);
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Int(out);
+}
+
+fun cumsum_int(v: Vec<Missing<Int64>>, parts: Vec<Vec<Int64>>, n: Int64): Column {
+    var out = empty_int(n);
+    var g = 0 as Int64;
+    while (g < parts.len()) {
+        val rows = parts[g].clone();
+        var acc = 0 as Int64;
+        var bad = false;
+        var p = 0 as Int64;
+        while (p < rows.len()) {
+            val r = rows[p];
+            match (v[r]) {
+                Missing::Present(x) -> {
+                    if (bad) {
+                        out[r] = missing_int_value();
+                    } else {
+                        acc = acc + x;
+                        out[r] = Missing::Present(acc);
+                    }
+                },
+                Missing -> {
+                    bad = true;
+                    out[r] = missing_int_value();
+                },
+            };
+            p = p + (1 as Int64);
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Int(out);
+}
+
+fun cumsum_float(v: Vec<Missing<Float64>>, parts: Vec<Vec<Int64>>, n: Int64): Column {
+    var out = empty_float(n);
+    var g = 0 as Int64;
+    while (g < parts.len()) {
+        val rows = parts[g].clone();
+        var acc = 0.0;
+        var bad = false;
+        var p = 0 as Int64;
+        while (p < rows.len()) {
+            val r = rows[p];
+            match (v[r]) {
+                Missing::Present(x) -> {
+                    if (bad || x != x) {
+                        bad = true;
+                        out[r] = missing_float_value();
+                    } else {
+                        acc = acc + x;
+                        out[r] = Missing::Present(acc);
+                    }
+                },
+                Missing -> {
+                    bad = true;
+                    out[r] = missing_float_value();
+                },
+            };
+            p = p + (1 as Int64);
+        }
+        g = g + (1 as Int64);
+    }
+    return Column::Float(out);
+}
+
+fun window_rank(f: &TypedFrame, source: String, parts: Vec<Vec<Int64>>, n: Int64): Result<Column, String> {
+    val kk = match (tf_kind(f, source.clone())) { Some(v) -> v, None -> "", };
+    if (kk != "int" && kk != "float") {
+        return Err("typed window: rank requires numeric column: " + source);
+    }
+    val src = match (tf_float_col(f, source.clone())) { Some(v) -> v, None -> empty_float(n), };
+    var out = empty_float(n);
+    var g = 0 as Int64;
+    while (g < parts.len()) {
+        val rows = parts[g].clone();
+        val key = sort_key(source.clone(), true);
+        val sorted = tf_order_rows(f, rows, vec![key])?;
+        var a = 0 as Int64;
+        while (a < sorted.len()) {
+            val ra = sorted[a];
+            if (match (src[ra]) { Missing::Present(x) -> x != x, Missing -> true, }) {
+                var q = a;
+                while (q < sorted.len()) {
+                    out[sorted[q]] = missing_float_value();
+                    q = q + (1 as Int64);
+                }
+                a = sorted.len();
+            } else {
+                val xa = match (src[ra]) { Missing::Present(x) -> x, Missing -> 0.0, };
+                var b = a;
+                var done = false;
+                while (!done && b + (1 as Int64) < sorted.len()) {
+                    val rb = sorted[b + (1 as Int64)];
+                    val xb = match (src[rb]) { Missing::Present(x) -> x, Missing -> 0.0, };
+                    if (match (src[rb]) { Missing::Present(x) -> x != x, Missing -> true, }) {
+                        done = true;
+                    } else if (xb == xa) {
+                        b = b + (1 as Int64);
+                    } else {
+                        done = true;
+                    }
+                }
+                val avg = (((a + (1 as Int64)) as Float64) + ((b + (1 as Int64)) as Float64)) / 2.0;
+                var q = a;
+                while (q <= b) {
+                    out[sorted[q]] = Missing::Present(avg);
+                    q = q + (1 as Int64);
+                }
+                a = b + (1 as Int64);
+            }
+        }
+        g = g + (1 as Int64);
+    }
+    return Ok(Column::Float(out));
+}
+
+fun build_parts(f: &TypedFrame, partition: Vec<String>, order_by: Vec<SortKey>): Result<Vec<Vec<Int64>>, String> {
+    val idx = tf_group_index(f, partition)?;
+    val ids = group_index_ids(&idx);
+    val ng = group_index_n_groups(&idx);
+    val n = tf_nrows(f);
+    var parts: Vec<Vec<Int64>> = vec![];
+    var g = 0 as Int64;
+    while (g < ng) {
+        var e: Vec<Int64> = vec![];
+        var r = 0 as Int64;
+        while (r < n) {
+            if (ids[r] == g) {
+                e.push(r);
+            }
+            r = r + (1 as Int64);
+        }
+        if (order_by.len() > (0 as Int64)) {
+            e = tf_order_rows(f, e, order_by.clone())?;
+        }
+        parts.push(e);
+        g = g + (1 as Int64);
+    }
+    return Ok(parts);
+}
+
+pub fun tf_window_mutate(f: TypedFrame, name: String, spec: WindowSpec, expr: WindowExpr): Result<TypedFrame, String> {
+    val plan = window_plan(expr);
+    val dummy_rows: Vec<Int64> = vec![];
+    tf_order_rows(&f, dummy_rows, spec.order_by.clone())?;
+    val parts = build_parts(&f, spec.partition.clone(), spec.order_by.clone())?;
+    val n = tf_nrows(&f);
+    if (plan.kind == (0 as Int64) || plan.kind == (1 as Int64)) {
+        val src = tf_require_col(&f, plan.col.clone())?;
+        val lead = plan.kind == (1 as Int64);
+        val col = window_shift(src, parts, plan.k, lead, n);
+        return tf_set_column(f, name, col);
+    }
+    if (plan.kind == (2 as Int64)) {
+        val col = window_rownum(parts, n);
+        return tf_set_column(f, name, col);
+    }
+    if (plan.kind == (3 as Int64)) {
+        val kk = match (tf_kind(&f, plan.col.clone())) { Some(v) -> v, None -> "", };
+        if (kk == "int") {
+            val src = match (tf_int_col(&f, plan.col)) { Some(v) -> v, None -> empty_int(n), };
+            return tf_set_column(f, name, cumsum_int(src, parts, n));
+        }
+        if (kk == "float") {
+            val src = match (tf_float_col(&f, plan.col)) { Some(v) -> v, None -> empty_float(n), };
+            return tf_set_column(f, name, cumsum_float(src, parts, n));
+        }
+        return Err("typed window: cumsum requires int or float column: " + plan.col);
+    }
+    val col = window_rank(&f, plan.col, parts, n)?;
+    return tf_set_column(f, name, col);
+}

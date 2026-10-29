@@ -1,0 +1,12 @@
+cannot open file: /no/such/input.csv
+missing column: nope
+lazy: bad int filter value: notint
+lazy: bad filter operator: ~
+lazy: filter column not found: nope
+[id, score, ok, name]
+0
+[int, float, bool, string]
+[]
+[]
+[]
+[]

@@ -1,0 +1,965 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documentation · Valvet</title>
+<meta name="description" content="The complete Valvet language guide: values and types, ownership, modules, units, frames, autodiff, the standard library, and the CLI.">
+<meta name="theme-color" content="#f7f3ff">
+<link rel="canonical" href="https://kenneth-cho-infosec.github.io/Valvet/docs.html">
+<meta property="og:title" content="Documentation · Valvet">
+<meta property="og:description" content="The complete Valvet language guide: values and types, ownership, modules, units, frames, autodiff, the standard library, and the CLI.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://kenneth-cho-infosec.github.io/Valvet/docs.html">
+<meta property="og:site_name" content="Valvet">
+<meta property="og:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Valvet: Data work, compiled. A dark code window and lavender background.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Documentation · Valvet">
+<meta name="twitter:description" content="The complete Valvet language guide: values and types, ownership, modules, units, frames, autodiff, the standard library, and the CLI.">
+<meta name="twitter:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
+<link rel="icon" href="assets/favicon.png" type="image/png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<noscript>
+<style>
+  .theme-toggle, .menu-toggle, .back-to-top, .copy-btn, .code-tabs, .pipeline-rail, .stdlib-toolbar, .docs-search, .filter-row, .toast { display: none !important; }
+  .code-panel[hidden], .stage-panel[hidden] { display: block !important; }
+  .stage-panel[hidden] { display: grid !important; }
+  .code-panel { margin-bottom: 18px; }
+  .stage-panel { margin-bottom: 18px; }
+  .docs-toc summary, .examples-toc summary { display: block !important; }
+</style>
+</noscript>
+<script>
+(function () {
+  document.documentElement.classList.add('js');
+  try {
+    var saved = localStorage.getItem('valvet-theme');
+    if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
+  } catch (error) {}
+})();
+</script>
+</head>
+<body class="page-docs">
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="site-header" id="site-header">
+  <div class="container nav-shell">
+    <a class="brand" href="index.html" aria-label="Valvet home">
+      <img src="assets/logo-128.png" width="36" height="36" alt="">
+      <span class="brand-name">Valvet</span>
+      <span class="brand-version">0.3.0</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html#why">Why Valvet</a><a href="index.html#features">Features</a><a href="index.html#code">Code</a><a href="docs.html" class="is-active" aria-current="page">Docs</a><a href="examples.html">Examples</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="icon-btn theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"/></svg>
+      </button>
+      <a class="btn btn-primary btn-small nav-install" href="index.html#install">Install</a>
+      <button class="icon-btn menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="mobile-menu">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="mobile-menu" id="mobile-menu" hidden>
+    <nav class="container mobile-nav" aria-label="Mobile">
+      <a href="index.html#why">Why Valvet<span aria-hidden="true">↗</span></a>
+<a href="index.html#features">Features<span aria-hidden="true">↗</span></a>
+<a href="index.html#code">Code<span aria-hidden="true">↗</span></a>
+<a href="docs.html">Docs<span aria-hidden="true">↗</span></a>
+<a href="examples.html">Examples<span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub<span aria-hidden="true">↗</span></a>
+    </nav>
+    <div class="container mobile-menu-foot">
+      <a class="btn btn-primary" href="index.html#install">Install Valvet</a>
+      <p>Native binaries. No garbage collector. No runtime.</p>
+    </div>
+  </div>
+</header>
+<main id="main">
+
+<div class="reading-progress" data-progress aria-hidden="true"></div>
+<section class="page-hero docs-hero">
+  <div class="container page-hero-inner">
+    <h1>The Valvet language</h1>
+    <p class="page-lede">From lexical structure to the standard library. Everything the compiler accepts, in one place.</p>
+    <div class="page-meta"><span>Version 0.3.0</span><span>Updated 2026</span><span>27 stdlib modules</span></div>
+    <div class="page-hero-actions">
+      <a class="btn btn-primary" href="index.html#install">Install Valvet</a>
+    </div>
+  </div>
+</section>
+<div class="container docs-layout">
+  <aside class="docs-sidebar">
+    <div class="docs-search">
+      <label for="docs-search">Search documentation</label>
+      <input id="docs-search" type="search" placeholder="Frames, ownership, SQL…" autocomplete="off" spellcheck="false">
+      <p class="search-status" data-search-status>24 sections</p>
+    </div>
+    <nav class="toc-disclosure" aria-label="Documentation sections">
+      <details class="docs-toc">
+        <summary>On this page<svg class="toc-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></summary>
+        <div class="toc-links">
+          <div class="toc-group"><p class="toc-group-title">Start</p><a href="#getting-started" data-doc-link="getting-started">Getting started</a><a href="#script-and-explicit-modes" data-doc-link="script-and-explicit-modes">Script and explicit modes</a></div><div class="toc-group"><p class="toc-group-title">Language</p><a href="#lexical-structure" data-doc-link="lexical-structure">Lexical structure</a><a href="#values-and-types" data-doc-link="values-and-types">Values and types</a><a href="#variables" data-doc-link="variables">Variables</a><a href="#functions" data-doc-link="functions">Functions</a><a href="#operators-and-precedence" data-doc-link="operators-and-precedence">Operators and precedence</a><a href="#control-flow" data-doc-link="control-flow">Control flow</a><a href="#structs-and-enums" data-doc-link="structs-and-enums">Structs and enums</a><a href="#pattern-matching" data-doc-link="pattern-matching">Pattern matching</a><a href="#vectors" data-doc-link="vectors">Vectors</a><a href="#ownership" data-doc-link="ownership">Ownership</a><a href="#references" data-doc-link="references">References</a><a href="#memory-model" data-doc-link="memory-model">Memory model</a><a href="#modules" data-doc-link="modules">Modules</a><a href="#units-of-measure" data-doc-link="units-of-measure">Units of measure</a></div><div class="toc-group"><p class="toc-group-title">Data stack</p><a href="#frames-and-audited-joins" data-doc-link="frames-and-audited-joins">Frames and audited joins</a><a href="#forward-differentiation" data-doc-link="forward-differentiation">Forward differentiation</a><a href="#deterministic-parallelism" data-doc-link="deterministic-parallelism">Deterministic parallelism</a><a href="#standard-library-and-repl" data-doc-link="standard-library-and-repl">Standard library and REPL</a></div><div class="toc-group"><p class="toc-group-title">Toolchain</p><a href="#build-pipeline" data-doc-link="build-pipeline">Build pipeline</a><a href="#testing" data-doc-link="testing">Testing</a><a href="#cli" data-doc-link="cli">CLI</a><a href="#scope" data-doc-link="scope">Scope</a></div>
+        </div>
+      </details>
+    </nav>
+    <div class="sidebar-note">
+      <p>Need the whole language at a glance?</p>
+      <a href="examples.html">Start from a runnable example <span aria-hidden="true">→</span></a>
+    </div>
+  </aside>
+  <article class="docs-content" id="docs-content">
+    <section class="doc-section" id="getting-started" data-doc-section><h2>Getting started</h2>
+<p>Install stable Rust and a C compiler, clone the repo, and build:</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Bash</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Bash">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-bash">cargo build --release
+./target/release/valvet run hello.valvet</code></pre>
+</div>
+<p>Two toolchains cooperate here, and each has one job. Rust builds the <code data-ui>valvet</code> compiler itself: parsing, type checking, borrow checking, and C lowering all run as safe Rust code. The C compiler handles only the last mile, turning generated C11 into a native binary. A missing C compiler therefore fails only <code data-ui>build</code> and <code data-ui>run</code>; <code data-ui>check</code> and the whole test suite frontend keep working. For day-to-day work, debug builds compile faster while release builds produce the binaries you benchmark.</p>
+<p>A Valvet program is a script by default: top-level statements run from top to bottom with no wrapper. Functions and types still live at the top level beside them:</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">println("hello, valvet")</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">hello, valvet</code></pre>
+</div></section><section class="doc-section" id="script-and-explicit-modes" data-doc-section><h2>Script and explicit modes</h2>
+<p>The entry file runs in <code data-ui>imp</code> mode unless told otherwise: statements at the top level are the program, and helper functions sit beside them. Writing <code data-ui>mode imp;</code> as the first line states the default explicitly and changes nothing. Writing <code data-ui>mode exp;</code> instead opts into the strict classic rule: the entry must define <code data-ui>fun main()</code>, and top-level statements are rejected with E0604. Mixing both forms in one entry is also E0604. Imported files always hold items only, never statements. The mode changes entry rules alone: types, ownership, and generated code are identical either way, so there is no runtime cost to either choice. <code data-ui>valvet new</code> scaffolds explicit-mode projects.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">mode exp;
+fun main() {
+    println("hello, valvet")
+}</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">hello, valvet</code></pre>
+</div>
+<p>Top-level statements under <code data-ui>mode exp</code> stop with a diagnostic, not a half-built binary:</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">mode exp;
+println("nope");</code></pre>
+</div>
+
+<div class="code-card error-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Error</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Error">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">error[E0604]: top-level statements need imp mode (this file declares `mode exp`) --&gt; hello.valvet:2:1</code></pre>
+</div>
+<p>A bare <code data-ui>return n;</code> at the top level sets the process exit status, and <code data-ui>?</code> propagates through a synthesized <code data-ui>Result</code> entry whose message prints on failure.</p></section><section class="doc-section" id="lexical-structure" data-doc-section><h2>Lexical structure</h2>
+<p>Sources are UTF-8 with LF or CRLF endings. Identifiers are ASCII and case sensitive; prefix with <code data-ui>r#</code> to use a keyword as a name. Integer literals accept decimal, hex (<code data-ui>0x2A</code>), octal, and binary (<code data-ui>0b101010</code>), plus <code data-ui>_</code> separators. Floats always carry a decimal point or exponent. Strings support escapes such as <code data-ui>\"</code>, <code data-ui>\\</code>, <code data-ui>\n</code>, and <code data-ui>\t</code>.</p>
+<p>Comments come in two forms: <code data-ui>//</code> to end of line, and nestable block comments <code data-ui>/* ... */</code>. Nesting means an inner <code data-ui>/*</code> must be closed before the outer one ends, which keeps large commented-out regions safe to delimit. An unterminated block comment is a compile error instead of silently swallowing the rest of the file. There are no doc-comment tokens: <code data-ui>///</code> is an ordinary line comment.</p>
+<p>Statements end at newlines, and a semicolon separates two statements on one line. Inside parentheses, brackets, and braces, a newline never ends a statement, so long calls and literals break freely across lines. A trailing operator also continues the statement onto the next line. The one hard rule: a bare <code data-ui>;</code> turns a trailing expression into a statement and discards its value, which is exactly the tool the FizzBuzz example uses to keep prints in statement position inside branches.</p>
+<p>Numbers are lexed generously and typed strictly. Underscores may separate any digits (<code data-ui>1_000_000</code>), and an out-of-range integer literal is E0010 rather than a silent wrap. Adjacent suffixes such as <code data-ui>42i64</code> lex successfully but do not change typing: the type always follows the value, as the Types section explains. Multiline strings use triple quotes and keep newlines verbatim, which suits embedded text blocks. Character literals are lexed but explicitly unsupported (E0800): there is no <code data-ui>Char</code> type yet, so the compiler tells you so instead of accepting a value it cannot type.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">val t = """line one
+line two"""
+println(t)
+println(42i64) // suffix accepted, type follows value
+println(70000)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">line one
+line two
+42
+70000</code></pre>
+</div>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">// line comment runs to end of line
+/* block comments nest /* like this */ still comment */
+println(0x2A)
+println(1_000)
+println(0b101010)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">42
+1000
+42</code></pre>
+</div></section><section class="doc-section" id="values-and-types" data-doc-section><h2>Values and types</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Table: Type"><table><thead><tr><th>Type</th><th>Literals</th><th>Notes</th></tr></thead><tbody><tr><td data-ui><code data-ui>Int32</code>, <code data-ui>Int64</code></td><td data-ui><code data-ui>42</code>, <code data-ui>70000</code></td><td data-ui>Unannotated integers default to <code data-ui>Int32</code></td></tr><tr><td data-ui><code data-ui>Float64</code></td><td data-ui><code data-ui>2.5</code>, <code data-ui>1.0</code></td><td data-ui>Always written with a decimal point</td></tr><tr><td data-ui><code data-ui>Bool</code></td><td data-ui><code data-ui>true</code>, <code data-ui>false</code></td><td data-ui>Conditions must be <code data-ui>Bool</code>, no truthiness</td></tr><tr><td data-ui><code data-ui>String</code></td><td data-ui><code data-ui>"hi"</code></td><td data-ui>Owned; supports <code data-ui>+</code> and <code data-ui>==</code></td></tr><tr><td data-ui><code data-ui>Option&lt;T&gt;</code>, <code data-ui>Result&lt;T, E&gt;</code></td><td data-ui><code data-ui>Some(7)</code>, <code data-ui>Ok(1)</code></td><td data-ui>Bare constructors need annotation context</td></tr><tr><td data-ui><code data-ui>Vec&lt;T&gt;</code></td><td data-ui><code data-ui>vec![1, 2, 3]</code></td><td data-ui>Homogeneous; empty needs annotation</td></tr></tbody></table></div>
+<p>Integers come in two widths. <code data-ui>Int32</code> spans -2147483648 to 2147483647 and <code data-ui>Int64</code> covers the 64-bit range. Unannotated literals default by value: anything that fits in <code data-ui>Int32</code> is <code data-ui>Int32</code>, anything larger is <code data-ui>Int64</code>. This keeps small programs on 32-bit arithmetic while letting big constants just work. <code data-ui>Float64</code> is an IEEE double, always written with a decimal point or exponent so it never parses as an integer. <code data-ui>Bool</code> has exactly two values and no truthiness: conditions must be <code data-ui>Bool</code>, full stop.</p>
+<p><code data-ui>String</code> is an owned, growable byte string with content equality (<code data-ui>==</code> compares contents, never identity) and concatenation with <code data-ui>+</code>. It moves rather than copies, like vectors. There is no character type and no string indexing or slicing. <code data-ui>()</code>, the unit value, is the type of blocks with no trailing expression and of statements used for effect; a <code data-ui>main</code> with no return annotation returns it.</p>
+<p><code data-ui>Option&lt;T&gt;</code> and <code data-ui>Result&lt;T, E&gt;</code> are builtin generic enums that live in every program without imports. Their constructors (<code data-ui>Some</code>, <code data-ui>None</code>, <code data-ui>Ok</code>, <code data-ui>Err</code>) can be used bare whenever the expected type is known from context, as in <code data-ui>val o: Option&lt;Int32&gt; = Some(7)</code>. Without that context the compiler asks for an annotation instead of guessing. They are also the only generic types alongside <code data-ui>Vec&lt;T&gt;</code>: user-defined generics do not exist yet, which keeps type checking total and error messages short.</p>
+<p>Convert between numeric types with <code data-ui>as</code>, as in <code data-ui>total / (v.len() as Float64)</code>. Every conversion is infallible and never traps. Integer to integer wraps by truncating high bits. Float to integer truncates toward zero and saturates: NaN becomes 0 and out-of-range values clamp to the target minimum or maximum. Integer to float rounds to nearest, which can lose precision on very large values. There are no implicit conversions: mixing types without <code data-ui>as</code> is E0201.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">println(7.9 as Int32) // truncate toward zero
+println((0.0 / 0.0) as Int32) // NaN saturates to 0
+println(42 as Float64 + 0.5) // int to float rounds
+println(100000 as Int64) // widening is exact</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">7
+0
+42.5
+100000</code></pre>
+</div></section><section class="doc-section" id="variables" data-doc-section><h2>Variables</h2>
+<p><code data-ui>val</code> bindings never change; <code data-ui>var</code> bindings do. Most bindings need no annotation: the compiler infers the type from the initializer, and parameters plus return types (which are always annotated) propagate inward. Rebinding the same name in the same scope is rejected (E0401); shadowing is not a feature to lean on. To change a value, declare it <code data-ui>var</code> once and assign: each assignment frees the old value before installing the new one, so there is never a leak window and never a double free.</p>
+<p>Mutation has a second gate besides <code data-ui>var</code>: the place being written must be exclusively owned. Assigning through a shared reference or into a <code data-ui>val</code> struct field is E0205, with a hint pointing at <code data-ui>var</code> and <code data-ui>&amp;mut</code>. Compound assignment (<code data-ui>+= -= *= /= %=</code>) works on numeric bindings and desugars to read, operate, and write back through the same exclusive path. Note one sharp edge: compound assignment on <code data-ui>String</code> is not supported by the backend, so write <code data-ui>s = s + "cd"</code> in full.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">var y = 1
+y *= 6 // 6
+y -= 2 // 4
+y /= 2 // 2
+y %= 2 // 0
+println(y)
+var s = "ab"
+s = s + "cd" // full form for strings
+println(s)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">0
+abcd</code></pre>
+</div>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">val name = "valvet"
+var count = 0
+count += 41
+println(name)
+println(count)
+println(count as Float64 / 2.0)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">valvet
+41
+20.5</code></pre>
+</div></section><section class="doc-section" id="functions" data-doc-section><h2>Functions</h2>
+<p>Parameters and returns are always annotated. A trailing expression is the return value; <code data-ui>return</code> exits early.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">fun fib(n: Int32): Int32 {
+    if (n &lt; 2) { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+println(fib(10))</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">55</code></pre>
+</div></section><section class="doc-section" id="operators-and-precedence" data-doc-section><h2>Operators and precedence</h2>
+<p>Assignment sits at the very bottom of the table and groups right, so <code data-ui>a = b = 1</code> parses as written. Everything else groups left except comparisons, which never chain: <code data-ui>a &lt; b &lt; c</code> is rejected rather than parsed as a confusing surprise. Mixed-type arithmetic does not exist: both sides must already share one numeric type, and the compiler names the offending side with E0201 instead of inserting a conversion. Ranges deserve special mention: <code data-ui>0..n</code> excludes its end while <code data-ui>1..=5</code> includes it, and both are values you can hand directly to <code data-ui>for</code>.</p>
+<p>From tightest to loosest: calls, field access, and indexing; unary minus, logical not, dereference, and borrowing; <code data-ui>as</code> casts; <code data-ui>* / %</code>; <code data-ui>+ -</code> (with <code data-ui>+</code> also concatenating strings); ranges <code data-ui>..</code> and <code data-ui>..=</code>; shifts; bitwise <code data-ui>&amp; ^ |</code>; comparisons, which never chain (<code data-ui>a &lt; b &lt; c</code> is rejected); short-circuit <code data-ui>&amp;&amp;</code> then <code data-ui>||</code>; assignment last. Integer division truncates toward zero and panics on division by zero; float division follows IEEE, so <code data-ui>0.0 / 0.0</code> is NaN rather than an error.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">println(2 + 3 * 4) // * binds tighter: 14
+println((2 + 3) * 4) // parens override: 20
+println(10 % 3) // remainder: 1
+println(true &amp;&amp; false || true) // &amp;&amp; first: true
+println(0 - 3) // unary minus: -3</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">14
+20
+1
+true
+-3</code></pre>
+</div></section><section class="doc-section" id="control-flow" data-doc-section><h2>Control flow</h2>
+<p><code data-ui>if</code> is an expression when both branches yield values, and both branches must agree on one type. An <code data-ui>if</code> without <code data-ui>else</code> used as a value is E0201: there is no unit to fall back on silently. Conditions are always <code data-ui>Bool</code>; assignment inside a condition is rejected rather than warned about. <code data-ui>for</code> iterates ranges and vectors alike. Iterating a vector borrows it, so the vector stays fully usable after the loop, and the loop variable takes each element in turn. <code data-ui>while</code> repeats on a <code data-ui>Bool</code> condition. <code data-ui>loop</code> repeats until <code data-ui>break</code>, which can carry a value out and turn the whole loop into an expression. A <code data-ui>break</code> or <code data-ui>continue</code> outside any loop is E0005. <code data-ui>return</code> exits the function immediately, running every pending free on its way out.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">val v = vec![10, 20, 30]
+var total = 0
+for (x in v) { // borrows v; v stays usable
+    total += x
+}
+println(total)
+println(v.len()) // still here: 3</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">60
+3</code></pre>
+</div>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">var total = 0
+for (i in 1..=5) {
+    total += i
+}
+println(total)
+var i = 3
+while (i &gt; 0) {
+    println(i)
+    i -= 1
+}
+var k = 0
+val v = loop {
+    k += 1
+    if (k &gt;= 5) {
+        break k * 10
+    }
+}
+println(v)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">15
+3
+2
+1
+50</code></pre>
+</div>
+<p>Style note: a branch that ends in a <code data-ui>println</code> call needs a trailing <code data-ui>;</code> so the call stays a statement. See the FizzBuzz example.</p></section><section class="doc-section" id="structs-and-enums" data-doc-section><h2>Structs and enums</h2>
+<p>Named-field, tuple, and unit structs; enums with payload variants. Construction names every field or payload in order, and field access uses the same dot syntax for reads and writes. Writing a field needs a <code data-ui>var</code> root: the struct value itself must be mutable and exclusively owned, otherwise the assignment is E0205. Structs, enums, and functions share one qualified namespace per module, so a struct and a function may not claim the same name in one module. Recursive types (a struct containing itself by value) are rejected, since the C layout would be infinitely large. There are no user-written methods or implementation blocks: the only methods that exist are the builtin <code data-ui>Vec</code>, <code data-ui>String</code>, and <code data-ui>Rng</code> kernels, which keeps method resolution trivial and total.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">struct Cell { v: Int32 }
+
+var c = Cell { v: 1 } // var root: fields writable
+c.v = 41 // exclusive write through owned value
+println(c.v + 1)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">42</code></pre>
+</div>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">struct Point { x: Float64, y: Float64 }
+
+enum Shape { Circle(Float64), Rect(Float64, Float64), Point }
+
+fun area(s: Shape): Float64 {
+    match (s) {
+        Shape::Circle(r) -&gt; 3.141592653589793 * r * r,
+        Shape::Rect(w, h) -&gt; w * h,
+        Shape::Point -&gt; 0.0,
+    }
+}
+
+val p = Point { x: 1.5, y: 2.5 }
+println(p.x + p.y)
+println(area(Shape::Circle(1.0)))</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">4
+3.1415926535897931</code></pre>
+</div>
+<p>Structs also come in tuple and unit forms. A tuple struct wraps values without field names and reads them back with numeric access (<code data-ui>.0</code>, <code data-ui>.1</code>). Fields are private to their module unless marked <code data-ui>pub</code>.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">struct Meters(Float64);
+
+val m = Meters(1.5) // wrap
+println(m.0) // read field 0</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">1.5</code></pre>
+</div>
+<p><code data-ui>Option</code> and <code data-ui>Result</code> participate in the same <code data-ui>match</code>, and <code data-ui>?</code> propagates errors out of functions that return them.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">fun half(n: Int32): Result&lt;Int32, String&gt; {
+    if (n == 0) {
+        return Err("zero");
+    }
+    return Ok(n / 2);
+}
+
+val h = half(84)?;
+println(h);</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">42</code></pre>
+</div></section><section class="doc-section" id="pattern-matching" data-doc-section><h2>Pattern matching</h2>
+<p>Arms are checked for exhaustiveness: miss a variant and the program does not compile. Patterns include literals, enum variants with bindings, struct patterns that bind by field name (or rename with <code data-ui>x: 0</code>), and the wildcard <code data-ui>_</code>. A guard (<code data-ui>if</code> after the pattern) refines an arm further, and arms are tried top to bottom. For the common single-variant test, <code data-ui>if let</code> skips the full <code data-ui>match</code>.</p>
+<p>The checker distinguishes value matches from statement matches. A <code data-ui>match</code> used as a value must cover every case and every arm must yield the same type; a statement match only requires unit arms. Coverage is precise rather than textual: <code data-ui>Bool</code> needs both <code data-ui>true</code> and <code data-ui>false</code>, <code data-ui>Option</code> needs <code data-ui>Some(_)</code> plus <code data-ui>None</code>, and an enum needs every variant at the right arity. Guards never count toward coverage, so a guarded arm plus a wildcard still needs the wildcard. A constructor with a literal inside, like <code data-ui>Some(0)</code>, covers only that literal, not the whole variant. When coverage fails, the diagnostic lists what is missing and suggests adding a <code data-ui>_</code> arm.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">fun name(n: Int32): String {
+    match (n) {
+        0 -&gt; "zero", // literal pattern
+        1 -&gt; "one",
+        _ -&gt; "many", // wildcard covers the rest
+    }
+}
+
+println(name(0))
+println(name(7))
+println(match (true) { true -&gt; 1, false -&gt; 0, }) // Bool: both sides present</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">zero
+many
+1</code></pre>
+</div>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">struct Point { x: Int32, y: Int32 }
+
+fun quad(p: Point): String {
+    match (p) {
+        Point { x, y } if x &gt; 0 &amp;&amp; y &gt; 0 -&gt; "q1", // guard refines the arm
+        _ -&gt; "other", // wildcard catches the rest
+    }
+}
+
+println(quad(Point { x: 3, y: 4 }))
+println(quad(Point { x: 0 - 1, y: 5 }))
+val o: Option&lt;Int32&gt; = Some(7)
+if let Some(v) = o { // single-variant shortcut
+    println(v)
+} else {
+    println(0)
+}</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">q1
+other
+7</code></pre>
+</div></section><section class="doc-section" id="vectors" data-doc-section><h2>Vectors</h2>
+<p><code data-ui>Vec&lt;T&gt;</code> owns a heap buffer, so it moves rather than copies; <code data-ui>.clone()</code> duplicates explicitly. Subscript reads (<code data-ui>v[i]</code>) copy the element out and trap out of bounds, while <code data-ui>.get(i)</code> yields an <code data-ui>Option</code> copy instead: <code data-ui>Some</code> in range, <code data-ui>None</code> outside. Index stores (<code data-ui>v[i] = x</code>) bounds-check the same way. An empty literal needs an annotation (<code data-ui>val v: Vec&lt;Int32&gt; = vec![]</code>) since there is nothing to infer the element type from. <code data-ui>vec![...]</code> is the single builtin macro in the language; general macros do not exist yet.</p>
+<p>Method receivers always borrow: calling a kernel never consumes the vector, whatever the method returns. <code data-ui>push</code> is the one method that moves its argument into the buffer, transferring the element. <code data-ui>get</code> clones the element on the way out, so the copy you hold is fully independent of the buffer. <code data-ui>pop</code> moves the last element out as an <code data-ui>Option</code>, yielding <code data-ui>None</code> when empty. Arithmetic kernels (<code data-ui>add</code>, <code data-ui>mul</code>, <code data-ui>dot</code>) check shapes at runtime and report mismatch as <code data-ui>Result</code> carrying the expected and found lengths, so the caller learns both numbers. <code data-ui>dot</code> exists only for <code data-ui>Float64</code> vectors; <code data-ui>add_scalar</code> broadcasts one constant across numeric vectors.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">val a = vec![1.0, 2.0, 3.0]
+val b = vec![4.0, 5.0, 6.0]
+val d = match (a.dot(b)) { Ok(v) -&gt; v, Err(e) -&gt; -1.0, }
+println(d)
+println(a.len())
+println(b.get(0))</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">32
+3
+Some(4)</code></pre>
+</div>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Table: Method"><table><thead><tr><th>Method</th><th>Effect</th></tr></thead><tbody><tr><td data-ui><code data-ui>len</code></td><td data-ui>Element count as <code data-ui>Int64</code></td></tr><tr><td data-ui><code data-ui>push</code>, <code data-ui>pop</code>, <code data-ui>get</code></td><td data-ui>Grow, shrink (as <code data-ui>Option</code>), safe read</td></tr><tr><td data-ui><code data-ui>clone</code></td><td data-ui>Deep duplicate</td></tr><tr><td data-ui><code data-ui>cast</code>, <code data-ui>add_scalar</code></td><td data-ui>Element-wise convert, add constant</td></tr><tr><td data-ui><code data-ui>add</code>, <code data-ui>mul</code>, <code data-ui>dot</code></td><td data-ui>Vector arithmetic; <code data-ui>dot</code> reports shape errors as <code data-ui>Result</code></td></tr></tbody></table></div></section><section class="doc-section" id="ownership" data-doc-section><h2>Ownership</h2>
+<p>Scalars (<code data-ui>Bool</code>, integers, <code data-ui>Float64</code>) copy on assignment; <code data-ui>String</code> does not. Shared references (<code data-ui>&amp;T</code>) copy too, while exclusive references (<code data-ui>&amp;mut T</code>) move. A struct or enum whose every field is <code data-ui>Copy</code> is itself <code data-ui>Copy</code>, so small value types stay cheap without annotation. Everything else has exactly one owner: assigning a <code data-ui>Vec</code>, <code data-ui>String</code>, struct, or enum moves it, and the old binding is gone. Moves happen at more places than assignment: function arguments move (except into <code data-ui>print</code> and <code data-ui>println</code>, which borrow), return values and tail expressions move out, and <code data-ui>push</code> moves its element into the buffer. String concatenation and comparison, by contrast, only borrow: <code data-ui>+</code> and <code data-ui>==</code> never take ownership of either side. Reading a moved value is E0301 at compile time, as is moving a field and then using the whole value. Moves also refuse to run through live borrows: moving a value while it is borrowed is E0301 with the loan named. Branch merging stays conservative, so a value moved on any path counts as moved after the join. Sharing is explicit: <code data-ui>.clone()</code> deep-duplicates, and there is no silent aliasing anywhere in the language. This is the core design bet borrowed from systems languages: memory safety by construction, with no collector and no reference counting in safe code.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">val a = vec![1, 2, 3]
+val b = a // move: a is gone here
+println(b.len())
+val c = b.clone() // explicit deep duplicate
+println(c.len())</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">3
+3</code></pre>
+</div></section><section class="doc-section" id="references" data-doc-section><h2>References</h2>
+<p>Borrow with <code data-ui>&amp;</code> (shared) or <code data-ui>&amp;mut</code> (exclusive, needs a <code data-ui>var</code> root). A borrow ends at its last use, so the owner is usable again right after. Dereference with <code data-ui>*</code>.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">var y = 20
+val m = &amp;mut y
+*m = *m + 5
+println(y)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">25</code></pre>
+</div>
+<p>Borrowing is non-lexical: a borrow ends at its last use, so the owner becomes usable again on the very next line. Shared borrows (<code data-ui>&amp;</code>) allow many readers; a mutable borrow (<code data-ui>&amp;mut</code>) is exclusive and needs a <code data-ui>var</code> root. Borrows are field-precise: borrowing one field does not lock the others.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">var x = 1
+val r = &amp;x // shared borrow starts
+println(*r) // last use: borrow ends here
+x = 2 // owner usable again
+println(x)</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">1
+2</code></pre>
+</div>
+<p>Lifetimes elide in the common single-input case; ambiguous signatures take explicit <code data-ui>&amp;'a T</code> annotations that tie each output reference to its input. Returning a reference to a local is E0303, as is borrowing a temporary past its statement: the compiler proves no dangling reference escapes, and the diagnostic names the offending lifetime. The exact elision rule: when the output contains an elided borrow, exactly one borrow across the inputs may be elided or named, and the output ties to it. Zero input borrows, or two or more candidate borrows, demand explicit names on the output. Every declared lifetime must appear in the inputs, and references may only appear at the top level of a signature: nested references and references inside generic arguments are rejected. Taking <code data-ui>&amp;mut</code> of an immutable binding is E0205, which points back at declaring a <code data-ui>var</code> root.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">fun first(a: &amp;'a Int32, b: &amp;'b Int32): &amp;'a Int32 {
+    a // tied to the first input by 'a
+}
+
+var x = 1
+var y = 2
+println(*first(&amp;x, &amp;y))</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">1</code></pre>
+</div></section><section class="doc-section" id="memory-model" data-doc-section><h2>Memory model</h2>
+<p>There is no garbage collector. Scalars copy; everything else has exactly one owner and is freed deterministically when its scope exits, on every path including early <code data-ui>return</code>. Reassigning a <code data-ui>var</code> frees the old value first, so there is no leak window. Moves out of live borrows, uses of moved values, and dangling returns are compile errors long before any of this machinery matters. Locals free in reverse construction order, temporaries free at the end of their statement, and loop exits are covered too: <code data-ui>break</code> and <code data-ui>continue</code> run the frees for everything they leave behind. A moved-from slot is poisoned to null at the C level, so a defect would crash loudly instead of freeing twice; the generated code is verified ASan/UBSan-clean. The price of the model is explicitness: cloning, bounds checks, and error paths all appear in the source, which is what makes performance predictable. Programs that need shared ownership must say so with explicit types; the language never invents aliasing behind your back.</p></section><section class="doc-section" id="modules" data-doc-section><h2>Modules</h2>
+<p>The project root is the entry file's directory. Each non-entry file declares its module with dots (<code data-ui>module math;</code>), while every path and import uses <code data-ui>::</code>. A dotted import is its own error (E0602) with an autofix suggestion, so the two separators are never confused: dots declare, colons travel. The entry file needs no module declaration, and its entry point is either <code data-ui>fun main()</code> or top-level statements in imp mode; with neither, the compiler stops with E0603, and with both it stops with E0604.</p>
+<p>Structs, enums, and functions share one qualified namespace per module, keyed as <code data-ui>module::name</code>, so cross-kind collisions are impossible to miss. Everything is private by default and cross-module access needs <code data-ui>pub</code> on the item itself; there is no field-level visibility, only item-level. Touching a private item is E0401, as is redefining an imported name locally or importing a name that does not exist. Imports rename with <code data-ui>as</code> and group with braces (<code data-ui>import shapes::{Point as Pt, origin};</code>). Cycles are rejected (E0601) with the load stack shown; diamonds, where two modules import one shared module, load once and are fine. A missing file is E0701. Units are parsed separately so errors attribute per file, then checked jointly with one environment per module.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">// main.valvet
+import math::double as db; // rename on import
+println(db(20))</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">40</code></pre>
+</div>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">
+// math.valvet
+module math;
+
+pub fun double(n: Int32): Int32 {
+    n * 2
+}</code></pre>
+</div>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">// main.valvet
+import math::double;
+println(double(21))</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">42</code></pre>
+</div>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">
+// math.valvet
+module math;
+
+pub fun double(n: Int32): Int32 {
+    n * 2
+}</code></pre>
+</div></section><section class="doc-section" id="units-of-measure" data-doc-section><h2>Units of measure</h2>
+<p>Annotate a numeric binding, parameter, return, or cast with <code data-ui>@unit</code> and the dimension becomes part of the type. Same dimensions unify; compatible scales convert silently with the left side winning; dimensionless literals coerce. Multiplying and dividing composes dimensions, and mismatches are E0201 at compile time instead of wrong numbers at runtime. Struct fields and vector element types stay dimensionless; <code data-ui>expr as @unit</code> asserts and converts explicitly.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">fun speed(d: Float64 @m, t: Float64 @s): Float64 @m/s {
+    d / t
+}
+
+println(speed(100.0, 9.58))
+val v: Float64 @km/h = 72.0
+val w: Float64 @m/s = v // auto-scales: 20
+println(w)
+println(w * 10.0) // (m/s) times seconds: 200 m</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">10.438413361169102
+20
+200</code></pre>
+</div></section><section class="doc-section" id="frames-and-audited-joins" data-doc-section><h2>Frames and audited joins</h2>
+<p>The standard library turns CSV tables into data frames with borrowed views, then groups and joins them. Missing cells stay explicit (<code data-ui>NA</code> is skipped by sums, never silently zero), and joins never silently drop rows: every join returns the frame plus an audit of matched, left-only, and right-only counts, printable with <code data-ui>audit_summary</code>. A missing key column is <code data-ui>Err</code>, not an empty frame.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::frame::frame_col;
+import std::frame::frame_group_count;
+import std::frame::frame_group_sum;
+
+val h = vec!["region", "sales"];
+val r0 = vec!["east", "10"];
+val r1 = vec!["west", "20"];
+val r2 = vec!["east", "NA"];
+val r3 = vec!["west", "40"];
+val t = CsvTable { header: h, rows: vec![r0, r1, r2, r3] };
+val f = frame_from_table(t);
+val g = frame_group_count(&amp;f, "region");
+val e: Vec&lt;String&gt; = vec![];
+println(match (frame_col(&amp;g, "region")) { Some(c) -&gt; c, None -&gt; e, });
+println(match (frame_col(&amp;g, "count")) { Some(c) -&gt; c, None -&gt; e, });
+val gs = frame_group_sum(&amp;f, "region", "sales");
+println(match (frame_col(&amp;gs, "sum")) { Some(c) -&gt; c, None -&gt; e, });</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">[east, west]
+[2, 2]
+[10, 60]</code></pre>
+</div></section><section class="doc-section" id="forward-differentiation" data-doc-section><h2>Forward differentiation</h2>
+<p>Write the loss once over dual numbers, seed each dimension, and read the derivative back out. The <code data-ui>Dual</code> type carries value plus tangent through ordinary arithmetic, so gradients come from the same code that computes the objective, with no separate backward pass to keep in sync.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">import std::autodiff::Dual;
+import std::autodiff::dual_mul;
+import std::autodiff::seed;
+
+fun sq(p: Vec&lt;Dual&gt;): Dual {
+    dual_mul(p[0], p[0])
+}
+
+val d = sq(seed(vec![3.0], 0 as Int64)).d;
+println(d) // d(x^2)/dx at 3</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">6</code></pre>
+</div></section><section class="doc-section" id="deterministic-parallelism" data-doc-section><h2>Deterministic parallelism</h2>
+<p><code data-ui>par_sum</code> adds a <code data-ui>Vec&lt;Float64&gt;</code> on a thread pool with fixed-size blocks and ordered combining, so every thread count agrees bit for bit. There is no runtime to configure and no nondeterminism to average away: one thread or eight, the sum in this example is 10 either way.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">val v = vec![1.0, 2.0, 3.0, 4.0];
+println(par_sum(v.clone(), 1 as Int64));
+println(par_sum(v.clone(), 4 as Int64));</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">10
+10</code></pre>
+</div></section><section class="doc-section" id="standard-library-and-repl" data-doc-section><h2>Standard library and REPL</h2>
+<p>The library ships as Valvet sources under <code data-ui>stdlib/</code> with explicit imports and no prelude. Set <code data-ui>VALVET_STDLIB</code> to override the search path. For exploration, <code data-ui>valvet repl</code> keeps definitions across lines: type <code data-ui>println(6 * 7);</code> and it answers <code data-ui>42</code>.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Table: Module"><table><thead><tr><th>Module</th><th>Contents</th></tr></thead><tbody><tr><td data-ui><code data-ui>std::math</code></td><td data-ui>sqrt, exp, log, pow, trigonometry</td></tr><tr><td data-ui><code data-ui>std::str</code></td><td data-ui>Split, trim, join, case, interpolation helpers</td></tr><tr><td data-ui><code data-ui>std::re</code></td><td data-ui>Thompson-NFA regular expressions</td></tr><tr><td data-ui><code data-ui>std::csv</code></td><td data-ui>RFC-style CSV plus flat JSON</td></tr><tr><td data-ui><code data-ui>std::frame</code></td><td data-ui>Selection, filtering, grouping, audited joins, window verbs (Lag/Lead/RowNum/Cumsum/Rank), cut/qcut, crosstab, pivots</td></tr><tr><td data-ui><code data-ui>std::schema</code></td><td data-ui>Missing-aware typed column parsing</td></tr><tr><td data-ui><code data-ui>std::validate</code></td><td data-ui>Type, range, set, uniqueness, and no-missing contracts with reports</td></tr><tr><td data-ui><code data-ui>std::sql</code></td><td data-ui>SELECT/WHERE/GROUP BY/ORDER BY/LIMIT over frames</td></tr><tr><td data-ui><code data-ui>std::stats</code></td><td data-ui>Missing-aware means and sums</td></tr><tr><td data-ui><code data-ui>std::dist</code></td><td data-ui>Normal, exponential, uniform, binomial, Poisson, hypergeometric, negative binomial, lognormal, Weibull, logistic, Cauchy, Gumbel, exact gamma/Dirichlet, multivariate normal</td></tr><tr><td data-ui><code data-ui>std::infer</code></td><td data-ui>t, chi-square, F, correlation, Mann-Whitney, Fisher exact, one-way ANOVA</td></tr><tr><td data-ui><code data-ui>std::model</code></td><td data-ui>Formulas with treatment contrasts, <code data-ui>lm</code>, binomial <code data-ui>glm</code>, weighted fits, ANOVA, summaries, Cook's distance, VIF, Durbin-Watson, Breusch-Pagan</td></tr><tr><td data-ui><code data-ui>std::select</code></td><td data-ui>Train splits, k-fold ids, AIC/BIC/AICc, jackknife, permutation tests</td></tr><tr><td data-ui><code data-ui>std::causal</code></td><td data-ui>Diff-in-diff, Wald 2SLS, propensity matching, HC0 robust standard errors</td></tr><tr><td data-ui><code data-ui>std::meta</code></td><td data-ui>Cohen's d, eta-squared, odds ratios, fixed/random-effects meta-analysis, power approximations, Holm/BH adjustments</td></tr><tr><td data-ui><code data-ui>std::features</code></td><td data-ui>Standardization, polynomial expansion, target encoding, mean fill, missing indicators, date parts</td></tr><tr><td data-ui><code data-ui>std::synth</code></td><td data-ui>Typed random frames for testing</td></tr><tr><td data-ui><code data-ui>std::report</code></td><td data-ui>LaTeX and HTML model tables</td></tr><tr><td data-ui><code data-ui>std::date</code></td><td data-ui>Civil-date arithmetic</td></tr><tr><td data-ui><code data-ui>std::time</code></td><td data-ui>Timestamps and durations</td></tr><tr><td data-ui><code data-ui>std::complex</code></td><td data-ui>Complex numbers over borrows</td></tr><tr><td data-ui><code data-ui>std::factor</code></td><td data-ui>Level and code helpers</td></tr><tr><td data-ui><code data-ui>std::plot</code></td><td data-ui>Static SVG: points, lines, bars, histograms, pairs, ECDF, correlograms</td></tr><tr><td data-ui><code data-ui>std::units</code></td><td data-ui>Known units for <code data-ui>@unit</code> checking</td></tr><tr><td data-ui><code data-ui>std::provenance</code></td><td data-ui>Source hashes plus transform logs</td></tr><tr><td data-ui><code data-ui>std::autodiff</code></td><td data-ui>Dual-number forward differentiation with <code data-ui>seed</code></td></tr><tr><td data-ui><code data-ui>std::sys</code></td><td data-ui>Run, capture, environment, working directory (imp scripts only)</td></tr></tbody></table></div></section><section class="doc-section" id="build-pipeline" data-doc-section><h2>Build pipeline</h2>
+<p>One Valvet program becomes one C translation unit. The frontend (lex, parse, type check, borrow check) runs first; only checked code lowers to readable C11 with deterministic frees, which a plain C compiler then links into a dependency-free binary. There is no separate compilation and no runtime library to deploy: the prelude (strings, vectors, printing, numeric helpers) is emitted into the same file. <code data-ui>check</code> stops before linking, so it needs only Rust. <code data-ui>build</code> and <code data-ui>run</code> need a C compiler, found in order as <code data-ui>VALVET_CC</code>, then a user-local install, then <code data-ui>gcc</code> or <code data-ui>cc</code> on PATH. Compilation uses <code data-ui>-std=c11 -O2 -fwrapv -pthread</code> with no other hidden flags. Generated artifacts land in <code data-ui>target/valvet/</code> next to the project, never inside the source tree.</p>
+<p>Inside the translation unit, layout is deliberate. Algebraic types are ordered topologically so every definition precedes its uses, then forward declarations cover every function except <code data-ui>main</code>, which fixes forward calls in any order. Drop, clone, vector-kernel, and print helpers are emitted only for the type instantiations the program actually uses, keeping binaries lean. Names are sanitized into an unambiguous C namespace: entry items keep plain names while cross-module items become <code data-ui>v_module___name</code>, so no Valvet program can collide with C keywords or with itself. Because the C is readable, a miscompilation can be inspected directly: the generated file sits next to the binary that came from it.</p></section><section class="doc-section" id="testing" data-doc-section><h2>Testing</h2>
+<p><code data-ui>valvet test</code> runs the fixture suite: every <code data-ui>.valvet</code> file under the suite directory builds and executes, with <code data-ui>.stdout</code> and <code data-ui>.exit</code> sidecars pinning expected output and status. Compile-fail fixtures pin the expected error code in a <code data-ui>.error</code> sidecar instead. Fixtures are organized by kind: pass, fail, runtime behavior, conformance, regression, ownership, lexer, parser, diagnostics, and multi-file projects with their own directories. Release runs repeat the whole suite with optimizations on, so codegen differences between profiles cannot hide. The gates are strict: 103 unit tests, 152 out of 152 fixtures green in both debug and release, formatter and linter clean, and sanitizer-clean generated code. Adding a test means adding files: one <code data-ui>.valvet</code> plus its sidecars, no registration step.</p></section><section class="doc-section" id="cli" data-doc-section><h2>CLI</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Table: Command"><table><thead><tr><th>Command</th><th>Effect</th></tr></thead><tbody><tr><td data-ui><code data-ui>valvet check &lt;file&gt;</code></td><td data-ui>Parse and analyse, no linking</td></tr><tr><td data-ui><code data-ui>valvet build &lt;file&gt;</code></td><td data-ui>Compile to <code data-ui>target/valvet/&lt;name&gt;</code></td></tr><tr><td data-ui><code data-ui>valvet run &lt;file&gt;</code></td><td data-ui>Build, execute, exit with program status</td></tr><tr><td data-ui><code data-ui>valvet run &lt;file&gt; -- args</code></td><td data-ui>Run with script arguments in <code data-ui>args</code></td></tr><tr><td data-ui><code data-ui>valvet run --watch &lt;file&gt;</code></td><td data-ui>Re-run on file change</td></tr><tr><td data-ui><code data-ui>valvet fmt &lt;file&gt;</code></td><td data-ui>Normalize whitespace and trailing newline</td></tr><tr><td data-ui><code data-ui>valvet -e 'expr'</code></td><td data-ui>Evaluate a scriptlet and print its value</td></tr><tr><td data-ui><code data-ui>valvet test [dir]</code></td><td data-ui>Run the fixture suite</td></tr><tr><td data-ui><code data-ui>valvet new &lt;name&gt;</code></td><td data-ui>Scaffold a single-dir project</td></tr><tr><td data-ui><code data-ui>valvet repl</code></td><td data-ui>Interactive session, definitions persist</td></tr></tbody></table></div>
+<p><code data-ui>check</code> parses and analyses without linking, which makes it the fastest feedback loop and the one to run on every save. <code data-ui>build</code> compiles and links to <code data-ui>target/valvet/&lt;name&gt;</code> and prints the artifact path. <code data-ui>run</code> builds, executes, and exits with the program status, so a <code data-ui>main</code> returning <code data-ui>Ok(7)</code> yields exit 7. <code data-ui>test</code> runs the fixture suite in an optional directory (defaulting to the repo suite). <code data-ui>new</code> scaffolds an explicit-mode single-directory project with an entry file and a hint toward multi-file layout. <code data-ui>repl</code> opens an interactive session where definitions persist across lines with <code data-ui>:help</code>, <code data-ui>:reset</code>, and <code data-ui>:quit</code>. <code data-ui>run --watch</code> re-runs the file whenever it changes, <code data-ui>fmt</code> normalizes trailing whitespace, and <code data-ui>-e</code> evaluates a one-liner as either an expression (printed) or statements. Warnings never fail a build: they render to stderr with the same file and position format as errors while compilation succeeds. Exit codes: 0 success, 1 compilation failure, 2 usage error.</p>
+<h2 id="errors">Errors<a class="heading-anchor" href="#errors" aria-label="Link to Errors"></a></h2>
+<p>Errors never panic the compiler. They carry file, position, code, and help:</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">error[E0205]: cannot assign through this place (immutable binding or shared reference) --&gt; prog.valvet:3:5
+  help: use `var` bindings and `&amp;mut` for mutation</code></pre>
+</div>
+<p>A <code data-ui>main</code> that can fail declares it: <code data-ui>fun main(): Result&lt;Int32, String&gt;</code> may use <code data-ui>?</code> directly, and the process exits with the <code data-ui>Ok</code> value as its status. The program below prints <code data-ui>hi</code> and exits 7.</p>
+
+<div class="code-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Input · Valvet</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Input · Valvet">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-valvet">fun main(): Result&lt;Int32, String&gt; {
+    println("hi");
+    return Ok(7);
+}</code></pre>
+</div>
+
+<div class="code-card output-card" data-ui>
+  <div class="code-head">
+    <span class="code-label">Output</span>
+    <button class="copy-btn" type="button" data-copy aria-label="Copy Output">Copy</button>
+  </div>
+  <pre class="code-pre"><code class="language-text">hi</code></pre>
+</div>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Table: Code"><table><thead><tr><th>Code</th><th>Meaning</th><th>Typical fix</th></tr></thead><tbody><tr><td data-ui><code data-ui>E0001</code></td><td data-ui>Invalid character in source</td><td data-ui>Remove or replace the character</td></tr><tr><td data-ui><code data-ui>E0003</code></td><td data-ui>Unterminated literal or block comment</td><td data-ui>Close the string, char, or comment</td></tr><tr><td data-ui><code data-ui>E0005</code></td><td data-ui>Control-flow misuse (<code data-ui>break</code> outside a loop)</td><td data-ui>Move the statement inside the loop</td></tr><tr><td data-ui><code data-ui>E0010</code></td><td data-ui>Malformed literal (bad separator, suffix, exponent)</td><td data-ui>Rewrite the literal</td></tr><tr><td data-ui><code data-ui>E0201</code></td><td data-ui>Type mismatch, including missing <code data-ui>as</code></td><td data-ui>Convert explicitly or fix the annotation</td></tr><tr><td data-ui><code data-ui>E0204</code></td><td data-ui>Value <code data-ui>match</code> is non-exhaustive</td><td data-ui>Add the missing arms or <code data-ui>_</code></td></tr><tr><td data-ui><code data-ui>E0205</code></td><td data-ui>Write through immutable place</td><td data-ui>Use <code data-ui>var</code> bindings and <code data-ui>&amp;mut</code></td></tr><tr><td data-ui><code data-ui>E0301</code></td><td data-ui>Use of moved value, or move while borrowed</td><td data-ui>Clone explicitly or reorder the uses</td></tr><tr><td data-ui><code data-ui>E0302</code></td><td data-ui>Conflicting borrows, or assign while borrowed</td><td data-ui>End the borrow before writing</td></tr><tr><td data-ui><code data-ui>E0303</code></td><td data-ui>Dangling reference or ambiguous lifetime</td><td data-ui>Name the output lifetime explicitly</td></tr><tr><td data-ui><code data-ui>E0401</code></td><td data-ui>Unknown name, duplicate, or private access</td><td data-ui>Check spelling, imports, and <code data-ui>pub</code></td></tr><tr><td data-ui><code data-ui>E0601</code></td><td data-ui>Import cycle</td><td data-ui>Break the cycle between modules</td></tr><tr><td data-ui><code data-ui>E0602</code></td><td data-ui>Dotted import path</td><td data-ui>Use <code data-ui>::</code> separators</td></tr><tr><td data-ui><code data-ui>E0603</code></td><td data-ui>Missing entry point</td><td data-ui>Add <code data-ui>fun main()</code> or top-level statements</td></tr><tr><td data-ui><code data-ui>E0604</code></td><td data-ui>Mode violation: statements under <code data-ui>mode exp</code>, or statements plus <code data-ui>fun main</code></td><td data-ui>Delete one form or switch the mode header</td></tr><tr><td data-ui><code data-ui>E0701</code></td><td data-ui>Unresolved module file</td><td data-ui>Create the file or fix the path</td></tr><tr><td data-ui><code data-ui>E0702</code></td><td data-ui><code data-ui>?</code> outside a <code data-ui>Result</code>/<code data-ui>Option</code> function</td><td data-ui>Return <code data-ui>Result</code> or <code data-ui>match</code> instead</td></tr><tr><td data-ui><code data-ui>E0800</code></td><td data-ui>Valid syntax, not yet supported</td><td data-ui>Follow the suggested alternative</td></tr><tr><td data-ui><code data-ui>W1002</code></td><td data-ui>Deprecated <code data-ui>print</code> (warning only)</td><td data-ui>Use <code data-ui>println</code></td></tr></tbody></table></div>
+<p>The table covers every code the compiler emits. Warnings like <code data-ui>W1002</code> never fail a build; every <code data-ui>E</code> code does.</p></section><section class="doc-section" id="scope" data-doc-section><h2>Scope</h2>
+<ul><li>Single C translation unit per program; local machine target.</li><li>0.2.0 analytical foundation: units of measure, audited joins, provenance, dual-number autodiff, deterministic <code data-ui>par_sum</code>, script mode, file I/O, CSV/JSON, statistics, plotting, and an interactive REPL.</li><li>0.3.0 modeling release: R-style formulas with contrasts, weighted fits, ANOVA plus diagnostics, a SQL subset over frames, validation contracts, window verbs, selection and causal helpers, meta-analysis, and LaTeX/HTML model tables.</li><li>Full test gates: 185 unit tests, 258/258 fixtures in debug and release, ASan/UBSan-clean output.</li><li>Nothing in earlier versions needs relearning: frames are owned values with borrowed views, missing data is explicit, and every fallible operation returns <code data-ui>Result</code>.</li><li>Deliberately absent: closures, traits, user generics, and methods beyond the builtins. Each is a tracked future phase, not an oversight, and E0800 marks the boundary at compile time.</li></ul>
+<p>Copyright 2026 Kenneth Cho. All rights reserved. Source: <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>.</p></section>
+  </article>
+</div>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-grid">
+    <div class="footer-brand">
+      <a class="brand" href="index.html" aria-label="Valvet home">
+        <img src="assets/logo-128.png" width="40" height="40" alt="">
+        <span class="brand-name">Valvet</span>
+      </a>
+      <p>A small, safe, compiled language for data work.</p>
+      <p class="footer-note">Native binaries. No garbage collector. No runtime.</p>
+    </div>
+    <div class="footer-col">
+      <h2>Language</h2>
+      <a href="index.html#why">Why Valvet</a>
+      <a href="index.html#features">Features</a>
+      <a href="index.html#code">Code</a>
+      <a href="index.html#pipeline">How it runs</a>
+    </div>
+    <div class="footer-col">
+      <h2>Resources</h2>
+      <a href="docs.html">Documentation</a>
+      <a href="examples.html">Examples</a>
+      <a href="index.html#stdlib">Standard library</a>
+      <a href="index.html#install">Install</a>
+    </div>
+    <div class="footer-col">
+      <h2>Project</h2>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/blob/main/LICENSE">License</a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">Issues</a>
+      <a href="privacy.html">Privacy policy</a>
+    </div>
+  </div>
+  <div class="container footer-bottom">
+    <p>Copyright 2026 Kenneth Cho. All rights reserved.</p>
+    <p class="footer-built">Compiled through C11. Shipped as one binary.</p>
+  </div>
+  <div class="footer-wordmark" aria-hidden="true">VALVET</div>
+</footer>
+<div class="toast" role="status" aria-live="polite"></div>
+<button class="back-to-top" type="button" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+</button>
+<script src="app.js" defer></script>
+</body>
+</html>

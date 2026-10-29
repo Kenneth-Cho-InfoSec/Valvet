@@ -1,0 +1,161 @@
+// std::snappy: raw Snappy block decompression with a hard output cap.
+// Literal and copy tags are supported; malformed input returns Err and
+// never grows the output past the declared length.
+module std.snappy;
+
+import std::bytes::Varint;
+import std::bytes::bytes_u8;
+import std::bytes::bytes_u16_le;
+import std::bytes::bytes_u32_le;
+import std::bytes::bytes_varint;
+
+pub fun snappy_max_output(): Int64 {
+    return 268435456 as Int64;
+}
+
+pub fun snappy_decompress(src: String, expected_len: Int64): Result<String, String> {
+    if (expected_len < (0 as Int64) || expected_len > snappy_max_output()) {
+        return Err("snappy: invalid expected length");
+    }
+    val head = bytes_varint(&src, 0 as Int64);
+    val head_ok = match (head) { Some(v) -> true, None -> false, };
+    if (!head_ok) {
+        return Err("snappy: missing length");
+    }
+    val h = match (bytes_varint(&src, 0 as Int64)) { Some(v) -> v, None -> Varint { value: 0 as Int64, next: 0 as Int64 }, };
+    if (h.value != expected_len) {
+        return Err("snappy: length mismatch");
+    }
+    var out: Vec<Int64> = vec![];
+    var pos = h.next;
+    var err = "";
+    while (pos < src.len() && err == "") {
+        val tb = bytes_u8(&src, pos);
+        val tok = match (tb) { Some(v) -> v, None -> 0 as Int64, };
+        val ok = match (tb) { Some(v) -> true, None -> false, };
+        if (!ok) {
+            err = "snappy: truncated tag";
+        } else {
+            pos = pos + (1 as Int64);
+            val kind = tok % (4 as Int64);
+            if (kind == (0 as Int64)) {
+                val n = tok / (4 as Int64);
+                var lit = n + (1 as Int64);
+                if (n >= (60 as Int64)) {
+                    val extra = n - (59 as Int64);
+                    var acc = 0 as Int64;
+                    var e = 0 as Int64;
+                    while (e < extra && err == "") {
+                        val eb = bytes_u8(&src, pos);
+                        val eok = match (eb) { Some(v) -> true, None -> false, };
+                        if (!eok) {
+                            err = "snappy: truncated literal length";
+                        } else {
+                            val ev = match (bytes_u8(&src, pos)) { Some(v) -> v, None -> 0 as Int64, };
+                            acc = acc + ev * pow2(e * (8 as Int64));
+                            pos = pos + (1 as Int64);
+                            e = e + (1 as Int64);
+                        }
+                    }
+                    lit = acc + (1 as Int64);
+                }
+                if (err == "" && pos + lit > src.len()) {
+                    err = "snappy: truncated literal";
+                }
+                if (err == "" && out.len() + lit > expected_len) {
+                    err = "snappy: output overflow";
+                }
+                var i = 0 as Int64;
+                while (i < lit && err == "") {
+                    val lb = bytes_u8(&src, pos + i);
+                    val lok = match (lb) { Some(v) -> true, None -> false, };
+                    if (!lok) {
+                        err = "snappy: truncated literal byte";
+                    } else {
+                        val lv = match (bytes_u8(&src, pos + i)) { Some(v) -> v, None -> 0 as Int64, };
+                        out.push(lv);
+                        i = i + (1 as Int64);
+                    }
+                }
+                pos = pos + lit;
+            } else if (kind == (1 as Int64)) {
+                if (pos >= src.len()) {
+                    err = "snappy: truncated copy";
+                } else {
+                    val nb = bytes_u8(&src, pos);
+                    val nok = match (nb) { Some(v) -> true, None -> false, };
+                    if (!nok) {
+                        err = "snappy: truncated copy";
+                    } else {
+                        val nv = match (bytes_u8(&src, pos)) { Some(v) -> v, None -> 0 as Int64, };
+                        val len = (4 as Int64) + ((tok / (4 as Int64)) % (8 as Int64));
+                        val off = (tok / (32 as Int64)) * (256 as Int64) + nv;
+                        if (!copy_into(&mut out, off, len, expected_len)) {
+                            err = "snappy: invalid copy";
+                        }
+                        pos = pos + (1 as Int64);
+                    }
+                }
+            } else if (kind == (2 as Int64)) {
+                val len = (1 as Int64) + tok / (4 as Int64);
+                val ob = bytes_u16_le(&src, pos);
+                val ook = match (ob) { Some(v) -> true, None -> false, };
+                if (!ook) {
+                    err = "snappy: truncated copy";
+                } else {
+                    val off = match (bytes_u16_le(&src, pos)) { Some(v) -> v, None -> 0 as Int64, };
+                    if (!copy_into(&mut out, off, len, expected_len)) {
+                        err = "snappy: invalid copy";
+                    }
+                    pos = pos + (2 as Int64);
+                }
+            } else {
+                val len = (1 as Int64) + tok / (4 as Int64);
+                val ob = bytes_u32_le(&src, pos);
+                val ook = match (ob) { Some(v) -> true, None -> false, };
+                if (!ook) {
+                    err = "snappy: truncated copy";
+                } else {
+                    val off = match (bytes_u32_le(&src, pos)) { Some(v) -> v, None -> 0 as Int64, };
+                    if (!copy_into(&mut out, off, len, expected_len)) {
+                        err = "snappy: invalid copy";
+                    }
+                    pos = pos + (4 as Int64);
+                }
+            }
+        }
+    }
+    if (err != "") {
+        return Err(err);
+    }
+    if (out.len() != expected_len) {
+        return Err("snappy: length mismatch");
+    }
+    return bytes_to_string(out);
+}
+
+fun copy_into(out: &mut Vec<Int64>, off: Int64, len: Int64, cap: Int64): Bool {
+    if (off <= (0 as Int64) || off > (*out).len()) {
+        return false;
+    }
+    if (len < (0 as Int64) || (*out).len() + len > cap) {
+        return false;
+    }
+    var i = 0 as Int64;
+    while (i < len) {
+        val src = (*out).len() - off;
+        (*out).push((*out)[src]);
+        i = i + (1 as Int64);
+    }
+    return true;
+}
+
+fun pow2(n: Int64): Int64 {
+    var v = 1 as Int64;
+    var i = 0 as Int64;
+    while (i < n) {
+        v = v * (2 as Int64);
+        i = i + (1 as Int64);
+    }
+    return v;
+}

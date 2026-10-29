@@ -1,0 +1,18 @@
+[i, f, b, s, g]
+4
+[int, float, bool, string, factor]
+[9, 8, 7, 6]
+[1.5, NA, 2.5, 4]
+[true, NA, false, true]
+[a, NA, , c]
+[a, b, a, NA]
+[i, f, b, s, g, new]
+4
+[int, float, bool, string, factor, string]
+[9, 8, 7, 6]
+[1.5, NA, 2.5, 4]
+[true, NA, false, true]
+[a, NA, , c]
+[a, b, a, NA]
+[x, y, z, w]
+typed frame: column length mismatch

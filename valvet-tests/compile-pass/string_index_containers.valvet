@@ -1,0 +1,70 @@
+enum Holder {
+    One(StringIndex),
+    Empty
+}
+
+struct Indexed { idx: StringIndex }
+
+fun main() {
+    val v_src = StringIndex::new();
+    val vp = v_src.get_or_insert("v");
+    val v = vec![v_src];
+    println(vp);
+    println(v[0].len());
+    val vc = v.clone();
+    println(vc[0].len());
+    val popped = v.pop();
+    match (popped) {
+        Some(x) -> println(x.len()),
+        None -> println(0),
+    }
+    println(v.len());
+    println(vc.len());
+
+    val a_src = StringIndex::new();
+    val ap = a_src.get_or_insert("a");
+    val arr = ArrayD<StringIndex>::from_vec(vec![1], vec![a_src]);
+    println(ap);
+    println(arr[0].len());
+    val arrc = arr.clone();
+    println(arrc[0].len());
+    val av = arrc.to_vec();
+    println(av.len());
+    println(av[0].len());
+
+    val o_src = StringIndex::new();
+    val op = o_src.get_or_insert("o");
+    val ov = vec![Some(o_src)];
+    val ovc = ov.clone();
+    println(op);
+    match (ov[0]) {
+        Some(x) -> println(x.len()),
+        None -> println(0),
+    }
+    match (ovc[0]) {
+        Some(x) -> println(x.len()),
+        None -> println(0),
+    }
+
+    val e_src = StringIndex::new();
+    val ep = e_src.get_or_insert("e");
+    val hv = vec![Holder::One(e_src)];
+    val hvc = hv.clone();
+    println(ep);
+    match (hv[0]) {
+        Holder::One(x) -> println(x.len()),
+        Holder::Empty -> println(0),
+    }
+    match (hvc[0]) {
+        Holder::One(x) -> println(x.len()),
+        Holder::Empty -> println(0),
+    }
+
+    val s_src = StringIndex::new();
+    val sp = s_src.get_or_insert("s");
+    val sv = vec![Indexed { idx: s_src }];
+    val svc = sv.clone();
+    println(sp);
+    println(sv[0].idx.len());
+    println(svc[0].idx.len());
+}

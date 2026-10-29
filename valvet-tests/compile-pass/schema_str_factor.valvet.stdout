@@ -1,0 +1,7 @@
+[Present(a), NA, NA]
+[b, a]
+[1, 2, 0, 1]
+Some(row 1: not int)
+Some(row 1: not float)
+Some(row 1: not bool)
+None

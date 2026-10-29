@@ -1,0 +1,6 @@
+[csv path=valvet-tests/data/typed_infer.csv schema=[int,float,bool,string] strict=false, select [id,name], filter id > 1, limit 2]
+[id, name]
+[int, string]
+2
+[2, 3]
+[beta, gam,ma]

@@ -1355,6 +1355,282 @@ fn mat_outer_kron_accepted() {
 }
 
 #[test]
+fn mat_multi_index_read_write_accepted_and_lowered() {
+    let text = "fun main() {\n\
+        var m = mat_identity(2)\n\
+        println(m[0, 1])\n\
+        m[1, 0] = 2.0\n\
+    }\n";
+    check_ok(text);
+    let s = src(text);
+    let checked = pipeline::front_end(&s).expect("front end");
+    let c = valvet_core::codegen::lower(&checked).expect("lower");
+    assert!(c.contains(".rows"), "Mat reads must check the row bound");
+    assert!(c.contains(".cols"), "Mat reads must check the column bound");
+    assert!(
+        c.matches(".data[").count() >= 2,
+        "read and write must both lower to a linear data slot"
+    );
+}
+
+#[test]
+fn mat_only_program_records_vec_float64_layout() {
+    // Mat kernels reference the `Vec<Float64>` layout even when the user
+    // program never mentions a vector, so `Mat` must record it.
+    let text = "fun main() {\nval m = mat_identity(2)\nprintln(m[0, 0])\n}\n";
+    check_ok(text);
+    let s = src(text);
+    let checked = pipeline::front_end(&s).expect("front end");
+    let c = valvet_core::codegen::lower(&checked).expect("lower");
+    assert!(
+        c.contains("typedef struct { double *data; int64_t len; int64_t cap; } VVec_Float64;"),
+        "Mat-only programs must still emit the Vec<Float64> layout"
+    );
+}
+
+#[test]
+fn mat_multi_index_arity_rejected() {
+    assert_eq!(
+        check_codes("fun main() { val m = mat_identity(2)\nprintln(m[0]) }\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn mat_multi_index_type_rejected() {
+    assert_eq!(
+        check_codes("fun main() { val m = mat_identity(2)\nprintln(m[0.0, 0]) }\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn vec_multi_index_arity_rejected() {
+    assert_eq!(
+        check_codes("fun main() { val v = vec![1 as Int64]\nprintln(v[0, 1]) }\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn arrayd_constructors_and_methods_accepted_and_lowered() {
+    let text = "fun main() {\n\
+        var a = ArrayD<Float64>::from_vec(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0])\n\
+        a[0, 1] = 9.0\n\
+        println(a.rank())\n\
+        println(a.len())\n\
+        println(a.dim(0))\n\
+        println(a.shape())\n\
+        println(a.strides())\n\
+        println(a.to_vec())\n\
+        val b = a.clone()\n\
+        println(b[0, 0])\n\
+        println(ArrayD<Int64>::zeros(vec![2, 3]).len())\n\
+        println(ArrayD<String>::filled(vec![2], \"x\").len())\n\
+    }\n";
+    check_ok(text);
+    let s = src(text);
+    let checked = pipeline::front_end(&s).expect("front end");
+    let c = valvet_core::codegen::lower(&checked).expect("lower");
+    assert!(
+        c.contains(
+            "typedef struct { double *data; int64_t len; int64_t rank; int64_t shape[32]; int64_t strides[32]; } VArrayD_Float64;"
+        ),
+        "ArrayD layout must carry runtime rank, shape, and strides"
+    );
+    assert!(
+        c.contains("array index rank mismatch"),
+        "ArrayD indexing must check the runtime rank"
+    );
+    assert!(c.contains(".shape[0]"), "ArrayD bounds use per-axis shape");
+    assert!(
+        c.contains(".strides[0]"),
+        "ArrayD offsets use stored row-major strides"
+    );
+    assert!(
+        c.contains("varrayd_ArrayD_Float64_to_vec"),
+        "to_vec must lower to the row-major copy helper"
+    );
+    assert!(
+        c.contains("varrayd_ArrayD_Float64_from_vec"),
+        "from_vec must lower to the owning constructor"
+    );
+}
+
+#[test]
+fn arrayd_constructor_shape_inference_accepts_plain_integer_literals() {
+    check_ok(
+        "fun main() {\n\
+         val a = ArrayD<Float64>::from_vec(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0])\n\
+         println(a.len())\n\
+         }\n",
+    );
+}
+
+#[test]
+fn arrayd_from_vec_moves_data() {
+    let codes = check_codes(
+        "fun main() {\n\
+         val data = vec![1.0, 2.0]\n\
+         val a = ArrayD<Float64>::from_vec(vec![2], data)\n\
+         println(data.len())\n\
+         println(a.len())\n\
+         }\n",
+    );
+    assert!(codes.contains(&"E0301"), "{:?}", codes);
+}
+
+#[test]
+fn arrayd_zeros_needs_numeric_elements() {
+    assert_eq!(
+        check_codes("fun main() { val a = ArrayD<String>::zeros(vec![2])\nprintln(a.len()) }\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn arrayd_dim_type_rejected() {
+    assert_eq!(
+        check_codes(
+            "fun main() { val a = ArrayD<Float64>::zeros(vec![2])\nprintln(a.dim(0.0)) }\n"
+        ),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn arrayd_unknown_method_rejected() {
+    assert_eq!(
+        check_codes("fun main() { val a = ArrayD<Float64>::zeros(vec![2])\nprintln(a.nope()) }\n"),
+        vec!["E0401"]
+    );
+}
+
+#[test]
+fn arrayd_index_arity_rejected_above_32() {
+    let idx = vec!["0"; 33].join(", ");
+    let text = format!(
+        "fun main() {{ val a = ArrayD<Float64>::zeros(vec![2])\nprintln(a[{}]) }}\n",
+        idx
+    );
+    assert_eq!(check_codes(&text), vec!["E0201"]);
+}
+
+#[test]
+fn array_fixed_constructors_and_methods_accepted_and_lowered() {
+    let text = "fun main() {\n\
+        var a = Array<Float64, 2>::from_vec(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0])\n\
+        a[0, 1] = 9.0\n\
+        println(a.rank())\n\
+        println(a.len())\n\
+        println(a.dim(0))\n\
+        println(a.shape())\n\
+        println(a.strides())\n\
+        println(a.to_vec())\n\
+        val b = a.clone()\n\
+        println(b[0, 0])\n\
+        println(Array<Int64, 2>::zeros(vec![2, 3]).len())\n\
+        println(Array<String, 1>::filled(vec![2], \"x\").len())\n\
+    }\n";
+    check_ok(text);
+    let s = src(text);
+    let checked = pipeline::front_end(&s).expect("front end");
+    let c = valvet_core::codegen::lower(&checked).expect("lower");
+    assert!(
+        c.contains("typedef VArrayD_Float64 VArray2_Float64;"),
+        "Array<T, N> reuses the runtime ArrayD layout"
+    );
+    assert!(
+        c.contains("varrayn_Array2_Float64_from_vec"),
+        "rank-specific from_vec wrapper must be emitted"
+    );
+    assert!(
+        c.contains("varrayn_Array2_Float64_filled"),
+        "rank-specific filled wrapper must be emitted"
+    );
+    assert!(
+        c.contains("varrayn_Array2_Float64_zeros"),
+        "rank-specific zeros wrapper must be emitted"
+    );
+    assert!(
+        c.contains("v_clone_Array2_Float64"),
+        "rank-specific clone wrapper must be emitted"
+    );
+    assert!(
+        c.contains("array shape rank mismatch"),
+        "a runtime shape length that disagrees with the compile-time rank must trap"
+    );
+    assert!(
+        !c.contains("array index rank mismatch"),
+        "Array<T, N> indexing must not emit a runtime rank check"
+    );
+}
+
+#[test]
+fn array_fixed_index_arity_rejected() {
+    assert_eq!(
+        check_codes("fun main() { val a = Array<Float64, 2>::zeros(vec![2, 3])\nprintln(a[0]) }\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn array_fixed_rank_out_of_range_rejected() {
+    let codes = check_codes(
+        "fun main() { val a = Array<Float64, 9>::zeros(vec![1, 1, 1, 1, 1, 1, 1, 1, 1])\nprintln(a.len()) }\n",
+    );
+    assert!(codes.contains(&"E0201"), "{:?}", codes);
+}
+
+#[test]
+fn array_fixed_from_vec_moves_data() {
+    let codes = check_codes(
+        "fun main() {\n\
+         val data = vec![1.0, 2.0]\n\
+         val a = Array<Float64, 1>::from_vec(vec![2], data)\n\
+         println(data.len())\n\
+         println(a.len())\n\
+         }\n",
+    );
+    assert!(codes.contains(&"E0301"), "{:?}", codes);
+}
+
+#[test]
+fn array_fixed_owned_elements_clone_and_drop() {
+    let text = "fun main() {\n\
+        var a = Array<String, 1>::from_vec(vec![2], vec![\"a\", \"b\"])\n\
+        val b = a.clone()\n\
+        println(b[0])\n\
+        println(a[1])\n\
+    }\n";
+    check_ok(text);
+    let s = src(text);
+    let checked = pipeline::front_end(&s).expect("front end");
+    let c = valvet_core::codegen::lower(&checked).expect("lower");
+    assert!(
+        c.contains("v_clone_Array1_String"),
+        "owned elements clone through the rank-specific wrapper"
+    );
+    assert!(
+        c.contains("v_drop_Array1_String"),
+        "owned elements drop through the rank-specific wrapper"
+    );
+}
+
+#[test]
+fn array_fixed_type_annotation_and_parameter_accepted() {
+    check_ok(
+        "fun sum(a: Array<Int64, 2>): Int64 {\n\
+         a[0, 0] + a[1, 1]\n\
+         }\n\
+         fun main() {\n\
+         val a = Array<Int64, 2>::from_vec(vec![2, 2], vec![1, 2, 3, 4])\n\
+         println(sum(a))\n\
+         }\n",
+    );
+}
+
+#[test]
 fn comprehension_accepted() {
     check_ok("fun main() {\nval v = vec![1 as Int64]\nval w: Vec<Int64> = [x + (1 as Int64) for x in v]\nprintln(w)\n}\n");
 }
@@ -1502,6 +1778,165 @@ fn numeric_helpers() {
 }
 
 #[test]
+fn string_index_constructors_and_methods_accepted_and_lowered() {
+    let s = src("fun main() {\n\
+         val idx = StringIndex::new();\n\
+         val n = idx.len();\n\
+         val has = idx.contains(\"a\");\n\
+         val at = idx.get(\"a\");\n\
+         val pos = idx.get_or_insert(\"a\");\n\
+         val ks = idx.keys();\n\
+         val cp = idx.clone();\n\
+         println(n);\n\
+         println(has);\n\
+         println(at);\n\
+         println(pos);\n\
+         println(ks);\n\
+         println(cp.len());\n\
+         }\n");
+    let checked = pipeline::front_end(&s).expect("front end");
+    let c = valvet_core::codegen::lower(&checked).expect("lower");
+    for needle in [
+        "VStringIndex_",
+        "vsi_get_or_insert",
+        "v_drop_StringIndex_",
+        "v_clone_StringIndex_",
+        "VOption_Int64",
+        "vvec_Vec_String_with_capacity",
+        "typedef struct { VStr *keys; uint64_t *hashes; int64_t len; int64_t cap; int64_t *buckets; int64_t bucket_cap; } VStringIndex_;",
+    ] {
+        assert!(c.contains(needle), "generated C must contain `{needle}`");
+    }
+}
+
+#[test]
+fn string_index_get_returns_option_int64() {
+    check_ok(
+        "fun main() {\n\
+         val idx = StringIndex::new();\n\
+         val x: Option<Int64> = idx.get(\"a\");\n\
+         println(x);\n\
+         }\n",
+    );
+    assert_eq!(
+        check_codes(
+            "fun main() {\n\
+             val idx = StringIndex::new();\n\
+             val x: Int64 = idx.get(\"a\");\n\
+             println(x);\n\
+             }\n"
+        ),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn string_index_key_must_be_string() {
+    assert_eq!(
+        check_codes(
+            "fun main() {\n\
+             val idx = StringIndex::new();\n\
+             val x = idx.get(1);\n\
+             println(x);\n\
+             }\n"
+        ),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn string_index_unknown_method() {
+    assert_eq!(
+        check_codes("fun main() { val idx = StringIndex::new(); idx.nope(); }\n"),
+        vec!["E0401"]
+    );
+}
+
+#[test]
+fn string_index_is_move_only() {
+    assert_eq!(
+        check_codes(
+            "fun take(idx: StringIndex) { println(idx.len()); }\n\
+             fun main() {\n\
+             val idx = StringIndex::new();\n\
+             take(idx);\n\
+             println(idx.len());\n\
+             }\n"
+        ),
+        vec!["E0301"]
+    );
+}
+
+#[test]
+fn string_index_not_printable() {
+    assert_eq!(
+        check_codes("fun main() { val idx = StringIndex::new(); println(idx); }\n"),
+        vec!["E0201"]
+    );
+}
+
+#[test]
+fn string_index_not_indexable() {
+    assert_eq!(
+        check_codes(
+            "fun main() {\n\
+             val idx = StringIndex::new();\n\
+             println(idx[\"a\"]);\n\
+             }\n"
+        ),
+        vec!["E0401"]
+    );
+}
+
+#[test]
+fn string_index_method_arity() {
+    let snippets = [
+        "val x = idx.len(1);",
+        "val x = idx.contains();",
+        "val x = idx.get();",
+        "val x = idx.get(\"a\", \"b\");",
+        "val x = idx.get_or_insert();",
+        "val x = idx.keys(1);",
+        "val x = idx.clone(1);",
+    ];
+    for snippet in snippets {
+        let source = format!("fun main() {{ val idx = StringIndex::new(); {snippet} }}\n");
+        let codes = check_codes(&source);
+        assert!(
+            !codes.is_empty() && codes.iter().all(|code| *code == "E0201"),
+            "`{snippet}` must report only E0201, got {codes:?}"
+        );
+    }
+}
+
+#[test]
+fn string_index_clone_and_keys_lower_to_helpers() {
+    let s = src("struct Holder { idx: StringIndex }\n\
+         fun main() {\n\
+         val idx = StringIndex::new();\n\
+         val ks = idx.keys();\n\
+         val cp = idx.clone();\n\
+         println(ks.len());\n\
+         println(cp.len());\n\
+         }\n");
+    let checked = pipeline::front_end(&s).expect("front end");
+    let c = valvet_core::codegen::lower(&checked).expect("lower");
+    assert!(c.contains("vsi_keys"), "keys must lower to vsi_keys");
+    assert!(
+        c.contains("v_clone_StringIndex_"),
+        "clone must lower to v_clone_StringIndex_"
+    );
+    assert!(
+        c.contains("v_drop_StringIndex_(&v->v_idx);"),
+        "struct drop must drop the StringIndex field"
+    );
+    assert!(
+        c.contains("v_clone_StringIndex_(v.v_idx)"),
+        "struct clone must clone the StringIndex field"
+    );
+}
+
+#[test]
 fn literal_context_and_narrowing() {
     check_ok(
         "struct S { n: Int64 }\n\
@@ -1512,4 +1947,74 @@ fn literal_context_and_narrowing() {
     let codes =
         check_codes("fun f(x: Int32): Int32 { x }\nfun main() { println(f(2147483648)) }\n");
     assert!(codes.contains(&"E0201"), "{:?}", codes);
+}
+
+fn check_depth_limit(text: &str) {
+    let s = src(text);
+    match pipeline::front_end(&s) {
+        Ok(_) => panic!("deep nesting must be rejected"),
+        Err(ds) => assert!(
+            ds.iter().any(|d| d.code == "E0006"),
+            "expected E0006, got {:?}",
+            ds.iter().map(|d| d.code).collect::<Vec<_>>()
+        ),
+    }
+}
+
+#[test]
+fn parser_depth_budget_parens() {
+    check_depth_limit(&format!(
+        "fun main() {{ println({}1{}); }}\n",
+        "(".repeat(2000),
+        ")".repeat(2000)
+    ));
+}
+
+#[test]
+fn parser_depth_budget_types() {
+    check_depth_limit(&format!(
+        "fun main() {{ val x: {}Int32{} = vec![]; }}\n",
+        "Vec<".repeat(1000),
+        ">".repeat(1000)
+    ));
+}
+
+#[test]
+fn parser_depth_budget_unary() {
+    check_depth_limit(&format!(
+        "fun main() {{ println({}true); }}\n",
+        "!".repeat(1000)
+    ));
+}
+
+#[test]
+fn read_file_limit_builtin_arity_and_types() {
+    check_ok("fun main() { val r = read_file_limit(\"x\", 1 as Int64); println(r) }\n");
+    let codes = check_codes("fun main() { val r = read_file_limit(\"x\"); println(r) }\n");
+    assert_eq!(codes, vec!["E0201"]);
+    let codes = check_codes("fun main() { val r = read_file_limit(1, 1); println(r) }\n");
+    assert!(codes.contains(&"E0201"), "{codes:?}");
+    let codes = check_codes("fun main() { val r = read_file_limit(\"x\", \"y\"); println(r) }\n");
+    assert_eq!(codes, vec!["E0201"]);
+
+    let s = src("fun main() { val r = read_file_limit(\"x\", 1 as Int64); println(r) }\n");
+    let checked = pipeline::front_end(&s).expect("front end");
+    let c = valvet_core::codegen::lower(&checked).expect("lower");
+    assert!(c.contains("v_read_file_limit_wrap"));
+}
+
+#[test]
+fn bytes_to_string_builtin_arity_and_types() {
+    check_ok("fun main() { val r = bytes_to_string(vec![65 as Int64]); println(r) }\n");
+    let codes = check_codes("fun main() { val r = bytes_to_string(); println(r) }\n");
+    assert_eq!(codes, vec!["E0201"]);
+    let codes = check_codes("fun main() { val r = bytes_to_string(65); println(r) }\n");
+    assert_eq!(codes, vec!["E0201"]);
+    let codes = check_codes("fun main() { val r = bytes_to_string(vec![65]); println(r) }\n");
+    assert!(!codes.is_empty(), "Int32 byte vector must be rejected");
+
+    let s = src("fun main() { val r = bytes_to_string(vec![65 as Int64]); println(r) }\n");
+    let checked = pipeline::front_end(&s).expect("front end");
+    let c = valvet_core::codegen::lower(&checked).expect("lower");
+    assert!(c.contains("v_bytes_to_string_wrap"));
 }

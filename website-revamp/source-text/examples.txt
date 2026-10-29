@@ -1,0 +1,385 @@
+Source: https://kenneth-cho-infosec.github.io/Valvet/examples.html
+Fetched: 2026-10-20
+Page title: Valvet Examples
+
+## Examples
+
+Every sample below runs as shown with `valvet run`.
+
+### Hello
+
+A complete Valvet program needs only statements and an output call: top-level code runs directly with no wrapper, no imports, and no runtime to initialize. The compiler turns this into a dependency-free native binary.
+
+Input · Valvet:
+```valvet
+println("hello, valvet") // top-level statements run directly
+```
+
+Output:
+```text
+hello, valvet
+```
+
+### Fibonacci and pattern matching
+
+Recursion works as expected, and `match` on `Option` forces both cases onto the page. Forget an arm or mix up the types and the compiler rejects the program before it ever runs. That guarantee is what makes refactoring fearless: add a variant anywhere and every match in the codebase must answer for it.
+
+Input · Valvet:
+```valvet
+fun fib(n: Int32): Int32 { // recursive Fibonacci, Int32 in and out
+    if (n < 2) { n } else { fib(n - 1) + fib(n - 2) } // base case returns n, else sum the two recursions
+}
+
+println(fib(10)) // prints 55
+val o: Option<Int32> = Some(7) // optional int holding 7
+println(match (o) { Some(x) -> x * 2, None -> 0, }) // unwrap and double, or 0 when empty
+```
+
+Output:
+```text
+55
+14
+```
+
+### Mean of a vector
+
+The whole data routine in nine lines: a growable heap vector, a snapshot loop that cannot alias the buffer, and an explicit `as` conversion at the division. Nothing is hidden. The loop runs at C speed and the vector frees itself when `main` exits.
+
+Input · Valvet:
+```valvet
+fun mean(v: Vec<Float64>): Float64 { // average of a float vector
+    var total = 0.0 // running sum, mutable
+    for (x in v) { // snapshot each element
+        total += x // add it to the sum
+    }
+    total / (v.len() as Float64) // divide by length as float
+}
+
+println(mean(vec![2.0, 4.0, 6.0, 8.0])) // prints 5
+```
+
+Output:
+```text
+5
+```
+
+### FizzBuzz
+
+Control flow that reads top to bottom: `if` is an expression, so each branch produces the word directly instead of assigning through flags. Ranges include or exclude their end on demand (`1..=15`). The trailing semicolons keep printing calls in statement position inside branches.
+
+Input · Valvet:
+```valvet
+for (i in 1..=15) { // inclusive range 1 to 15
+        val w = if (i % 15 == 0) { // divisible by 3 and 5
+            "FizzBuzz"
+        } else {
+            if (i % 3 == 0) { // divisible by 3 only
+                "Fizz"
+            } else {
+                if (i % 5 == 0) { "Buzz" } else { "other" } // 5-only, else plain number
+            }
+        }
+        if (w == "other") { // no word matched
+            println(i); // print the number itself
+        } else {
+            println(w); // print the word
+        }
+    }
+```
+
+Output:
+```text
+1
+2
+Fizz
+4
+Buzz
+Fizz
+7
+8
+Fizz
+Buzz
+11
+Fizz
+13
+14
+FizzBuzz
+```
+
+Calls that return nothing stay statements with a trailing `;` inside branches.
+
+### Newton square root
+
+Twenty iterations of Newton updates with mutable state, converging to full Float64 precision. Numerical recipes live in plain user code (the standard library also ships `std::math` with sqrt, exp, log, and pow).
+
+Input · Valvet:
+```valvet
+fun sqrt_newton(x: Float64): Float64 { // Newton method square root
+    var guess = x // start from x itself
+    var i = 0 // iteration counter
+    while (i < 20) { // fixed 20 refinement steps
+        guess = (guess + x / guess) / 2.0 // Newton update
+        i += 1 // next iteration
+    }
+    guess // trailing expression is the return value
+}
+
+println(sqrt_newton(2.0)) // prints sqrt(2)
+```
+
+Output:
+```text
+1.4142135623730949
+```
+
+### Vector dot product
+
+Kernels report failure as data, not exceptions: mismatched shapes come back as `Err` and the caller handles it in the same `match` it already uses everywhere else. Indexing with `get` is equally total, yielding `Some` or `None` instead of ever trapping.
+
+Input · Valvet:
+```valvet
+val a = vec![1.0, 2.0, 3.0] // first vector, immutable
+val b = vec![4.0, 5.0, 6.0] // second vector
+val d = match (a.dot(b)) { Ok(v) -> v, Err(e) -> -1.0, } // dot returns Result, unwrap or -1 on shape error
+println(d) // prints 32
+println(a.len()) // element count as Int64
+println(b.get(0)) // safe read gives Some(4)
+```
+
+Output:
+```text
+32
+3
+Some(4)
+```
+
+`dot` reports shape mismatches as `Result`, so callers handle both cases.
+
+### Shapes and areas
+
+An enum carries different payloads per variant, and one `match` dispatches on all of them with each payload already unwrapped and typed. This is the pattern behind every heterogeneous result in larger programs: one type, all cases visible, zero runtime type tests.
+
+Input · Valvet:
+```valvet
+enum Shape { Circle(Float64), Rect(Float64, Float64), Point } // one type, three variants with payloads
+
+fun area(s: Shape): Float64 { // dispatch on variant
+    match (s) {
+        Shape::Circle(r) -> 3.141592653589793 * r * r, // pi r squared
+        Shape::Rect(w, h) -> w * h, // width times height
+        Shape::Point -> 0.0, // a point has no area
+    }
+}
+
+println(area(Shape::Circle(1.0))) // prints pi
+println(area(Shape::Rect(3.0, 4.0))) // prints 12
+```
+
+Output:
+```text
+3.1415926535897931
+12
+```
+
+### Loop with a break value
+
+A `loop` is an expression when it breaks with a value, so search-style code needs no result flag and no sentinel. The value flows straight into its binding with its type checked.
+
+Input · Valvet:
+```valvet
+var i = 0 // loop counter, mutable
+val v = loop { // loop is an expression when it breaks with a value
+    i += 1 // count up
+    if (i >= 5) { // stop condition
+        break i * 10 // exit loop, value 50 flows into v
+    }
+}
+println(v) // prints 50
+```
+
+Output:
+```text
+50
+```
+
+### Strings
+
+Strings are owned values with content equality and concatenation, freed deterministically like everything else. There is no null string and no separate string-builder type for the common cases.
+
+Input · Valvet:
+```valvet
+val who = "valvet" // owned immutable string
+println("hello, " + who) // concatenation with +
+println(who == "valvet") // content equality, prints true
+```
+
+Output:
+```text
+hello, valvet
+true
+```
+
+### Least-squares slope
+
+The real thing in miniature: paired-column sums, the closed-form normal equations, and missing-safe indexing, using exactly the constructs the full 50-row ordinary least squares analysis uses. That analysis reproduces 16 out of 16 reference statistics, which is why this small version is worth trusting at scale.
+
+Input · Valvet:
+```valvet
+val x = vec![1.0, 2.0, 3.0, 4.0] // predictor column
+    val y = vec![2.0, 4.0, 5.0, 4.0] // response column
+    val n = x.len() as Int32 // length as Int32 for the range
+    val nf = n as Float64 // length as Float64 for the math
+    var sx = 0.0 // sum of x
+    var sy = 0.0 // sum of y
+    var sxx = 0.0 // sum of x squared
+    var sxy = 0.0 // sum of x times y
+    for (i in 0..n) { // index over every row
+        val a = match (x.get(i)) { Some(v) -> v, None -> 0.0, } // safe read, default 0
+        val b = match (y.get(i)) { Some(v) -> v, None -> 0.0, } // safe read, default 0
+        sx += a // accumulate sums
+        sy += b
+        sxx += a * a
+        sxy += a * b
+    }
+println((nf * sxy - sx * sy) / (nf * sxx - sx * sx)) // closed-form slope, prints 0.7
+```
+
+Output:
+```text
+0.69999999999999996
+```
+
+Valvet prints full float precision: that is 0.7 in Float64.
+
+### Script and explicit modes
+
+Every example above runs in the default `imp` mode: top-level statements run directly. The same program states the mode explicitly with a header that changes nothing. For the strict classic entry, declare `mode exp;` and write `fun main`; top-level statements there are E0604, as is mixing both forms in one file. Imported files always hold items, never statements, in either mode.
+
+Input · Valvet:
+```valvet
+println("hello, valvet") // imp is the default: runs as shown
+```
+
+Output:
+```text
+hello, valvet
+```
+
+Input · Valvet:
+```valvet
+mode imp; // explicit header, same behavior
+println("hello, valvet")
+```
+
+Output:
+```text
+hello, valvet
+```
+
+Input · Valvet:
+```valvet
+mode exp; // strict classic entry
+fun main() {
+    println("hello, valvet")
+}
+```
+
+Output:
+```text
+hello, valvet
+```
+
+Statements under `mode exp` fail before anything runs:
+
+Input · Valvet:
+```valvet
+mode exp;
+println("nope");
+```
+
+Error:
+```text
+error[E0604]: top-level statements need imp mode (this file declares `mode exp`) --> hello.valvet:2:1
+```
+
+### Units of measure
+
+Annotating a number with `@unit` makes its dimension part of the type. Compatible scales convert on assignment, and arithmetic composes dimensions, so unit mistakes become compile errors instead of wrong numbers.
+
+Input · Valvet:
+```valvet
+fun speed(d: Float64 @m, t: Float64 @s): Float64 @m/s { // meters over seconds
+    d / t // division composes the dimension
+}
+
+println(speed(100.0, 9.58)) // 100 m sprint record pace
+val v: Float64 @km/h = 72.0 // highway speed
+val w: Float64 @m/s = v // auto-scales to 20
+println(w)
+```
+
+Output:
+```text
+10.438413361169102
+20
+```
+
+### Frames and grouping
+
+The standard library turns CSV-shaped tables into data frames, then groups them with missing-aware statistics. `NA` cells are skipped, never silently zeroed, and group order follows first appearance.
+
+Input · Valvet:
+```valvet
+import std::csv::CsvTable; // table type from the CSV module
+import std::frame::frame_from_table; // build a frame
+import std::frame::frame_col; // read a column back
+import std::frame::frame_group_count; // count rows per group
+import std::frame::frame_group_sum; // sum a column per group
+
+val h = vec!["region", "sales"];
+val r0 = vec!["east", "10"];
+val r1 = vec!["west", "20"];
+val r2 = vec!["east", "NA"]; // missing cell, skipped by sums
+val r3 = vec!["west", "40"];
+val t = CsvTable { header: h, rows: vec![r0, r1, r2, r3] };
+val f = frame_from_table(t);
+val g = frame_group_count(&f, "region");
+val e: Vec<String> = vec![];
+println(match (frame_col(&g, "region")) { Some(c) -> c, None -> e, });
+println(match (frame_col(&g, "count")) { Some(c) -> c, None -> e, });
+val gs = frame_group_sum(&f, "region", "sales");
+println(match (frame_col(&gs, "sum")) { Some(c) -> c, None -> e, });
+```
+
+Output:
+```text
+[east, west]
+[2, 2]
+[10, 60]
+```
+
+### SQL over frames
+
+The same grouping through the 0.3.0 SQL subset: the query plans down to frame verbs, so results match the verb form exactly. Anything outside the subset is a compile-time `Err`, never a silent misread.
+
+Input · Valvet:
+```valvet
+import std::frame::DynamicFrame; // frame type
+import std::sql::sql; // the SQL subset
+
+val f = DynamicFrame { names: vec!["region", "sales"], cols: vec![vec!["east", "west", "east", "west"], vec!["10", "20", "30", "40"]], nrows: 4 as Int64 };
+let Ok(q) = sql(&f, "SELECT region, SUM(sales) FROM f GROUP BY region ORDER BY region") else {
+    println("bad query");
+    return 1;
+};
+println(q.cols[0 as Int64]); // group keys in first-appearance order
+println(q.cols[1 as Int64]); // per-group sums
+```
+
+Output:
+```text
+[east, west]
+[40, 60]
+```
+
+Copyright 2026 Kenneth Cho. All rights reserved. Source: [GitHub](https://github.com/Kenneth-Cho-InfoSec/valvet).

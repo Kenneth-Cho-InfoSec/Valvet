@@ -1,0 +1,130 @@
+Source: https://kenneth-cho-infosec.github.io/Valvet/index.html
+Fetched: 2026-10-20
+Page title: Valvet: a small, safe, compiled language for data work
+
+# Valvet
+
+A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.
+
+[Get Started](docs.html) [Install](#install)
+
+## Why Valvet
+
+### Safe
+
+Borrow-checked references, tracked ownership, and errors that never panic the compiler. Each diagnostic carries file, position, code, and help. Memory bugs that slip through testing in scripting languages are compile errors here.
+
+### Fast
+
+Compiles through C11 to native binaries. Tight loops over vectors run at C speed with no interpreter and no collector pauses. A 3000-sweep model fit over real data finishes in a tenth of a second.
+
+### Small
+
+One coherent core: vectors, structs, enums, pattern matching, modules. Programs read like the analysis they express, and there is little syntax to learn before you are productive.
+
+## Thirty seconds
+
+Input · Valvet:
+```valvet
+fun mean(v: Vec<Float64>): Float64 {
+    var total = 0.0
+    for (x in v) {
+        total += x
+    }
+    total / (v.len() as Float64)
+}
+
+println(mean(vec![2.0, 4.0, 6.0, 8.0]))
+```
+
+Output:
+```text
+5
+```
+
+## How programs run
+
+### 1. Parse
+
+Source becomes an annotated syntax tree with exact spans.
+
+### 2. Check
+
+Types resolve, then the borrow checker approves every reference.
+
+### 3. Lower
+
+Checked code lowers to readable C11 with deterministic frees.
+
+### 4. Link
+
+A plain C compiler produces a dependency-free native binary.
+
+## Proven on real analyses
+
+16 / 16
+
+Ordinary least squares statistics on R's `cars` dataset match a reference implementation to float rounding.
+
+15.04 / -0.232
+
+Logistic regression on the Challenger O-ring data reproduces the published coefficients and risk curve.
+
+Bit-identical
+
+PageRank power iteration matches its reference digit for digit; ranks sum to N as the paper claims.
+
+acc 1.0
+
+Perceptron training converges exactly as theory predicts on separable data.
+
+## New in 0.3.0
+
+### Models
+
+R-style formulas with treatment contrasts, `lm` and binomial `glm`, weighted fits, ANOVA, and regression diagnostics, every number oracled.
+
+### SQL
+
+A SQL subset over frames: `SELECT` with `WHERE`, `GROUP BY`, `ORDER BY`, `LIMIT`, planned down to frame verbs.
+
+### Inference
+
+Validation contracts, causal helpers (DiD, 2SLS, propensity, HC0), meta-analysis, Holm/BH adjustments, and exact gamma/Dirichlet samplers.
+
+### Ergonomics
+
+Sources in `.valvet`, `.vv`, `.vvt`; `run --watch` re-runs on change; `fmt` normalizes whitespace.
+
+## New in 0.2.0
+
+### Units
+
+Annotate numbers with `@m`, `@s`, `@km/h`. Dimensions check at compile time; compatible scales convert silently.
+
+### Frames
+
+CSV in, grouped means and audited joins out. Missing cells stay explicit, and every join reports what matched.
+
+### Autodiff
+
+Dual-number forward differentiation with a `seed` helper. Write the loss once, read the gradient.
+
+### Parallel
+
+`par_sum` splits vectors across threads deterministically. Same input, same bits, every thread count.
+
+## Install
+
+Prerequisites: stable Rust and a C compiler. Then:
+
+Bash:
+```bash
+# clone the repo, then
+cargo build --release
+./target/release/valvet run hello.valvet
+```
+
+Commands: `check`, `build`, `run`, `run --watch`, `fmt`, `test`, `new`, `repl`, `-e`. Programs are scripts by default: top-level statements run directly, and `mode exp;` keeps the strict classic entry. See the [docs](docs.html) for the tour.
+
+Copyright 2026 Kenneth Cho. All rights reserved. Source: [GitHub](https://github.com/Kenneth-Cho-InfoSec/valvet).

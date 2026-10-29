@@ -1,0 +1,3 @@
+built
+[csv_infer path=/no/such/input.csv strict=true]
+cannot open file: /no/such/input.csv

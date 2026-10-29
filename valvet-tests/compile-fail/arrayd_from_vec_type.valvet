@@ -1,0 +1,5 @@
+fun main() {
+    val data: Vec<Int32> = vec![1, 2]
+    val a = ArrayD<Float64>::from_vec(vec![2], data)
+    println(a[0])
+}

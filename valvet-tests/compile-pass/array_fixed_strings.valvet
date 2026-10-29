@@ -1,0 +1,16 @@
+fun main() {
+    var a = Array<String, 2>::from_vec(vec![2, 2], vec!["a", "b", "c", "d"])
+    println(a[0, 0])
+    println(a[1, 1])
+    a[0, 1] = "B"
+    println(a[0, 1])
+    val b = a.clone()
+    println(b[0, 1])
+    val v = b.to_vec()
+    println(v)
+    var f = Array<String, 1>::filled(vec![3], "x")
+    println(f[0])
+    println(f[2])
+    f[1] = "y"
+    println(f[1])
+}

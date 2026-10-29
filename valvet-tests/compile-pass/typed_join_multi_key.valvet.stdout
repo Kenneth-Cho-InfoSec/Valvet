@@ -1,0 +1,8 @@
+matched=0 left_only=5 right_only=5 out=0
+[id, x, v, w]
+0
+[int, string, int, int]
+[]
+[]
+[]
+[]

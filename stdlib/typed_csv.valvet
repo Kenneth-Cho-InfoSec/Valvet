@@ -1,0 +1,127 @@
+// std::typed_csv: typed construction from CsvTable and file reads.
+// Parsing is missing-aware; strict_types only rejects non-NA cells that do
+// not parse under the requested schema. Ragged CSV handling stays in
+// std::csv::read_csv.
+module std.typed_csv;
+
+import std::csv::CsvTable;
+import std::csv::infer_schema_ex;
+import std::csv::read_csv;
+import std::csv::read_csv_lenient;
+import std::csv::read_json;
+import std::schema::check_bool_col;
+import std::schema::check_float_col;
+import std::schema::check_int_col;
+import std::schema::parse_bool_col;
+import std::schema::parse_factor_col;
+import std::schema::parse_float_col;
+import std::schema::parse_int_col;
+import std::schema::parse_str_col;
+import std::typed_frame::Column;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::tf_new;
+
+fun schema_kind_ok(kind: String): Bool {
+    kind == "int" || kind == "float" || kind == "bool" || kind == "string" || kind == "factor"
+}
+
+fun table_column(t: &CsvTable, c: Int64): Vec<String> {
+    var out: Vec<String> = vec![];
+    var r = 0 as Int64;
+    while (r < t.rows.len()) {
+        out.push(t.rows[r][c].clone());
+        r = r + (1 as Int64);
+    }
+    return out;
+}
+
+fun parse_typed_column(kind: String, cells: Vec<String>): Column {
+    if (kind == "int") {
+        return Column::Int(parse_int_col(cells));
+    }
+    if (kind == "float") {
+        return Column::Float(parse_float_col(cells));
+    }
+    if (kind == "bool") {
+        return Column::Bool(parse_bool_col(cells));
+    }
+    if (kind == "string") {
+        return Column::Str(parse_str_col(cells));
+    }
+    return Column::Factor(parse_factor_col(cells));
+}
+
+fun check_typed_column(kind: String, cells: Vec<String>): Option<String> {
+    if (kind == "int") {
+        return check_int_col(cells);
+    }
+    if (kind == "float") {
+        return check_float_col(cells);
+    }
+    if (kind == "bool") {
+        return check_bool_col(cells);
+    }
+    return None;
+}
+
+pub fun tf_from_table(t: CsvTable, schema: Vec<String>, strict_types: Bool): Result<TypedFrame, String> {
+    if (t.header.len() != schema.len()) {
+        return Err("typed csv: schema length mismatch");
+    }
+    val nrows = t.rows.len();
+    var cols: Vec<Column> = vec![];
+    var c = 0 as Int64;
+    while (c < t.header.len()) {
+        val kind = schema[c].clone();
+        if (!schema_kind_ok(kind.clone())) {
+            return Err("typed csv: unknown schema type: " + kind);
+        }
+        val cells = table_column(&t, c);
+        if (strict_types) {
+            val chk = check_typed_column(kind.clone(), cells.clone());
+            val bad = match (chk) { Some(msg) -> true, None -> false, };
+            if (bad) {
+                val msg = match (check_typed_column(kind.clone(), cells.clone())) {
+                    Some(v) -> v,
+                    None -> "",
+                };
+                return Err("typed csv: column " + t.header[c].clone() + ": " + msg);
+            }
+        }
+        cols.push(parse_typed_column(kind, cells));
+        c = c + (1 as Int64);
+    }
+    return tf_new(t.header, cols, nrows);
+}
+
+pub fun tf_read_csv(path: String, schema: Vec<String>, strict: Bool, strict_types: Bool): Result<TypedFrame, String> {
+    val t = read_csv(path, strict)?;
+    return tf_from_table(t, schema, strict_types);
+}
+
+pub fun read_csv_typed(path: String, schema: Vec<String>, strict: Bool): Result<TypedFrame, String> {
+    val t = read_csv(path, strict)?;
+    return tf_from_table(t, schema, strict);
+}
+
+pub fun read_csv_typed_infer(path: String, strict: Bool): Result<TypedFrame, String> {
+    val t = read_csv(path, strict)?;
+    val schema = infer_schema_ex(&t, true);
+    return tf_from_table(t, schema, strict);
+}
+
+pub fun read_csv_typed_lenient(path: String, max_bad: Int64, schema: Vec<String>): Result<TypedFrame, String> {
+    val t = read_csv_lenient(path, max_bad)?;
+    return tf_from_table(t, schema, false);
+}
+
+pub fun read_json_typed(path: String, schema: Vec<String>, strict_types: Bool): Result<TypedFrame, String> {
+    val t = read_json(path)?;
+    return tf_from_table(t, schema, strict_types);
+}
+
+pub fun read_json_typed_infer(path: String, strict_types: Bool): Result<TypedFrame, String> {
+    val t = read_json(path)?;
+    val schema = infer_schema_ex(&t, true);
+    return tf_from_table(t, schema, strict_types);
+}

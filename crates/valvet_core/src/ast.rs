@@ -191,8 +191,9 @@ pub enum Ty {
     /// Resolved struct/enum types (only sema produces these).
     Struct(String),
     Enum(String),
-    /// Builtin generic application: `Option<T>`, `Result<T, E>` (`Vec<T>`
-    /// parses but resolves in Phase F). Args are resolved recursively.
+    /// Builtin generic application: `Option<T>`, `Result<T, E>`, `Vec<T>`,
+    /// and the other builtin containers. Zero-arity builtins such as
+    /// `StringIndex` use an empty `args` list. Args are resolved recursively.
     Generic {
         base: String,
         args: Vec<Ty>,
@@ -236,6 +237,13 @@ impl Ty {
                 format!("&'{}{} {}", lt, mutbl, inner.name())
             }
             Ty::Generic { base, args } => {
+                if base == "StringIndex" && args.is_empty() {
+                    return "StringIndex".to_string();
+                }
+                if let Some(rank) = array_rank(base) {
+                    let inner: Vec<String> = args.iter().map(|a| a.name()).collect();
+                    return format!("Array<{}, {}>", inner.join(", "), rank);
+                }
                 let inner: Vec<String> = args.iter().map(|a| a.name()).collect();
                 format!("{}<{}>", base, inner.join(", "))
             }
@@ -247,6 +255,18 @@ impl Ty {
     pub fn display(&self) -> String {
         self.name()
     }
+}
+
+/// Rank carried by the built-in compile-time-rank array base name.
+/// `Array<T, 3>` is represented as `Ty::Generic { base: "Array3", args: [T] }`.
+/// `ArrayD` and malformed names return `None`.
+pub fn array_rank(base: &str) -> Option<usize> {
+    let suffix = base.strip_prefix("Array")?;
+    if suffix.len() != 1 {
+        return None;
+    }
+    let rank: usize = suffix.parse().ok()?;
+    (1..=8).contains(&rank).then_some(rank)
 }
 
 #[derive(Debug, Clone)]
@@ -514,10 +534,12 @@ pub enum ExprKind {
         method_span: Span,
         args: Vec<Expr>,
     },
-    /// `v[i]` — vector element read (J1: copy out, never an alias).
+    /// `v[i]` or `m[i, j]` — element read. The base must be a `Vec` (one
+    /// index) or a `Mat` (two indices). Reads copy out; they never alias the
+    /// buffer. The list form leaves room for N-dimensional arrays later.
     Index {
         base: Box<Expr>,
-        idx: Box<Expr>,
+        indices: Vec<Expr>,
     },
     /// `Shape::Circle(args)` — enum variant construction.
     Variant {
@@ -569,10 +591,11 @@ pub enum Place {
         inner: Box<Place>,
         span: Span,
     },
-    /// `v[i]` — element slot (J1: bounds are a runtime trap).
+    /// `v[i]` or `m[i, j]` — element slot. Bounds are a runtime trap. Index
+    /// count is checked against the base type in sema.
     Index {
         base: Box<Place>,
-        idx: Box<Expr>,
+        indices: Vec<Expr>,
         span: Span,
     },
 }

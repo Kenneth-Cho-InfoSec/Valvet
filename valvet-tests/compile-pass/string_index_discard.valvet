@@ -1,0 +1,10 @@
+fun main() {
+    val idx = StringIndex::new();
+    val p = idx.get_or_insert("a");
+    idx.keys();
+    idx.clone();
+    StringIndex::new().keys();
+    StringIndex::new().clone();
+    println(p);
+    println(idx.len());
+}

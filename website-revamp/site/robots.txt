@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://kenneth-cho-infosec.github.io/Valvet/sitemap.xml

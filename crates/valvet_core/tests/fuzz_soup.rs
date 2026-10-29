@@ -117,3 +117,24 @@ fn fuzz_fixture_mutations_no_panic() {
         let _ = h.finish();
     }
 }
+
+#[test]
+fn fuzz_deep_nesting_is_bounded() {
+    let cases = [
+        format!(
+            "fun main() {{ println({}1{}); }}\n",
+            "(".repeat(3000),
+            ")".repeat(3000)
+        ),
+        format!(
+            "fun main() {{ val x: {}Int32{} = vec![]; }}\n",
+            "Vec<".repeat(1500),
+            ">".repeat(1500)
+        ),
+        format!("fun main() {{ println({}true); }}\n", "!".repeat(1500)),
+        format!("fun main() {}{}\n", "{\n".repeat(1500), "}\n".repeat(1500)),
+    ];
+    for (i, text) in cases.iter().enumerate() {
+        run_case(&format!("deep{}", i), text);
+    }
+}

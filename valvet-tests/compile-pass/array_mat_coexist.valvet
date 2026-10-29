@@ -1,0 +1,11 @@
+fun main() {
+    val m = match (mat_from_rows(vec![vec![1.0, 0.0], vec![0.0, 1.0]])) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0, 0),
+    }
+    val a = Array<Float64, 2>::from_vec(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0])
+    val d = ArrayD<Float64>::from_vec(vec![2, 2], vec![5.0, 6.0, 7.0, 8.0])
+    println(m[0, 0])
+    println(a[1, 1])
+    println(d[0, 1])
+}

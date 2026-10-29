@@ -16,7 +16,10 @@ models, and simulations, but checked before they run, freed
 deterministically while they run, and shipped as dependency-free binaries.
 The 0.3.0 modeling layer (formulas, `lm`/GLM, ANOVA, diagnostics,
 contrasts, SQL over frames, validation contracts, causal and meta-analysis
-helpers) closes the remaining gap between prototyping and production.
+helpers) closes the remaining gap between prototyping and production. The
+0.5.0 typed-frame layer adds explicit missing values, multi-key grouping,
+typed joins and windows, narrow Parquet/Arrow I/O, and flat lazy plans
+alongside the existing `DynamicFrame` paths.
 
 ```valvet
 fun mean(v: Vec<Float64>): Float64 {
@@ -89,13 +92,23 @@ println(p.x + p.y)            // 4
 println(vec![1.0, 2.0, 3.0].len())  // 3
 val o: Option<Int32> = Some(7)
 println(match (o) { Some(x) -> x * 2, None -> 0, })  // 14
+val idx = StringIndex::new()
+println(idx.get_or_insert("a"))     // 0
+println(idx.get("a"))               // Some(0)
+println(idx.keys())                 // [a]
 ```
 
 Types: `Int32`, `Int64`, `Float64`, `Bool`, `String`, `()` (Unit),
 structs, enums, `Option<T>`, `Result<T, E>`, `Vec<T>`, `Mat`, `Factor`,
-and references (`&T`, `&mut T`) with borrow checking. `println` handles primitives plus
-`Vec`/`Option`/`Result`/`Mat`/`Factor` of printable types (`[1, 2]`, `Some(7)`/`None`,
-`Ok(1)`/`Err(e)`); `print` remains as a deprecated alias (warns `W1002`).
+`StringIndex`, and references (`&T`, `&mut T`) with borrow checking.
+`println` handles primitives plus `Vec`/`Option`/`Result`/`Mat`/`Factor` of
+printable types (`[1, 2]`, `Some(7)`/`None`, `Ok(1)`/`Err(e)`); `print`
+remains as a deprecated alias (warns `W1002`).
+
+`StringIndex` is an ordered, string-keyed index, not a general `Map<K,V>`.
+Keys are unique strings, insertion order is preserved, and `get` returns
+`Option<Int64>`. Deletion, non-string keys, map literals, `idx[key]`, printing
+the index itself, and join multimaps are out of scope.
 
 Units of measure: annotate numeric bindings, parameters, and returns with
 `@unit`. Same dimensions unify, scales convert silently (left side wins),
@@ -196,6 +209,7 @@ let Some(a) = anova_oneway(vec![g1, g2]) else {
     return 1;
 };
 println(a.f)  // 27
+return 0;
 ```
 
 Query and validation (0.3.0): a SQL subset over frames (`std::sql`:
@@ -216,11 +230,66 @@ let Ok(q) = sql(&f, "SELECT g, SUM(x) FROM f GROUP BY g ORDER BY g") else {
     return 1;
 };
 println(q.cols[1 as Int64])  // per-group sums
+return 0;
+```
+
+Typed frames and binary data (0.5.0): `TypedFrame` is the columnar
+counterpart to `DynamicFrame`. It stores Int64, Float64, Bool, and String
+columns as `Vec<Missing<T>>` and reuses the existing `Factor` representation,
+so missing values are explicit and arithmetic never reads a sentinel. Strict
+CSV/JSON loading rejects bad rows;
+lenient loading reports a bounded number of bad rows; schema inference
+covers the same primitive types. `tf_describe` and the stats helpers return
+typed summaries, and `tf_to_dynamic`/`tf_from_dynamic` bridge to the existing
+SQL, plotting, validation, and model paths without replacing them.
+
+Grouping accepts multiple keys, keeps first-appearance group order, and
+includes a missing-key group. Aggregations cover count, count non-missing,
+missing count, sum, mean, min, max, variance, and standard deviation. Typed
+joins support inner, left, right, and full; missing keys never match by
+default, duplicate keys produce cartesian output, and colliding names get
+deterministic suffixes. Grouped windows provide lag, lead, row number,
+cumulative sum, and rank without changing row order.
+
+Parquet and Arrow have narrow, dependency-free readers and writers. Readers
+accept plain, uncompressed Parquet plus Snappy-compressed pages in the
+supported subset, and primitive Arrow IPC with Int64, Float64, Bool, and
+Utf8. Nested, dictionary-encoded, and compressed Arrow inputs are rejected
+with `Err`. Writers emit one Parquet row group or one Arrow record batch and
+write Factor columns as strings. Lazy plans are flat `Vec<PlanStep>` lists
+with select, filter, summarise, join, arrange, and limit steps;
+`lazy_collect` runs the plan and `lazy_explain` prints it. Lazy-lazy joins
+are deferred.
+
+```valvet no-test
+import std::typed_csv::read_csv_typed_infer;
+import std::typed_frame::tf_names;
+import std::grouped::agg_count;
+import std::grouped::agg_mean;
+import std::grouped::agg_spec;
+import std::grouped::tf_group_by;
+import std::grouped::tf_summarise;
+
+let Ok(t) = read_csv_typed_infer("valvet-tests/data/typed_infer.csv".clone(), true) else {
+    println("bad csv");
+    return 1;
+};
+let Ok(g) = tf_group_by(t, vec!["ok".clone()]) else {
+    println("bad group");
+    return 1;
+};
+val specs = vec![agg_spec("n".clone(), agg_count()), agg_spec("mean_score".clone(), agg_mean("score".clone()))];
+let Ok(out) = tf_summarise(g, specs) else {
+    println("bad summary");
+    return 1;
+};
+println(tf_names(&out));
+return 0;
 ```
 
 Sources come in three equivalent extensions (`.valvet`, `.vv`, `.vvt`,
-resolved in that preference order), and the CLI grows `run --watch`
-(re-run on change) plus a whitespace-normalizing `fmt`:
+resolved in that preference order), and the CLI includes `run --watch`
+(re-run on change) plus a whitespace-normalizing `fmt`.
 
 Ownership stays exact throughout (no GC): owned values move by value
 (`push` mutates in place; `get`/indexing/`for` clone out); pass `.clone()`
@@ -271,6 +340,17 @@ error[E0205]: cannot assign through this place (immutable binding or shared refe
 | `valvet -e 'expr'` | Evaluate a scriptlet and print its value |
 | `valvet --version` / `--help` | Version / usage |
 
+`valvet run --hermetic` is a compile-time policy gate, not an OS sandbox:
+it forces strict entry and denies subprocesses, environment reads, file I/O
+(`read_file`, `read_file_limit`, `write_file`), and `sys_cwd`. It still does
+not restrict network access or other host capabilities; use a container,
+namespace, or similar OS policy for untrusted programs.
+
+`std::` imports resolve only from the installed standard-library roots by
+default. A project-local `std/` tree is ignored unless
+`--allow-stdlib-shadow` is passed explicitly; `--hermetic` always ignores
+that opt-in.
+
 Exit codes: 0 success, 1 compilation failure, 2 usage error.
 
 ## Repository layout
@@ -279,6 +359,8 @@ Exit codes: 0 success, 1 compilation failure, 2 usage error.
 crates/valvet_core/   lexer → parser → sema → ownership → C11 codegen
 crates/valvet_cli/    check/build/run/test/new
 valvet-tests/         fixture suite (compile-pass/fail, runtime, multi-file, …)
+valvet-tests/data/    provenance-stamped CSV, JSON, Parquet, and Arrow fixtures
+scripts/              deterministic fixture generators and binary fuzz smoke
 examples/             small runnable programs
 docs/implementation/  plans, architecture (ADR-001), gaps, test strategy
 ```
@@ -292,15 +374,19 @@ without touching typing or ownership).
 ## Testing
 
 ```sh
-cargo test --workspace   # unit + integration + fuzz-soup (no-panic property)
-cargo fmt --check && cargo clippy --workspace -- -D warnings
-valvet test              # end-to-end fixtures, debug and release
+cargo test --workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+target/debug/valvet test valvet-tests --jobs 8   # generated C uses release flags
+target/debug/valvet test --doc
+python3 scripts/fuzz_binary_formats.py
 ```
 
 See `docs/implementation/TEST_STRATEGY.md` for the gate policy and
 `docs/implementation/IMPLEMENTATION_STATUS.md` for current totals.
-Current gates: 185 unit tests, 258/258 fixtures (debug+release),
-ASan/UBSan-clean output.
+Current gates: 246 Rust tests, 432/432 fixtures, 17/17 doc fences and
+examples, 266 deterministic binary-mutation cases, and ASan/UBSan/LSan
+clean on 88 typed-frame, binary-format, and lazy-plan fixtures.
 
 ## Match guards (active-pattern style)
 
@@ -325,7 +411,10 @@ match (v) {
 - File I/O (`read_file`/`write_file`), shell-out (`std::sys`, imp scripts
   only), plots (SVG), and `.vv`/`.vvt` sources all exist as of 0.3.0;
   0.4.0 adds violin, density, QQ, heatmap, and error-bar plots plus
-  `PlotTheme` (accent/fg/grid/font size).
+  `PlotTheme` (accent/fg/grid/font size). Typed frames, multi-key grouping,
+  typed joins and windows, narrow Parquet/Arrow readers and writers, and
+  flat lazy plans exist as of 0.5.0.
   Still deferred: closures, traits, generics beyond the builtins, user
-  FFI, macros, lazy frames, and `Display` for user structs.
+  FFI, macros, `Display` for user structs, lazy-lazy joins,
+  nested/dictionary/compressed Parquet and Arrow, and a general `Map<K,V>`.
 - `docs/implementation/SPECIFICATION_GAPS.md` records resolved ambiguities.

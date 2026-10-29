@@ -1,0 +1,7 @@
+[id, score, ok, name]
+2
+[int, float, bool, string]
+[1, 2]
+[1.5, NA]
+[true, false]
+[alpha, beta]

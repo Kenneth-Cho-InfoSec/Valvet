@@ -1,0 +1,42 @@
+struct Holder { idx: StringIndex }
+
+fun take(idx: StringIndex) {
+    println(idx.len());
+}
+
+fun take_holder(h: Holder) {
+    println(h.idx.len());
+}
+
+fun peek(idx: &StringIndex) {
+    println((*idx).len());
+    println((*idx).contains("d"));
+}
+
+fun make(): StringIndex {
+    val idx = StringIndex::new();
+    val p = idx.get_or_insert("x");
+    println(p);
+    return idx;
+}
+
+fun main() {
+    val a = StringIndex::new();
+    val ap = a.get_or_insert("a");
+    take(a);
+
+    val b = StringIndex::new();
+    val bp = b.get_or_insert("b");
+    val h = Holder { idx: b };
+    take_holder(h);
+
+    val c = make();
+    println(c.len());
+    println(c.get_or_insert("x"));
+
+    val d = StringIndex::new();
+    val dp = d.get_or_insert("d");
+    peek(&d);
+    println(dp);
+    println(ap + bp);
+}

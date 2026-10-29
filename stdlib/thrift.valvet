@@ -1,0 +1,553 @@
+// std::thrift: checked Thrift compact-protocol reader for Parquet metadata.
+// Parsing is implemented as pure functions over (data, position) so nested
+// readers do not alias the mutable cursor. Public wrappers update the cursor
+// only after a successful read. Struct depth is bounded to 32.
+module std.thrift;
+
+import std::bytes::Varint;
+import std::bytes::bytes_finish;
+import std::bytes::bytes_put_u8;
+import std::bytes::bytes_put_varint;
+import std::bytes::bytes_put_zigzag;
+import std::bytes::bytes_zigzag;
+import std::bytes::bytes_slice;
+import std::bytes::bytes_u8;
+import std::bytes::bytes_varint;
+
+pub struct ThriftReader {
+    data: String,
+    pos: Int64,
+    last_id: Int64,
+    last_ok: Bool,
+}
+
+pub struct ThriftField {
+    id: Int64,
+    kind: Int64,
+    next: Int64,
+}
+
+pub struct ThriftList {
+    kind: Int64,
+    count: Int64,
+}
+
+struct VarintState { ok: Bool, value: Int64, next: Int64 }
+struct FieldState { ok: Bool, id: Int64, kind: Int64, next: Int64, last_id: Int64 }
+struct IntState { ok: Bool, value: Int64, next: Int64 }
+struct DoubleState { ok: Bool, value: Float64, next: Int64 }
+struct StrState { ok: Bool, value: String, next: Int64 }
+struct ListState { ok: Bool, kind: Int64, count: Int64, next: Int64 }
+struct SkipState { ok: Bool, next: Int64 }
+
+pub fun thrift_reader(data: String): ThriftReader {
+    return ThriftReader { data: data, pos: 0 as Int64, last_id: 0 as Int64, last_ok: true };
+}
+
+pub fun thrift_reader_at(data: String, pos: Int64): ThriftReader {
+    return ThriftReader { data: data, pos: pos, last_id: 0 as Int64, last_ok: true };
+}
+
+pub fun thrift_pos(r: &mut ThriftReader): Int64 {
+    return r.pos;
+}
+
+pub fun thrift_last_ok(r: &mut ThriftReader): Bool {
+    return r.last_ok;
+}
+
+pub fun thrift_reset_last(r: &mut ThriftReader) {
+    (*r).last_id = 0 as Int64;
+}
+
+pub fun thrift_field_id(f: &ThriftField): Int64 { return f.id; }
+pub fun thrift_field_kind(f: &ThriftField): Int64 { return f.kind; }
+pub fun thrift_field_next(f: &ThriftField): Int64 { return f.next; }
+pub fun thrift_list_kind(l: &ThriftList): Int64 { return l.kind; }
+pub fun thrift_list_count(l: &ThriftList): Int64 { return l.count; }
+
+fun unzigzag(n: Int64): Int64 {
+    if (n % (2 as Int64) == (0 as Int64)) {
+        return n / (2 as Int64);
+    }
+    return (0 as Int64) - (n / (2 as Int64)) - (1 as Int64);
+}
+
+fun pow2(n: Int64): Int64 {
+    var v = 1 as Int64;
+    var i = 0 as Int64;
+    while (i < n) {
+        v = v * (2 as Int64);
+        i = i + (1 as Int64);
+    }
+    return v;
+}
+
+fun pow2f(n: Int64): Float64 {
+    var v = 1.0;
+    var i = 0 as Int64;
+    if (n >= (0 as Int64)) {
+        while (i < n) {
+            v = v * 2.0;
+            i = i + (1 as Int64);
+        }
+    } else {
+        while (i < (0 as Int64) - n) {
+            v = v / 2.0;
+            i = i + (1 as Int64);
+        }
+    }
+    return v;
+}
+
+fun read_varint_at(data: &String, pos: Int64): VarintState {
+    val v = bytes_varint(data, pos);
+    val ok = match (v) { Some(x) -> true, None -> false, };
+    if (!ok) {
+        return VarintState { ok: false, value: 0 as Int64, next: pos };
+    }
+    val x = match (bytes_varint(data, pos)) { Some(y) -> y, None -> Varint { value: 0 as Int64, next: pos }, };
+    return VarintState { ok: true, value: x.value, next: x.next };
+}
+
+fun read_field_at(data: &String, pos: Int64, last_id: Int64): FieldState {
+    val b = bytes_u8(data, pos);
+    val ok = match (b) { Some(x) -> true, None -> false, };
+    if (!ok) {
+        return FieldState { ok: false, id: 0 as Int64, kind: 0 as Int64, next: pos, last_id: last_id };
+    }
+    val byte = match (bytes_u8(data, pos)) { Some(x) -> x, None -> 0 as Int64, };
+    val kind = byte % (16 as Int64);
+    val delta = byte / (16 as Int64);
+    val next = pos + (1 as Int64);
+    if (kind == (0 as Int64)) {
+        return FieldState { ok: true, id: 0 as Int64, kind: 0 as Int64, next: next, last_id: last_id };
+    }
+    if (delta == (0 as Int64)) {
+        val z = read_varint_at(data, next);
+        if (!z.ok) {
+            return FieldState { ok: false, id: 0 as Int64, kind: 0 as Int64, next: next, last_id: last_id };
+        }
+        val id = unzigzag(z.value);
+        return FieldState { ok: true, id: id, kind: kind, next: z.next, last_id: id };
+    }
+    val id = last_id + delta;
+    return FieldState { ok: true, id: id, kind: kind, next: next, last_id: id };
+}
+
+fun read_i32_at(data: &String, pos: Int64): IntState {
+    val z = read_varint_at(data, pos);
+    if (!z.ok) {
+        return IntState { ok: false, value: 0 as Int64, next: pos };
+    }
+    return IntState { ok: true, value: unzigzag(z.value), next: z.next };
+}
+
+fun read_double_at(data: &String, pos: Int64): DoubleState {
+    if (pos < (0 as Int64) || pos + (8 as Int64) > (*data).len()) {
+        return DoubleState { ok: false, value: 0.0, next: pos };
+    }
+    var b: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < (8 as Int64)) {
+        val x = bytes_u8(data, pos + i);
+        val ok = match (x) { Some(v) -> true, None -> false, };
+        if (!ok) {
+            return DoubleState { ok: false, value: 0.0, next: pos };
+        }
+        val v = match (bytes_u8(data, pos + i)) { Some(v) -> v, None -> 0 as Int64, };
+        b.push(v);
+        i = i + (1 as Int64);
+    }
+    val sign = if (b[7] >= (128 as Int64)) { 0.0 - 1.0 } else { 1.0 };
+    val exp = (b[7] % (128 as Int64)) * (16 as Int64) + b[6] / (16 as Int64);
+    val mant = (b[6] % (16 as Int64)) * pow2(48) + b[5] * pow2(40) + b[4] * pow2(32) + b[3] * pow2(24) + b[2] * pow2(16) + b[1] * pow2(8) + b[0];
+    if (exp == (2047 as Int64)) {
+        if (mant == (0 as Int64)) {
+            return DoubleState { ok: true, value: sign * (1.0 / 0.0), next: pos + (8 as Int64) };
+        }
+        return DoubleState { ok: true, value: 0.0 / 0.0, next: pos + (8 as Int64) };
+    }
+    if (exp == (0 as Int64)) {
+        return DoubleState { ok: true, value: sign * (mant as Float64) * pow2f((0 as Int64) - (1074 as Int64)), next: pos + (8 as Int64) };
+    }
+    return DoubleState { ok: true, value: sign * (1.0 + (mant as Float64) / pow2f(52)) * pow2f(exp - (1023 as Int64)), next: pos + (8 as Int64) };
+}
+
+fun read_binary_at(data: &String, pos: Int64): StrState {
+    val z = read_varint_at(data, pos);
+    if (!z.ok) {
+        return StrState { ok: false, value: "", next: pos };
+    }
+    if (z.value < (0 as Int64) || z.next + z.value > (*data).len()) {
+        return StrState { ok: false, value: "", next: pos };
+    }
+    val s = bytes_slice(data, z.next, z.next + z.value);
+    val ok = match (s) { Some(x) -> true, None -> false, };
+    if (!ok) {
+        return StrState { ok: false, value: "", next: pos };
+    }
+    val out = match (bytes_slice(data, z.next, z.next + z.value)) { Some(x) -> x, None -> "", };
+    return StrState { ok: true, value: out, next: z.next + z.value };
+}
+
+fun read_list_at(data: &String, pos: Int64): ListState {
+    val b = bytes_u8(data, pos);
+    val ok = match (b) { Some(x) -> true, None -> false, };
+    if (!ok) {
+        return ListState { ok: false, kind: 0 as Int64, count: 0 as Int64, next: pos };
+    }
+    val byte = match (bytes_u8(data, pos)) { Some(x) -> x, None -> 0 as Int64, };
+    val kind = byte % (16 as Int64);
+    val short = byte / (16 as Int64);
+    if (short < (15 as Int64)) {
+        return ListState { ok: true, kind: kind, count: short, next: pos + (1 as Int64) };
+    }
+    val z = read_varint_at(data, pos + (1 as Int64));
+    if (!z.ok) {
+        return ListState { ok: false, kind: 0 as Int64, count: 0 as Int64, next: pos };
+    }
+    if (z.value < (0 as Int64) || z.value > (*data).len()) {
+        return ListState { ok: false, kind: 0 as Int64, count: 0 as Int64, next: pos };
+    }
+    return ListState { ok: true, kind: kind, count: z.value, next: z.next };
+}
+
+fun skip_at(data: &String, pos: Int64, kind: Int64, depth: Int64): SkipState {
+    if (depth > (32 as Int64)) {
+        return SkipState { ok: false, next: pos };
+    }
+    if (kind == (1 as Int64) || kind == (2 as Int64) || kind == (3 as Int64)) {
+        if (pos < (0 as Int64) || pos + (1 as Int64) > (*data).len()) {
+            return SkipState { ok: false, next: pos };
+        }
+        return SkipState { ok: true, next: pos + (1 as Int64) };
+    }
+    if (kind == (4 as Int64) || kind == (5 as Int64) || kind == (6 as Int64)) {
+        val z = read_varint_at(data, pos);
+        return SkipState { ok: z.ok, next: z.next };
+    }
+    if (kind == (7 as Int64)) {
+        if (pos < (0 as Int64) || pos + (8 as Int64) > (*data).len()) {
+            return SkipState { ok: false, next: pos };
+        }
+        return SkipState { ok: true, next: pos + (8 as Int64) };
+    }
+    if (kind == (8 as Int64)) {
+        val z = read_varint_at(data, pos);
+        if (!z.ok || z.value < (0 as Int64) || z.next + z.value > (*data).len()) {
+            return SkipState { ok: false, next: pos };
+        }
+        return SkipState { ok: true, next: z.next + z.value };
+    }
+    if (kind == (9 as Int64) || kind == (10 as Int64)) {
+        val l = read_list_at(data, pos);
+        if (!l.ok) {
+            return SkipState { ok: false, next: pos };
+        }
+        var at = l.next;
+        var i = 0 as Int64;
+        while (i < l.count) {
+            val s = skip_at(data, at, l.kind, depth + (1 as Int64));
+            if (!s.ok) {
+                return SkipState { ok: false, next: pos };
+            }
+            at = s.next;
+            i = i + (1 as Int64);
+        }
+        return SkipState { ok: true, next: at };
+    }
+    if (kind == (11 as Int64)) {
+        val z = read_varint_at(data, pos);
+        if (!z.ok || z.value < (0 as Int64)) {
+            return SkipState { ok: false, next: pos };
+        }
+        if (z.value == (0 as Int64)) {
+            return SkipState { ok: true, next: z.next };
+        }
+        val kb = bytes_u8(data, z.next);
+        val vok = match (kb) { Some(x) -> true, None -> false, };
+        if (!vok) {
+            return SkipState { ok: false, next: pos };
+        }
+        val kk = match (bytes_u8(data, z.next)) { Some(x) -> x, None -> 0 as Int64, };
+        val vb = bytes_u8(data, z.next + (1 as Int64));
+        val vok2 = match (vb) { Some(x) -> true, None -> false, };
+        if (!vok2) {
+            return SkipState { ok: false, next: pos };
+        }
+        val vk = match (bytes_u8(data, z.next + (1 as Int64))) { Some(x) -> x, None -> 0 as Int64, };
+        var at = z.next + (2 as Int64);
+        var i = 0 as Int64;
+        var map_ok = true;
+        while (i < z.value && map_ok) {
+            val ks = skip_at(data, at, kk, depth + (1 as Int64));
+            if (!ks.ok) {
+                map_ok = false;
+            } else {
+                val vs = skip_at(data, ks.next, vk, depth + (1 as Int64));
+                if (!vs.ok) {
+                    map_ok = false;
+                } else {
+                    at = vs.next;
+                    i = i + (1 as Int64);
+                }
+            }
+        }
+        if (!map_ok) {
+            return SkipState { ok: false, next: pos };
+        }
+        return SkipState { ok: true, next: at };
+    }
+    if (kind == (12 as Int64)) {
+        var at = pos;
+        var last = 0 as Int64;
+        var done = false;
+        var struct_ok = true;
+        while (!done && struct_ok) {
+            val f = read_field_at(data, at, last);
+            if (!f.ok) {
+                struct_ok = false;
+            } else {
+                at = f.next;
+                last = f.last_id;
+                if (f.kind == (0 as Int64)) {
+                    done = true;
+                } else {
+                    val s = skip_at(data, at, f.kind, depth + (1 as Int64));
+                    if (!s.ok) {
+                        struct_ok = false;
+                    } else {
+                        at = s.next;
+                    }
+                }
+            }
+        }
+        if (!struct_ok) {
+            return SkipState { ok: false, next: pos };
+        }
+        return SkipState { ok: true, next: at };
+    }
+    return SkipState { ok: false, next: pos };
+}
+
+pub fun thrift_read_field(r: &mut ThriftReader): Option<ThriftField> {
+    val st = read_field_at(&(*r).data, (*r).pos, (*r).last_id);
+    if (!st.ok) {
+        (*r).last_ok = false;
+        return None;
+    }
+    (*r).pos = st.next;
+    (*r).last_id = st.last_id;
+    (*r).last_ok = true;
+    return Some(ThriftField { id: st.id, kind: st.kind, next: st.next });
+}
+
+pub fun thrift_next_field(r: &mut ThriftReader): ThriftField {
+    val st = read_field_at(&(*r).data, (*r).pos, (*r).last_id);
+    if (!st.ok) {
+        (*r).last_ok = false;
+        return ThriftField { id: 0 as Int64, kind: 0 as Int64, next: st.next };
+    }
+    (*r).pos = st.next;
+    (*r).last_id = st.last_id;
+    (*r).last_ok = true;
+    return ThriftField { id: st.id, kind: st.kind, next: st.next };
+}
+
+pub fun thrift_read_bool(r: &mut ThriftReader, value: Bool): Option<Bool> {
+    return Some(value);
+}
+
+pub fun thrift_read_i32(r: &mut ThriftReader): Option<Int64> {
+    val st = read_i32_at(&(*r).data, (*r).pos);
+    if (!st.ok) {
+        return None;
+    }
+    (*r).pos = st.next;
+    return Some(st.value);
+}
+
+pub fun thrift_read_i64(r: &mut ThriftReader): Option<Int64> {
+    return thrift_read_i32(r);
+}
+
+pub fun thrift_read_double(r: &mut ThriftReader): Option<Float64> {
+    val st = read_double_at(&(*r).data, (*r).pos);
+    if (!st.ok) {
+        return None;
+    }
+    (*r).pos = st.next;
+    return Some(st.value);
+}
+
+pub fun thrift_read_binary(r: &mut ThriftReader): Option<String> {
+    val st = read_binary_at(&(*r).data, (*r).pos);
+    if (!st.ok) {
+        return None;
+    }
+    (*r).pos = st.next;
+    return Some(st.value);
+}
+
+pub fun thrift_read_list_header(r: &mut ThriftReader): Option<ThriftList> {
+    val st = read_list_at(&(*r).data, (*r).pos);
+    if (!st.ok) {
+        return None;
+    }
+    (*r).pos = st.next;
+    return Some(ThriftList { kind: st.kind, count: st.count });
+}
+
+pub fun thrift_skip(r: &mut ThriftReader, kind: Int64): Bool {
+    val st = skip_at(&(*r).data, (*r).pos, kind, 0 as Int64);
+    if (!st.ok) {
+        return false;
+    }
+    (*r).pos = st.next;
+    return true;
+}
+
+pub struct ThriftWriter {
+    data: Vec<Int64>,
+    last_id: Int64,
+    stack: Vec<Int64>,
+}
+
+pub fun thrift_writer(): ThriftWriter {
+    val d: Vec<Int64> = vec![];
+    val st: Vec<Int64> = vec![];
+    return ThriftWriter { data: d, last_id: 0 as Int64, stack: st };
+}
+
+fun tw_varint(out: &mut Vec<Int64>, v: Int64) {
+    var x = v;
+    if (x < (0 as Int64)) {
+        x = 0 as Int64;
+    }
+    var done = false;
+    while (!done) {
+        if (x < (128 as Int64)) {
+            (*out).push(x);
+            done = true;
+        } else {
+            (*out).push(x % (128 as Int64) + (128 as Int64));
+            x = x / (128 as Int64);
+        }
+    }
+}
+
+fun tw_zigzag(out: &mut Vec<Int64>, v: Int64) {
+    tw_varint(out, bytes_zigzag(v));
+}
+
+fun tw_field_data(out: &mut Vec<Int64>, last: Int64, id: Int64, kind: Int64): Int64 {
+    val delta = id - last;
+    if (delta >= (1 as Int64) && delta <= (15 as Int64)) {
+        (*out).push(delta * (16 as Int64) + kind);
+    } else {
+        (*out).push(kind);
+        tw_zigzag(out, id);
+    }
+    return id;
+}
+
+pub fun thrift_write_bool(w: &mut ThriftWriter, field: Int64, value: Bool) {
+    var out = (*w).data.clone();
+    var last = (*w).last_id;
+    val kind = if (value) { 1 as Int64 } else { 2 as Int64 };
+    last = tw_field_data(&mut out, last, field, kind);
+    (*w).data = out;
+    (*w).last_id = last;
+}
+
+pub fun thrift_write_i32(w: &mut ThriftWriter, field: Int64, value: Int64) {
+    var out = (*w).data.clone();
+    var last = (*w).last_id;
+    last = tw_field_data(&mut out, last, field, 5 as Int64);
+    tw_zigzag(&mut out, value);
+    (*w).data = out;
+    (*w).last_id = last;
+}
+
+pub fun thrift_write_i64(w: &mut ThriftWriter, field: Int64, value: Int64) {
+    var out = (*w).data.clone();
+    var last = (*w).last_id;
+    last = tw_field_data(&mut out, last, field, 6 as Int64);
+    tw_zigzag(&mut out, value);
+    (*w).data = out;
+    (*w).last_id = last;
+}
+
+pub fun thrift_write_binary(w: &mut ThriftWriter, field: Int64, value: String) {
+    var out = (*w).data.clone();
+    var last = (*w).last_id;
+    last = tw_field_data(&mut out, last, field, 8 as Int64);
+    tw_varint(&mut out, value.len());
+    var i = 0 as Int64;
+    while (i < value.len()) {
+        out.push(value.byte_at(i));
+        i = i + (1 as Int64);
+    }
+    (*w).data = out;
+    (*w).last_id = last;
+}
+
+pub fun thrift_write_list_header(w: &mut ThriftWriter, field: Int64, count: Int64, kind: Int64) {
+    var out = (*w).data.clone();
+    var last = (*w).last_id;
+    last = tw_field_data(&mut out, last, field, 9 as Int64);
+    if (count < (15 as Int64)) {
+        out.push(count * (16 as Int64) + kind);
+    } else {
+        out.push((240 as Int64) + kind);
+        tw_varint(&mut out, count);
+    }
+    (*w).data = out;
+    (*w).last_id = last;
+}
+
+pub fun thrift_write_struct_field(w: &mut ThriftWriter, field: Int64) {
+    var out = (*w).data.clone();
+    var last = (*w).last_id;
+    last = tw_field_data(&mut out, last, field, 12 as Int64);
+    (*w).stack.push(last);
+    (*w).data = out;
+    (*w).last_id = 0 as Int64;
+}
+
+pub fun thrift_write_struct_element(w: &mut ThriftWriter) {
+    (*w).stack.push((*w).last_id);
+    (*w).last_id = 0 as Int64;
+}
+
+pub fun thrift_write_struct_end(w: &mut ThriftWriter) {
+    (*w).data.push(0 as Int64);
+    val prev = (*w).stack.pop();
+    (*w).last_id = match (prev) { Some(v) -> v, None -> 0 as Int64 };
+}
+
+pub fun thrift_write_finish(w: ThriftWriter): Result<String, String> {
+    return bytes_finish(w.data);
+}
+
+pub fun thrift_write_i32_value(w: &mut ThriftWriter, value: Int64) {
+    var out = (*w).data.clone();
+    tw_zigzag(&mut out, value);
+    (*w).data = out;
+}
+
+pub fun thrift_write_binary_value(w: &mut ThriftWriter, value: String) {
+    var out = (*w).data.clone();
+    tw_varint(&mut out, value.len());
+    var i = 0 as Int64;
+    while (i < value.len()) {
+        out.push(value.byte_at(i));
+        i = i + (1 as Int64);
+    }
+    (*w).data = out;
+}
+
+pub fun thrift_writer_clone(w: &mut ThriftWriter): ThriftWriter {
+    return ThriftWriter { data: (*w).data.clone(), last_id: (*w).last_id, stack: (*w).stack.clone() };
+}

@@ -1,0 +1,7 @@
+[csv path=valvet-tests/data/typed_infer.csv schema=[int,float,bool,string] strict=false, select [id,score,name], select [id,name], limit 0]
+[csv path=valvet-tests/data/typed_infer.csv schema=[int,float,bool,string] strict=false, limit 0, select [id,name]]
+[id, name]
+0
+[int, string]
+[]
+[]

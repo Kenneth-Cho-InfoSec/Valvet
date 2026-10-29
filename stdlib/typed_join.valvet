@@ -1,0 +1,336 @@
+// std::typed_join: typed multi-key joins with missing-key semantics and an
+// auditable right-side multimap. StringIndex stores only local key ids;
+// heads/tails/next hold the right-row chains.
+module std.typed_join;
+
+import std::frame::JoinAudit;
+import std::frame::audit_summary;
+import std::frame::join_audit_new;
+import std::typed_frame::ColBuild;
+import std::typed_frame::Column;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::col_build_finish;
+import std::typed_frame::col_build_push;
+import std::typed_frame::col_build_push_missing;
+import std::typed_frame::col_builder;
+import std::typed_frame::col_key_tokens;
+import std::typed_frame::tf_clone;
+import std::typed_frame::tf_col_at;
+import std::typed_frame::tf_kind;
+import std::typed_frame::tf_new;
+import std::typed_frame::tf_nrows;
+import std::typed_frame::tf_require_col;
+
+pub struct TypedJoinResult {
+    frame: TypedFrame,
+    audit: JoinAudit,
+}
+
+enum JoinKind { Inner, Left, Right, Full }
+
+struct KeyTable {
+    keys: Vec<String>,
+    missing: Vec<Bool>,
+}
+
+struct RightIndex {
+    ids: StringIndex,
+    heads: Vec<Int64>,
+    tails: Vec<Int64>,
+    next: Vec<Int64>,
+}
+
+fun vec_contains(v: Vec<String>, s: String): Bool {
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        if (v[i] == s) {
+            return true;
+        }
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun key_kind(f: &TypedFrame, name: String): String {
+    val k = tf_kind(f, name);
+    match (k) {
+        Some(v) -> v,
+        None -> "",
+    }
+}
+
+fun validate_keys(left: &TypedFrame, lkeys: Vec<String>, right: &TypedFrame, rkeys: Vec<String>): Result<Bool, String> {
+    if (lkeys.len() != rkeys.len()) {
+        return Err("typed join: key count mismatch");
+    }
+    if (lkeys.len() == (0 as Int64)) {
+        return Err("typed join: at least one key is required");
+    }
+    val lseen = StringIndex::new();
+    var i = 0 as Int64;
+    while (i < lkeys.len()) {
+        if (key_kind(left, lkeys[i].clone()) == "") {
+            return Err("typed join: left key column not found: " + lkeys[i].clone());
+        }
+        val p = lseen.get_or_insert(lkeys[i].clone());
+        if (p != i) {
+            return Err("typed join: duplicate left key: " + lkeys[i].clone());
+        }
+        i = i + (1 as Int64);
+    }
+    val rseen = StringIndex::new();
+    i = 0 as Int64;
+    while (i < rkeys.len()) {
+        if (key_kind(right, rkeys[i].clone()) == "") {
+            return Err("typed join: right key column not found: " + rkeys[i].clone());
+        }
+        val p = rseen.get_or_insert(rkeys[i].clone());
+        if (p != i) {
+            return Err("typed join: duplicate right key: " + rkeys[i].clone());
+        }
+        i = i + (1 as Int64);
+    }
+    i = 0 as Int64;
+    while (i < lkeys.len()) {
+        val lk = key_kind(left, lkeys[i].clone());
+        val rk = key_kind(right, rkeys[i].clone());
+        if (lk != rk) {
+            return Err("typed join: key type mismatch: " + lkeys[i].clone() + " " + lk + " vs " + rkeys[i].clone() + " " + rk);
+        }
+        i = i + (1 as Int64);
+    }
+    return Ok(true);
+}
+
+fun build_key_table(f: &TypedFrame, keys: Vec<String>): Result<KeyTable, String> {
+    var token_cols: Vec<Vec<String>> = vec![];
+    var k = 0 as Int64;
+    while (k < keys.len()) {
+        val c = tf_require_col(f, keys[k].clone())?;
+        token_cols.push(col_key_tokens(c));
+        k = k + (1 as Int64);
+    }
+    var missing: Vec<Bool> = vec![];
+    var n = tf_nrows(f);
+    var r = 0 as Int64;
+    while (r < n) {
+        var miss = false;
+        k = 0 as Int64;
+        while (k < token_cols.len()) {
+            if (token_cols[k][r] == "M") {
+                miss = true;
+            }
+            k = k + (1 as Int64);
+        }
+        missing.push(miss);
+        r = r + (1 as Int64);
+    }
+    return Ok(KeyTable { keys: keys, missing: missing });
+}
+
+fun row_key(f: &TypedFrame, keys: Vec<String>, row: Int64): Result<String, String> {
+    var s = "";
+    var k = 0 as Int64;
+    while (k < keys.len()) {
+        val c = tf_require_col(f, keys[k].clone())?;
+        val toks = col_key_tokens(c);
+        if (row < (0 as Int64) || row >= toks.len()) {
+            return Err("typed join: row out of range");
+        }
+        val t = toks[row].clone();
+        s = s + to_string(t.len()) + ":" + t;
+        k = k + (1 as Int64);
+    }
+    return Ok(s);
+}
+
+fun build_right_index(right: &TypedFrame, rkeys: Vec<String>, kt: &KeyTable): Result<RightIndex, String> {
+    val idx = StringIndex::new();
+    var heads: Vec<Int64> = vec![];
+    var tails: Vec<Int64> = vec![];
+    var next: Vec<Int64> = vec![];
+    var r = 0 as Int64;
+    while (r < tf_nrows(right)) {
+        next.push(0 - (1 as Int64));
+        r = r + (1 as Int64);
+    }
+    r = 0 as Int64;
+    while (r < tf_nrows(right)) {
+        if (!kt.missing[r]) {
+            val key = row_key(right, rkeys.clone(), r)?;
+            val g = idx.get_or_insert(key);
+            if (g == heads.len()) {
+                heads.push(r);
+                tails.push(r);
+            } else {
+                next[tails[g]] = r;
+                tails[g] = r;
+            }
+        }
+        r = r + (1 as Int64);
+    }
+    return Ok(RightIndex { ids: idx, heads: heads, tails: tails, next: next });
+}
+
+fun output_names(left: &TypedFrame, right: &TypedFrame, rkeys: Vec<String>): Result<Vec<String>, String> {
+    var names = left.names.clone();
+    val used = StringIndex::new();
+    var i = 0 as Int64;
+    while (i < names.len()) {
+        val p0 = used.get_or_insert(names[i].clone());
+        i = i + (1 as Int64);
+    }
+    var j = 0 as Int64;
+    while (j < right.names.len()) {
+        val base = right.names[j].clone();
+        if (!vec_contains(rkeys.clone(), base.clone())) {
+            var cand = base.clone();
+            if (used.contains(cand.clone())) {
+                cand = base.clone() + "_right";
+                var n = 2 as Int64;
+                while (used.contains(cand.clone())) {
+                    cand = base.clone() + "_" + to_string(n);
+                    n = n + (1 as Int64);
+                }
+            }
+            names.push(cand.clone());
+            val p1 = used.get_or_insert(cand);
+        }
+        j = j + (1 as Int64);
+    }
+    return Ok(names);
+}
+
+fun build_output_columns(left: &TypedFrame, right: &TypedFrame, rkeys: Vec<String>, lrows: Vec<Int64>, rrows: Vec<Int64>): Vec<Column> {
+    var cols: Vec<Column> = vec![];
+    var c = 0 as Int64;
+    while (c < left.names.len()) {
+        var b = col_builder(left.cols[c]);
+        var o = 0 as Int64;
+        while (o < lrows.len()) {
+            if (lrows[o] >= (0 as Int64)) {
+                col_build_push(&mut b, left.cols[c], lrows[o]);
+            } else {
+                col_build_push_missing(&mut b);
+            }
+            o = o + (1 as Int64);
+        }
+        cols.push(col_build_finish(b));
+        c = c + (1 as Int64);
+    }
+    var j = 0 as Int64;
+    while (j < right.names.len()) {
+        if (!vec_contains(rkeys.clone(), right.names[j].clone())) {
+            var b = col_builder(right.cols[j]);
+            var o = 0 as Int64;
+            while (o < rrows.len()) {
+                if (rrows[o] >= (0 as Int64)) {
+                    col_build_push(&mut b, right.cols[j], rrows[o]);
+                } else {
+                    col_build_push_missing(&mut b);
+                }
+                o = o + (1 as Int64);
+            }
+            cols.push(col_build_finish(b));
+        }
+        j = j + (1 as Int64);
+    }
+    return cols;
+}
+
+fun join_core(left: &TypedFrame, lkeys: Vec<String>, right: &TypedFrame, rkeys: Vec<String>, kind: JoinKind): Result<TypedJoinResult, String> {
+    validate_keys(left, lkeys.clone(), right, rkeys.clone())?;
+    val kind_code = match (kind) { JoinKind::Inner -> 0 as Int64, JoinKind::Left -> 1 as Int64, JoinKind::Right -> 2 as Int64, JoinKind::Full -> 3 as Int64, };
+    val lkt = build_key_table(left, lkeys.clone())?;
+    val rkt = build_key_table(right, rkeys.clone())?;
+    val ridx = build_right_index(right, rkeys.clone(), &rkt)?;
+    val onames = output_names(left, right, rkeys.clone())?;
+    var out_lrows: Vec<Int64> = vec![];
+    var out_rrows: Vec<Int64> = vec![];
+    var right_matched: Vec<Bool> = vec![];
+    var q = 0 as Int64;
+    while (q < tf_nrows(right)) {
+        right_matched.push(false);
+        q = q + (1 as Int64);
+    }
+    var matched = 0 as Int64;
+    var left_only = 0 as Int64;
+    var right_only = 0 as Int64;
+    var out_rows = 0 as Int64;
+    var lrow = 0 as Int64;
+    while (lrow < tf_nrows(left)) {
+        var gid = 0 - (1 as Int64);
+        var has_group = false;
+        if (!lkt.missing[lrow]) {
+            val key = row_key(left, lkeys.clone(), lrow)?;
+            val found = ridx.ids.get(key);
+            val have = match (found) { Some(v) -> true, None -> false, };
+            if (have) {
+                gid = match (ridx.ids.get(row_key(left, lkeys.clone(), lrow)?)) { Some(v) -> v, None -> 0 - (1 as Int64), };
+                has_group = true;
+            }
+        }
+        if (has_group) {
+            var rr = ridx.heads[gid];
+            var any = false;
+            while (rr >= (0 as Int64)) {
+                any = true;
+                out_lrows.push(lrow);
+                out_rrows.push(rr);
+                right_matched[rr] = true;
+                matched = matched + (1 as Int64);
+                rr = ridx.next[rr];
+            }
+            if (!any) {
+                left_only = left_only + (1 as Int64);
+            }
+        } else {
+            left_only = left_only + (1 as Int64);
+            if (kind_code == (1 as Int64) || kind_code == (3 as Int64)) {
+                out_lrows.push(lrow);
+                out_rrows.push(0 - (1 as Int64));
+            }
+        }
+        lrow = lrow + (1 as Int64);
+    }
+    var rr2 = 0 as Int64;
+    while (rr2 < tf_nrows(right)) {
+        if (!right_matched[rr2]) {
+            right_only = right_only + (1 as Int64);
+            if (kind_code == (2 as Int64) || kind_code == (3 as Int64)) {
+                out_lrows.push(0 - (1 as Int64));
+                out_rrows.push(rr2);
+            }
+        }
+        rr2 = rr2 + (1 as Int64);
+    }
+    out_rows = out_lrows.len();
+    val ocols = build_output_columns(left, right, rkeys.clone(), out_lrows, out_rrows);
+    val frame = tf_new(onames, ocols, out_rows)?;
+    val audit = join_audit_new(matched, left_only, right_only, tf_nrows(left), tf_nrows(right), out_rows);
+    return Ok(TypedJoinResult { frame: frame, audit: audit });
+}
+
+pub fun tf_join_inner(left: &TypedFrame, lkeys: Vec<String>, right: &TypedFrame, rkeys: Vec<String>): Result<TypedJoinResult, String> {
+    return join_core(left, lkeys, right, rkeys, JoinKind::Inner);
+}
+
+pub fun tf_join_left(left: &TypedFrame, lkeys: Vec<String>, right: &TypedFrame, rkeys: Vec<String>): Result<TypedJoinResult, String> {
+    return join_core(left, lkeys, right, rkeys, JoinKind::Left);
+}
+
+pub fun tf_join_right(left: &TypedFrame, lkeys: Vec<String>, right: &TypedFrame, rkeys: Vec<String>): Result<TypedJoinResult, String> {
+    return join_core(left, lkeys, right, rkeys, JoinKind::Right);
+}
+
+pub fun tf_join_full(left: &TypedFrame, lkeys: Vec<String>, right: &TypedFrame, rkeys: Vec<String>): Result<TypedJoinResult, String> {
+    return join_core(left, lkeys, right, rkeys, JoinKind::Full);
+}
+
+pub fun tf_join_frame(r: &TypedJoinResult): TypedFrame {
+    return tf_clone(&r.frame);
+}
+
+pub fun tf_join_audit_summary(r: &TypedJoinResult): String {
+    return audit_summary(&r.audit);
+}

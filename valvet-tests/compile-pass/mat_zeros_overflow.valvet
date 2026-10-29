@@ -1,0 +1,4 @@
+fun main() {
+    val m = mat_zeros(4294967296, 4294967296);
+    println(m.rows());
+}

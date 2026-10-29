@@ -1,0 +1,50 @@
+import std::schema::parse_factor_col;
+import std::typed_frame::Column;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::col_len;
+import std::typed_frame::col_kind;
+import std::typed_frame::col_strings;
+import std::typed_frame::tf_col_at;
+import std::typed_frame::tf_kinds;
+import std::typed_frame::tf_names;
+import std::typed_frame::tf_new;
+import std::typed_frame::tf_nrows;
+
+fun empty_names(): Vec<String> { return vec![]; }
+fun empty_cols(): Vec<Column> { return vec![]; }
+
+fun unwrap_tf(r: Result<TypedFrame, String>): TypedFrame {
+    match (r) {
+        Ok(t) -> t,
+        Err(e) -> { println(e); TypedFrame { names: empty_names(), cols: empty_cols(), nrows: 0 as Int64 } },
+    }
+}
+
+fun show(t: &TypedFrame) {
+    println(tf_names(t));
+    println(tf_nrows(t));
+    println(tf_kinds(t));
+    var i = 0 as Int64;
+    while (i < tf_names(t).len()) {
+        val c = tf_col_at(t, i);
+        match (c) {
+            Some(col) -> println(col_strings(col)),
+            None -> println("missing"),
+        };
+        i = i + (1 as Int64);
+    }
+}
+
+fun main() {
+    val ints: Vec<Missing<Int64>> = vec![Missing::Present(1 as Int64), Missing, Missing::Present(3 as Int64)];
+    val floats: Vec<Missing<Float64>> = vec![Missing::Present(1.5), Missing, Missing::Present(3.5)];
+    val bools: Vec<Missing<Bool>> = vec![Missing::Present(true), Missing::Present(false), Missing];
+    val strs: Vec<Missing<String>> = vec![Missing::Present("a".clone()), Missing, Missing::Present("c".clone())];
+    val fac = parse_factor_col(vec!["a".clone(), "b".clone(), "a".clone()]);
+    val cols: Vec<Column> = vec![Column::Int(ints), Column::Float(floats), Column::Bool(bools), Column::Str(strs), Column::Factor(fac)];
+    val names: Vec<String> = vec!["i".clone(), "f".clone(), "b".clone(), "s".clone(), "g".clone()];
+    val t = unwrap_tf(tf_new(names, cols, 3 as Int64));
+    show(&t);
+    println(col_len(Column::Int(vec![Missing::Present(7 as Int64)])));
+    println(col_kind(Column::Float(vec![Missing::Present(1.0)])));
+}

@@ -1,0 +1,1341 @@
+// std::typed_frame: missing-aware typed columns beside DynamicFrame.
+// The first layout is deliberately simple: one Vec<Missing<T>> per numeric,
+// boolean, or string column, and a Factor for categorical columns. Every
+// operation is total unless it returns Result. No general Map is used.
+module std.typed_frame;
+
+import std::frame::DynamicFrame;
+import std::frame::frame_col;
+import std::frame::frame_names;
+import std::csv::CsvTable;
+import std::csv::is_na;
+import std::schema::parse_bool_col;
+import std::schema::parse_factor_col;
+import std::schema::parse_float_col;
+import std::schema::parse_int_col;
+import std::schema::parse_str_col;
+
+pub enum Column {
+    Int(Vec<Missing<Int64>>),
+    Float(Vec<Missing<Float64>>),
+    Bool(Vec<Missing<Bool>>),
+    Str(Vec<Missing<String>>),
+    Factor(Factor),
+}
+
+pub struct TypedFrame {
+    names: Vec<String>,
+    cols: Vec<Column>,
+    nrows: Int64,
+}
+
+pub struct SortKey {
+    col: String,
+    asc: Bool,
+}
+
+pub fun sort_key(col: String, asc: Bool): SortKey {
+    SortKey { col: col, asc: asc }
+}
+
+pub fun sort_key_col(k: &SortKey): String {
+    k.col.clone()
+}
+
+pub fun sort_key_asc(k: &SortKey): Bool {
+    k.asc
+}
+
+pub fun col_len(c: Column): Int64 {
+    match (c) {
+        Column::Int(v) -> v.len(),
+        Column::Float(v) -> v.len(),
+        Column::Bool(v) -> v.len(),
+        Column::Str(v) -> v.len(),
+        Column::Factor(f) -> f.codes().len(),
+    }
+}
+
+pub fun col_kind(c: Column): String {
+    match (c) {
+        Column::Int(v) -> "int",
+        Column::Float(v) -> "float",
+        Column::Bool(v) -> "bool",
+        Column::Str(v) -> "string",
+        Column::Factor(f) -> "factor",
+    }
+}
+
+pub fun tf_new(names: Vec<String>, cols: Vec<Column>, nrows: Int64): Result<TypedFrame, String> {
+    if (names.len() != cols.len()) {
+        return Err("typed frame: names and columns differ");
+    }
+    val seen = StringIndex::new();
+    var i = 0 as Int64;
+    while (i < names.len()) {
+        val pos = seen.get_or_insert(names[i].clone());
+        if (pos != i) {
+            return Err("typed frame: duplicate column name");
+        }
+        i = i + (1 as Int64);
+    }
+    i = 0 as Int64;
+    while (i < cols.len()) {
+        if (col_len(cols[i]) != nrows) {
+            return Err("typed frame: column length mismatch");
+        }
+        i = i + (1 as Int64);
+    }
+    return Ok(TypedFrame { names: names, cols: cols, nrows: nrows });
+}
+
+pub fun tf_names(f: &TypedFrame): Vec<String> {
+    f.names.clone()
+}
+
+pub fun tf_nrows(f: &TypedFrame): Int64 {
+    f.nrows
+}
+
+pub fun tf_ncols(f: &TypedFrame): Int64 {
+    f.names.len()
+}
+
+pub fun tf_col_index(f: &TypedFrame, name: String): Option<Int64> {
+    var i = 0 as Int64;
+    while (i < f.names.len()) {
+        if (f.names[i] == name) {
+            return Some(i);
+        }
+        i = i + (1 as Int64);
+    }
+    return None;
+}
+
+pub fun tf_has_col(f: &TypedFrame, name: String): Bool {
+    val pos = tf_col_index(f, name);
+    match (pos) {
+        Some(i) -> true,
+        None -> false,
+    }
+}
+
+pub fun tf_col_at(f: &TypedFrame, index: Int64): Option<Column> {
+    if (index < (0 as Int64) || index >= f.cols.len()) {
+        return None;
+    }
+    return Some(f.cols[index]);
+}
+
+pub fun tf_col(f: &TypedFrame, name: String): Option<Column> {
+    var i = 0 as Int64;
+    while (i < f.names.len()) {
+        if (f.names[i] == name) {
+            return Some(f.cols[i]);
+        }
+        i = i + (1 as Int64);
+    }
+    return None;
+}
+
+fun empty_int_values(): Vec<Missing<Int64>> {
+    return vec![];
+}
+
+fun empty_float_values(): Vec<Missing<Float64>> {
+    return vec![];
+}
+
+fun empty_bool_values(): Vec<Missing<Bool>> {
+    return vec![];
+}
+
+fun empty_str_values(): Vec<Missing<String>> {
+    return vec![];
+}
+
+fun empty_strings(): Vec<String> {
+    return vec![];
+}
+
+fun missing_float(): Missing<Float64> {
+    return Missing;
+}
+
+fun empty_col(): Column {
+    return Column::Int(empty_int_values());
+}
+
+fun require_col_index(f: &TypedFrame, name: String): Result<Int64, String> {
+    val c = tf_col_index(f, name.clone());
+    val have = match (c) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return Err("missing column: " + name);
+    }
+    val c2 = tf_col_index(f, name);
+    val at = match (c2) { Some(v) -> v, None -> 0 as Int64, };
+    return Ok(at);
+}
+
+pub fun tf_require_col(f: &TypedFrame, name: String): Result<Column, String> {
+    return require_col(f, name);
+}
+
+fun require_col(f: &TypedFrame, name: String): Result<Column, String> {
+    val c = tf_col(f, name.clone());
+    val have = match (c) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return Err("missing column: " + name);
+    }
+    val c2 = tf_col(f, name);
+    val v = match (c2) { Some(v) -> v, None -> empty_col(), };
+    return Ok(v);
+}
+
+pub fun tf_kind(f: &TypedFrame, name: String): Option<String> {
+    val c = tf_col(f, name.clone());
+    val have = match (c) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return None;
+    }
+    val c2 = tf_col(f, name);
+    val kind = match (c2) { Some(v) -> col_kind(v), None -> "", };
+    return Some(kind);
+}
+
+pub fun tf_kinds(f: &TypedFrame): Vec<String> {
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < f.cols.len()) {
+        out.push(col_kind(f.cols[i]));
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun tf_schema(f: &TypedFrame): Vec<String> {
+    tf_kinds(f)
+}
+
+fun col_is_int(c: Column): Bool {
+    match (c) {
+        Column::Int(v) -> true,
+        _ -> false,
+    }
+}
+
+fun col_is_float_like(c: Column): Bool {
+    match (c) {
+        Column::Int(v) -> true,
+        Column::Float(v) -> true,
+        _ -> false,
+    }
+}
+
+fun col_is_bool(c: Column): Bool {
+    match (c) {
+        Column::Bool(v) -> true,
+        _ -> false,
+    }
+}
+
+fun col_is_str(c: Column): Bool {
+    match (c) {
+        Column::Str(v) -> true,
+        _ -> false,
+    }
+}
+
+fun col_is_factor(c: Column): Bool {
+    match (c) {
+        Column::Factor(v) -> true,
+        _ -> false,
+    }
+}
+
+pub fun tf_int_col(f: &TypedFrame, name: String): Option<Vec<Missing<Int64>>> {
+    val probe = tf_col(f, name.clone());
+    val have = match (probe) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return None;
+    }
+    val kind = tf_col(f, name.clone());
+    val is_kind = match (kind) { Some(v) -> col_is_int(v), None -> false, };
+    if (!is_kind) {
+        return None;
+    }
+    val c = tf_col(f, name);
+    val out = match (c) {
+        Some(Column::Int(v)) -> v,
+        _ -> empty_int_values(),
+    };
+    return Some(out);
+}
+
+pub fun tf_float_col(f: &TypedFrame, name: String): Option<Vec<Missing<Float64>>> {
+    val probe = tf_col(f, name.clone());
+    val have = match (probe) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return None;
+    }
+    val kind = tf_col(f, name.clone());
+    val is_kind = match (kind) { Some(v) -> col_is_float_like(v), None -> false, };
+    if (!is_kind) {
+        return None;
+    }
+    val c = tf_col(f, name);
+    val out = match (c) {
+        Some(Column::Int(v)) -> {
+            var fv: Vec<Missing<Float64>> = vec![];
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> fv.push(Missing::Present(x as Float64)),
+                    Missing -> fv.push(missing_float()),
+                };
+                i = i + (1 as Int64);
+            }
+            fv
+        },
+        Some(Column::Float(v)) -> v,
+        _ -> empty_float_values(),
+    };
+    return Some(out);
+}
+
+pub fun tf_bool_col(f: &TypedFrame, name: String): Option<Vec<Missing<Bool>>> {
+    val probe = tf_col(f, name.clone());
+    val have = match (probe) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return None;
+    }
+    val kind = tf_col(f, name.clone());
+    val is_kind = match (kind) { Some(v) -> col_is_bool(v), None -> false, };
+    if (!is_kind) {
+        return None;
+    }
+    val c = tf_col(f, name);
+    val out = match (c) {
+        Some(Column::Bool(v)) -> v,
+        _ -> empty_bool_values(),
+    };
+    return Some(out);
+}
+
+pub fun tf_str_col(f: &TypedFrame, name: String): Option<Vec<Missing<String>>> {
+    val probe = tf_col(f, name.clone());
+    val have = match (probe) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return None;
+    }
+    val kind = tf_col(f, name.clone());
+    val is_kind = match (kind) { Some(v) -> col_is_str(v), None -> false, };
+    if (!is_kind) {
+        return None;
+    }
+    val c = tf_col(f, name);
+    val out = match (c) {
+        Some(Column::Str(v)) -> v,
+        _ -> empty_str_values(),
+    };
+    return Some(out);
+}
+
+pub fun tf_factor_col(f: &TypedFrame, name: String): Option<Factor> {
+    val probe = tf_col(f, name.clone());
+    val have = match (probe) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return None;
+    }
+    val kind = tf_col(f, name.clone());
+    val is_kind = match (kind) { Some(v) -> col_is_factor(v), None -> false, };
+    if (!is_kind) {
+        return None;
+    }
+    val c = tf_col(f, name);
+    val out = match (c) {
+        Some(Column::Factor(v)) -> v,
+        _ -> factor_from_strings(empty_strings()),
+    };
+    return Some(out);
+}
+
+pub fun col_missing_mask(c: Column): Vec<Bool> {
+    var out: Vec<Bool> = vec![];
+    match (c) {
+        Column::Int(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push(false),
+                    Missing -> out.push(true),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Float(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push(x != x),
+                    Missing -> out.push(true),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Bool(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push(false),
+                    Missing -> out.push(true),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Str(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push(false),
+                    Missing -> out.push(true),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Factor(f) -> {
+            val cd = f.codes();
+            var i = 0 as Int64;
+            while (i < cd.len()) {
+                out.push(cd[i] == (0 as Int32));
+                i = i + (1 as Int64);
+            }
+        },
+    };
+    return out;
+}
+
+pub fun col_strings(c: Column): Vec<String> {
+    var out: Vec<String> = vec![];
+    match (c) {
+        Column::Int(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push(to_string(x)),
+                    Missing -> out.push("NA"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Float(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push(to_string(x)),
+                    Missing -> out.push("NA"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Bool(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push(to_string(x)),
+                    Missing -> out.push("NA"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Str(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push(x),
+                    Missing -> out.push("NA"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Factor(f) -> {
+            out = f.as_strings();
+        },
+    };
+    return out;
+}
+
+pub fun col_rank_keys(c: Column): Vec<String> {
+    var out: Vec<String> = vec![];
+    match (c) {
+        Column::Int(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push("I" + to_string(x)),
+                    Missing -> out.push("M"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Float(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> {
+                        if (x != x) {
+                            out.push("M");
+                        } else {
+                            out.push("F" + to_string(x));
+                        }
+                    },
+                    Missing -> out.push("M"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Bool(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push(if (x) { "B1" } else { "B0" }),
+                    Missing -> out.push("M"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Str(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push("S" + to_string(x.len()) + ":" + x),
+                    Missing -> out.push("M"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Factor(f) -> {
+            val cd = f.codes();
+            var i = 0 as Int64;
+            while (i < cd.len()) {
+                if (cd[i] == (0 as Int32)) {
+                    out.push("M");
+                } else {
+                    out.push("C" + to_string(cd[i]));
+                }
+                i = i + (1 as Int64);
+            }
+        },
+    };
+    return out;
+}
+
+pub fun col_key_tokens(c: Column): Vec<String> {
+    var out: Vec<String> = vec![];
+    match (c) {
+        Column::Int(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push("I" + to_string(x)),
+                    Missing -> out.push("M"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Float(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> {
+                        if (x != x) {
+                            out.push("M");
+                        } else {
+                            out.push("F" + to_string(x));
+                        }
+                    },
+                    Missing -> out.push("M"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Bool(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push(if (x) { "B1" } else { "B0" }),
+                    Missing -> out.push("M"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Str(v) -> {
+            var i = 0 as Int64;
+            while (i < v.len()) {
+                match (v[i]) {
+                    Missing::Present(x) -> out.push("S" + to_string(x.len()) + ":" + x),
+                    Missing -> out.push("M"),
+                };
+                i = i + (1 as Int64);
+            }
+        },
+        Column::Factor(f) -> {
+            val lv = f.levels();
+            val cd = f.codes();
+            var i = 0 as Int64;
+            while (i < cd.len()) {
+                if (cd[i] == (0 as Int32)) {
+                    out.push("M");
+                } else {
+                    val at = (cd[i] as Int64) - (1 as Int64);
+                    val level = lv[at];
+                    out.push("C" + to_string(level.len()) + ":" + level);
+                }
+                i = i + (1 as Int64);
+            }
+        },
+    };
+    return out;
+}
+
+pub fun tf_key_join(tokens: Vec<String>): String {
+    var out = "";
+    var i = 0 as Int64;
+    while (i < tokens.len()) {
+        val t = tokens[i].clone();
+        out = out + to_string(t.len()) + ":" + t;
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+pub fun tf_row_key(f: &TypedFrame, keys: Vec<String>, row: Int64): Result<String, String> {
+    var tokens: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < keys.len()) {
+        val col = require_col(f, keys[i].clone())?;
+        val toks = col_key_tokens(col);
+        if (row < (0 as Int64) || row >= toks.len()) {
+            return Err("row out of range");
+        }
+        tokens.push(toks[row].clone());
+        i = i + (1 as Int64);
+    }
+    return Ok(tf_key_join(tokens));
+}
+
+pub fun col_take_rows(c: Column, rows: Vec<Int64>): Column {
+    match (c) {
+        Column::Int(v) -> {
+            var out: Vec<Missing<Int64>> = vec![];
+            var i = 0 as Int64;
+            while (i < rows.len()) {
+                out.push(v[rows[i]]);
+                i = i + (1 as Int64);
+            }
+            Column::Int(out)
+        },
+        Column::Float(v) -> {
+            var out: Vec<Missing<Float64>> = vec![];
+            var i = 0 as Int64;
+            while (i < rows.len()) {
+                out.push(v[rows[i]]);
+                i = i + (1 as Int64);
+            }
+            Column::Float(out)
+        },
+        Column::Bool(v) -> {
+            var out: Vec<Missing<Bool>> = vec![];
+            var i = 0 as Int64;
+            while (i < rows.len()) {
+                out.push(v[rows[i]]);
+                i = i + (1 as Int64);
+            }
+            Column::Bool(out)
+        },
+        Column::Str(v) -> {
+            var out: Vec<Missing<String>> = vec![];
+            var i = 0 as Int64;
+            while (i < rows.len()) {
+                out.push(v[rows[i]]);
+                i = i + (1 as Int64);
+            }
+            Column::Str(out)
+        },
+        Column::Factor(f) -> {
+            val s = f.as_strings();
+            var out: Vec<String> = vec![];
+            var i = 0 as Int64;
+            while (i < rows.len()) {
+                out.push(s[rows[i]].clone());
+                i = i + (1 as Int64);
+            }
+            Column::Factor(factor_from_strings(out))
+        },
+    }
+}
+
+pub fun col_gather(c: Column, rows: Vec<Int64>, present: Vec<Bool>): Column {
+    match (c) {
+        Column::Int(v) -> {
+            var out: Vec<Missing<Int64>> = vec![];
+            var i = 0 as Int64;
+            while (i < rows.len()) {
+                if (present[i]) {
+                    out.push(v[rows[i]]);
+                } else {
+                    out.push(Missing);
+                }
+                i = i + (1 as Int64);
+            }
+            Column::Int(out)
+        },
+        Column::Float(v) -> {
+            var out: Vec<Missing<Float64>> = vec![];
+            var i = 0 as Int64;
+            while (i < rows.len()) {
+                if (present[i]) {
+                    out.push(v[rows[i]]);
+                } else {
+                    out.push(Missing);
+                }
+                i = i + (1 as Int64);
+            }
+            Column::Float(out)
+        },
+        Column::Bool(v) -> {
+            var out: Vec<Missing<Bool>> = vec![];
+            var i = 0 as Int64;
+            while (i < rows.len()) {
+                if (present[i]) {
+                    out.push(v[rows[i]]);
+                } else {
+                    out.push(Missing);
+                }
+                i = i + (1 as Int64);
+            }
+            Column::Bool(out)
+        },
+        Column::Str(v) -> {
+            var out: Vec<Missing<String>> = vec![];
+            var i = 0 as Int64;
+            while (i < rows.len()) {
+                if (present[i]) {
+                    out.push(v[rows[i]]);
+                } else {
+                    out.push(Missing);
+                }
+                i = i + (1 as Int64);
+            }
+            Column::Str(out)
+        },
+        Column::Factor(f) -> {
+            val s = f.as_strings();
+            var out: Vec<String> = vec![];
+            var i = 0 as Int64;
+            while (i < rows.len()) {
+                if (present[i]) {
+                    out.push(s[rows[i]].clone());
+                } else {
+                    out.push("");
+                }
+                i = i + (1 as Int64);
+            }
+            Column::Factor(factor_from_strings(out))
+        },
+    }
+}
+
+pub fun tf_clone(f: &TypedFrame): TypedFrame {
+    var cols: Vec<Column> = vec![];
+    var i = 0 as Int64;
+    while (i < f.cols.len()) {
+        cols.push(f.cols[i]);
+        i = i + (1 as Int64);
+    }
+    TypedFrame { names: f.names.clone(), cols: cols, nrows: f.nrows }
+}
+
+pub fun tf_select(f: &TypedFrame, names: Vec<String>): Result<TypedFrame, String> {
+    var onames: Vec<String> = vec![];
+    var ocols: Vec<Column> = vec![];
+    var i = 0 as Int64;
+    while (i < names.len()) {
+        val at = require_col_index(f, names[i].clone())?;
+        onames.push(f.names[at].clone());
+        ocols.push(f.cols[at]);
+        i = i + (1 as Int64);
+    }
+    return tf_new(onames, ocols, f.nrows);
+}
+
+pub fun tf_take_rows(f: &TypedFrame, rows: Vec<Int64>): Result<TypedFrame, String> {
+    var i = 0 as Int64;
+    while (i < rows.len()) {
+        if (rows[i] < (0 as Int64) || rows[i] >= f.nrows) {
+            return Err("row out of range");
+        }
+        i = i + (1 as Int64);
+    }
+    var cols: Vec<Column> = vec![];
+    var c = 0 as Int64;
+    while (c < f.cols.len()) {
+        cols.push(col_take_rows(f.cols[c], rows.clone()));
+        c = c + (1 as Int64);
+    }
+    return tf_new(f.names.clone(), cols, rows.len());
+}
+
+pub fun tf_filter_mask(f: &TypedFrame, mask: Vec<Bool>): TypedFrame {
+    var rows: Vec<Int64> = vec![];
+    var r = 0 as Int64;
+    while (r < f.nrows) {
+        val keep = if (r < mask.len()) { mask[r] } else { false };
+        if (keep) {
+            rows.push(r);
+        }
+        r = r + (1 as Int64);
+    }
+    val out = tf_take_rows(f, rows);
+    match (out) {
+        Ok(v) -> v,
+        Err(e) -> tf_clone(f),
+    }
+}
+
+pub fun tf_drop_na(f: TypedFrame, col: String): TypedFrame {
+    if (!tf_has_col(&f, col.clone())) {
+        return f;
+    }
+    val c = match (tf_col(&f, col)) { Some(v) -> v, None -> empty_col(), };
+    val miss = col_missing_mask(c);
+    var keep: Vec<Bool> = vec![];
+    var i = 0 as Int64;
+    while (i < miss.len()) {
+        keep.push(!miss[i]);
+        i = i + (1 as Int64);
+    }
+    tf_filter_mask(&f, keep)
+}
+
+pub fun tf_set_column(f: TypedFrame, name: String, col: Column): Result<TypedFrame, String> {
+    var onames: Vec<String> = vec![];
+    var ocols: Vec<Column> = vec![];
+    val exists = tf_has_col(&f, name.clone());
+    if (exists) {
+        val at = match (tf_col_index(&f, name.clone())) { Some(v) -> v, None -> 0 as Int64, };
+        var i = 0 as Int64;
+        while (i < f.names.len()) {
+            onames.push(f.names[i].clone());
+            if (i == at) {
+                ocols.push(col);
+            } else {
+                ocols.push(f.cols[i]);
+            }
+            i = i + (1 as Int64);
+        }
+    } else {
+        var i = 0 as Int64;
+        while (i < f.names.len()) {
+            onames.push(f.names[i].clone());
+            ocols.push(f.cols[i]);
+            i = i + (1 as Int64);
+        }
+        onames.push(name);
+        ocols.push(col);
+    }
+    return tf_new(onames, ocols, f.nrows);
+}
+
+pub fun tf_to_dynamic(f: &TypedFrame): DynamicFrame {
+    var cols: Vec<Vec<String>> = vec![];
+    var i = 0 as Int64;
+    while (i < f.cols.len()) {
+        cols.push(col_strings(f.cols[i]));
+        i = i + (1 as Int64);
+    }
+    DynamicFrame { names: f.names.clone(), cols: cols, nrows: f.nrows }
+}
+
+fun require_frame_col(f: &DynamicFrame, name: String): Result<Vec<String>, String> {
+    val c = frame_col(f, name.clone());
+    val have = match (c) { Some(v) -> true, None -> false, };
+    if (!have) {
+        return Err("missing column: " + name);
+    }
+    val c2 = frame_col(f, name);
+    val v = match (c2) { Some(v) -> v, None -> empty_strings(), };
+    return Ok(v);
+}
+
+fun parse_schema_col(kind: String, cells: Vec<String>): Result<Column, String> {
+    if (kind == "int") {
+        return Ok(Column::Int(parse_int_col(cells)));
+    }
+    if (kind == "float") {
+        return Ok(Column::Float(parse_float_col(cells)));
+    }
+    if (kind == "bool") {
+        return Ok(Column::Bool(parse_bool_col(cells)));
+    }
+    if (kind == "string") {
+        return Ok(Column::Str(parse_str_col(cells)));
+    }
+    if (kind == "factor") {
+        return Ok(Column::Factor(parse_factor_col(cells)));
+    }
+    return Err("unknown schema type: " + kind);
+}
+
+pub fun tf_from_dynamic(f: &DynamicFrame, schema: Vec<String>): Result<TypedFrame, String> {
+    val names = frame_names(f);
+    if (names.len() != schema.len()) {
+        return Err("typed frame: schema length mismatch");
+    }
+    var cols: Vec<Column> = vec![];
+    var i = 0 as Int64;
+    while (i < names.len()) {
+        val cells = require_frame_col(f, names[i].clone())?;
+        val col = parse_schema_col(schema[i].clone(), cells)?;
+        cols.push(col);
+        i = i + (1 as Int64);
+    }
+    return tf_new(names, cols, f.nrows);
+}
+
+// ----- First-order column builders (P2-P4) -----
+// The builder is a struct rather than an enum so `&mut` field mutation is
+// safe in Valvet; matching a `&mut` enum is currently not code-generated.
+pub struct ColBuild {
+    kind: String,
+    ints: Vec<Missing<Int64>>,
+    floats: Vec<Missing<Float64>>,
+    bools: Vec<Missing<Bool>>,
+    strs: Vec<Missing<String>>,
+    factors: Vec<String>,
+}
+
+pub fun col_builder(c: Column): ColBuild {
+    val kind = col_kind(c);
+    val ints: Vec<Missing<Int64>> = vec![];
+    val floats: Vec<Missing<Float64>> = vec![];
+    val bools: Vec<Missing<Bool>> = vec![];
+    val strs: Vec<Missing<String>> = vec![];
+    val factors: Vec<String> = vec![];
+    ColBuild {
+        kind: kind,
+        ints: ints,
+        floats: floats,
+        bools: bools,
+        strs: strs,
+        factors: factors,
+    }
+}
+
+pub fun col_build_push(b: &mut ColBuild, c: Column, row: Int64) {
+    if (b.kind == "int") {
+        match (c) {
+            Column::Int(v) -> b.ints.push(v[row]),
+            _ -> b.ints.push(Missing),
+        };
+    } else if (b.kind == "float") {
+        match (c) {
+            Column::Float(v) -> b.floats.push(v[row]),
+            Column::Int(v) -> {
+                match (v[row]) {
+                    Missing::Present(x) -> b.floats.push(Missing::Present(x as Float64)),
+                    Missing -> b.floats.push(missing_float()),
+                };
+            },
+            _ -> b.floats.push(missing_float()),
+        };
+    } else if (b.kind == "bool") {
+        match (c) {
+            Column::Bool(v) -> b.bools.push(v[row]),
+            _ -> b.bools.push(Missing),
+        };
+    } else if (b.kind == "string") {
+        match (c) {
+            Column::Str(v) -> b.strs.push(v[row]),
+            _ -> b.strs.push(Missing),
+        };
+    } else {
+        match (c) {
+            Column::Factor(v) -> {
+                val s = v.as_strings();
+                b.factors.push(s[row].clone());
+            },
+            _ -> b.factors.push(""),
+        };
+    }
+}
+
+pub fun col_build_push_missing(b: &mut ColBuild) {
+    if (b.kind == "int") {
+        b.ints.push(Missing);
+    } else if (b.kind == "float") {
+        b.floats.push(missing_float());
+    } else if (b.kind == "bool") {
+        b.bools.push(Missing);
+    } else if (b.kind == "string") {
+        b.strs.push(Missing);
+    } else {
+        b.factors.push("");
+    }
+}
+
+pub fun col_build_finish(b: ColBuild): Column {
+    if (b.kind == "int") {
+        return Column::Int(b.ints);
+    }
+    if (b.kind == "float") {
+        return Column::Float(b.floats);
+    }
+    if (b.kind == "bool") {
+        return Column::Bool(b.bools);
+    }
+    if (b.kind == "string") {
+        return Column::Str(b.strs);
+    }
+    return Column::Factor(factor_from_strings(b.factors));
+}
+
+// ----- Row helpers used by grouping, joins, and windows -----
+pub fun col_is_missing(c: Column, row: Int64): Bool {
+    val mask = col_missing_mask(c);
+    if (row < (0 as Int64) || row >= mask.len()) {
+        return true;
+    }
+    return mask[row];
+}
+
+pub fun col_to_string(c: Column, row: Int64): String {
+    val cells = col_strings(c);
+    if (row < (0 as Int64) || row >= cells.len()) {
+        return "NA";
+    }
+    return cells[row].clone();
+}
+
+fun missing_float_value(): Missing<Float64> {
+    return Missing;
+}
+
+fun missing_int_value(): Missing<Int64> {
+    return Missing;
+}
+
+fun missing_bool_value(): Missing<Bool> {
+    return Missing;
+}
+
+fun missing_str_value(): Missing<String> {
+    return Missing;
+}
+
+pub fun col_float(c: Column, row: Int64): Missing<Float64> {
+    match (c) {
+        Column::Int(v) -> {
+            match (v[row]) {
+                Missing::Present(x) -> Missing::Present(x as Float64),
+                Missing -> missing_float_value(),
+            }
+        },
+        Column::Float(v) -> v[row],
+        _ -> missing_float_value(),
+    }
+}
+
+pub fun col_int(c: Column, row: Int64): Missing<Int64> {
+    match (c) {
+        Column::Int(v) -> v[row],
+        _ -> missing_int_value(),
+    }
+}
+
+pub fun col_bool(c: Column, row: Int64): Missing<Bool> {
+    match (c) {
+        Column::Bool(v) -> v[row],
+        _ -> missing_bool_value(),
+    }
+}
+
+pub fun col_str(c: Column, row: Int64): Missing<String> {
+    match (c) {
+        Column::Str(v) -> v[row],
+        _ -> missing_str_value(),
+    }
+}
+
+fun no_factor(): Option<Factor> {
+    return None;
+}
+
+pub fun col_factor(c: Column): Option<Factor> {
+    match (c) {
+        Column::Factor(v) -> Some(v),
+        _ -> no_factor(),
+    }
+}
+
+pub fun tf_key_token(c: Column, row: Int64): String {
+    val tokens = col_key_tokens(c);
+    if (row < (0 as Int64) || row >= tokens.len()) {
+        return "M";
+    }
+    return tokens[row].clone();
+}
+
+// ----- Stable multi-key ordering (P2/P4) -----
+fun reverse_rows(rows: Vec<Int64>): Vec<Int64> {
+    var out: Vec<Int64> = vec![];
+    var i = rows.len() - (1 as Int64);
+    while (i >= (0 as Int64)) {
+        out.push(rows[i]);
+        i = i - (1 as Int64);
+    }
+    return out;
+}
+
+fun append_rows(a: Vec<Int64>, b: Vec<Int64>): Vec<Int64> {
+    var out = a;
+    var i = 0 as Int64;
+    while (i < b.len()) {
+        out.push(b[i]);
+        i = i + (1 as Int64);
+    }
+    return out;
+}
+
+fun sort_rows_int(rows: Vec<Int64>, v: Vec<Missing<Int64>>, asc: Bool): Vec<Int64> {
+    var present: Vec<Int64> = vec![];
+    var missing: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < rows.len()) {
+        val r = rows[i];
+        match (v[r]) {
+            Missing::Present(x) -> present.push(r),
+            Missing -> missing.push(r),
+        };
+        i = i + (1 as Int64);
+    }
+    var input = present;
+    if (!asc) {
+        input = reverse_rows(input);
+    }
+    var vals: Vec<Int64> = vec![];
+    i = 0 as Int64;
+    while (i < input.len()) {
+        val r = input[i];
+        match (v[r]) {
+            Missing::Present(x) -> vals.push(x),
+            Missing -> vals.push(0 as Int64),
+        };
+        i = i + (1 as Int64);
+    }
+    val ord = vals.order();
+    var sorted: Vec<Int64> = vec![];
+    i = 0 as Int64;
+    while (i < ord.len()) {
+        sorted.push(input[ord[i]]);
+        i = i + (1 as Int64);
+    }
+    if (!asc) {
+        sorted = reverse_rows(sorted);
+    }
+    return append_rows(sorted, missing);
+}
+
+fun sort_rows_float(rows: Vec<Int64>, v: Vec<Missing<Float64>>, asc: Bool): Vec<Int64> {
+    var present: Vec<Int64> = vec![];
+    var missing: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < rows.len()) {
+        val r = rows[i];
+        match (v[r]) {
+            Missing::Present(x) -> {
+                if (x != x) {
+                    missing.push(r);
+                } else {
+                    present.push(r);
+                }
+            },
+            Missing -> missing.push(r),
+        };
+        i = i + (1 as Int64);
+    }
+    var input = present;
+    if (!asc) {
+        input = reverse_rows(input);
+    }
+    var vals: Vec<Float64> = vec![];
+    i = 0 as Int64;
+    while (i < input.len()) {
+        val r = input[i];
+        match (v[r]) {
+            Missing::Present(x) -> vals.push(x),
+            Missing -> vals.push(0.0),
+        };
+        i = i + (1 as Int64);
+    }
+    val ord = vals.order();
+    var sorted: Vec<Int64> = vec![];
+    i = 0 as Int64;
+    while (i < ord.len()) {
+        sorted.push(input[ord[i]]);
+        i = i + (1 as Int64);
+    }
+    if (!asc) {
+        sorted = reverse_rows(sorted);
+    }
+    return append_rows(sorted, missing);
+}
+
+fun sort_rows_bool(rows: Vec<Int64>, v: Vec<Missing<Bool>>, asc: Bool): Vec<Int64> {
+    var present: Vec<Int64> = vec![];
+    var missing: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < rows.len()) {
+        val r = rows[i];
+        match (v[r]) {
+            Missing::Present(x) -> present.push(r),
+            Missing -> missing.push(r),
+        };
+        i = i + (1 as Int64);
+    }
+    var input = present;
+    if (!asc) {
+        input = reverse_rows(input);
+    }
+    var vals: Vec<Bool> = vec![];
+    i = 0 as Int64;
+    while (i < input.len()) {
+        val r = input[i];
+        match (v[r]) {
+            Missing::Present(x) -> vals.push(x),
+            Missing -> vals.push(false),
+        };
+        i = i + (1 as Int64);
+    }
+    val ord = vals.order();
+    var sorted: Vec<Int64> = vec![];
+    i = 0 as Int64;
+    while (i < ord.len()) {
+        sorted.push(input[ord[i]]);
+        i = i + (1 as Int64);
+    }
+    if (!asc) {
+        sorted = reverse_rows(sorted);
+    }
+    return append_rows(sorted, missing);
+}
+
+fun sort_rows_str(rows: Vec<Int64>, v: Vec<Missing<String>>, asc: Bool): Vec<Int64> {
+    var present: Vec<Int64> = vec![];
+    var missing: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < rows.len()) {
+        val r = rows[i];
+        match (v[r]) {
+            Missing::Present(x) -> present.push(r),
+            Missing -> missing.push(r),
+        };
+        i = i + (1 as Int64);
+    }
+    var input = present;
+    if (!asc) {
+        input = reverse_rows(input);
+    }
+    var vals: Vec<String> = vec![];
+    i = 0 as Int64;
+    while (i < input.len()) {
+        val r = input[i];
+        match (v[r]) {
+            Missing::Present(x) -> vals.push(x),
+            Missing -> vals.push(""),
+        };
+        i = i + (1 as Int64);
+    }
+    val ord = vals.order();
+    var sorted: Vec<Int64> = vec![];
+    i = 0 as Int64;
+    while (i < ord.len()) {
+        sorted.push(input[ord[i]]);
+        i = i + (1 as Int64);
+    }
+    if (!asc) {
+        sorted = reverse_rows(sorted);
+    }
+    return append_rows(sorted, missing);
+}
+
+fun sort_rows_factor(rows: Vec<Int64>, f: Factor, asc: Bool): Vec<Int64> {
+    val cd = f.codes();
+    var present: Vec<Int64> = vec![];
+    var missing: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < rows.len()) {
+        val r = rows[i];
+        if (cd[r] == (0 as Int32)) {
+            missing.push(r);
+        } else {
+            present.push(r);
+        }
+        i = i + (1 as Int64);
+    }
+    var input = present;
+    if (!asc) {
+        input = reverse_rows(input);
+    }
+    var vals: Vec<Int32> = vec![];
+    i = 0 as Int64;
+    while (i < input.len()) {
+        val r = input[i];
+        vals.push(cd[r]);
+        i = i + (1 as Int64);
+    }
+    val ord = vals.order();
+    var sorted: Vec<Int64> = vec![];
+    i = 0 as Int64;
+    while (i < ord.len()) {
+        sorted.push(input[ord[i]]);
+        i = i + (1 as Int64);
+    }
+    if (!asc) {
+        sorted = reverse_rows(sorted);
+    }
+    return append_rows(sorted, missing);
+}
+
+fun sort_rows_by_col(rows: Vec<Int64>, c: Column, asc: Bool): Vec<Int64> {
+    match (c) {
+        Column::Int(v) -> sort_rows_int(rows, v, asc),
+        Column::Float(v) -> sort_rows_float(rows, v, asc),
+        Column::Bool(v) -> sort_rows_bool(rows, v, asc),
+        Column::Str(v) -> sort_rows_str(rows, v, asc),
+        Column::Factor(v) -> sort_rows_factor(rows, v, asc),
+    }
+}
+
+pub fun tf_order_rows(f: &TypedFrame, rows: Vec<Int64>, keys: Vec<SortKey>): Result<Vec<Int64>, String> {
+    var out = rows;
+    var k = keys.len() - (1 as Int64);
+    while (k >= (0 as Int64)) {
+        val key = keys[k];
+        val col = require_col(f, key.col.clone())?;
+        out = sort_rows_by_col(out, col, key.asc);
+        k = k - (1 as Int64);
+    }
+    return Ok(out);
+}
+
+pub fun tf_arrange_keys(f: &TypedFrame, keys: Vec<SortKey>): Result<TypedFrame, String> {
+    var rows: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < f.nrows) {
+        rows.push(i);
+        i = i + (1 as Int64);
+    }
+    val ord = tf_order_rows(f, rows, keys)?;
+    return tf_take_rows(f, ord);
+}

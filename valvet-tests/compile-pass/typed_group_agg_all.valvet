@@ -1,0 +1,165 @@
+import std::frame::DynamicFrame;
+import std::schema::check_bool_col;
+import std::schema::check_float_col;
+import std::schema::check_int_col;
+import std::schema::parse_factor_col;
+import std::schema::parse_str_col;
+import std::stats::MissingPolicy;
+import std::stats::mean;
+import std::stats::n_missing;
+import std::stats::sd;
+import std::stats::sum_v;
+import std::stats::var_v;
+import std::typed_frame::Column;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::col_bool;
+import std::typed_frame::col_float;
+import std::typed_frame::col_int;
+import std::typed_frame::col_is_missing;
+import std::typed_frame::col_kind;
+import std::typed_frame::col_len;
+import std::typed_frame::col_str;
+import std::typed_frame::col_strings;
+import std::typed_frame::col_to_string;
+import std::typed_frame::tf_arrange_keys;
+import std::typed_frame::tf_clone;
+import std::typed_frame::tf_col;
+import std::typed_frame::tf_col_at;
+import std::typed_frame::tf_col_index;
+import std::typed_stats::tf_describe;
+import std::typed_frame::tf_drop_na;
+import std::typed_frame::tf_factor_col;
+import std::typed_frame::tf_filter_mask;
+import std::typed_frame::tf_from_dynamic;
+import std::typed_frame::tf_has_col;
+import std::typed_frame::tf_kind;
+import std::typed_frame::tf_kinds;
+import std::typed_frame::tf_names;
+import std::typed_frame::tf_new;
+import std::typed_frame::tf_nrows;
+import std::typed_frame::tf_order_rows;
+import std::typed_frame::tf_schema;
+import std::typed_frame::tf_select;
+import std::typed_frame::tf_set_column;
+import std::typed_frame::tf_take_rows;
+import std::typed_frame::tf_to_dynamic;
+import std::typed_frame::sort_key;
+import std::typed_stats::tf_n_missing;
+import std::grouped::Agg;
+import std::grouped::AggSpec;
+import std::grouped::GroupIndex;
+import std::grouped::GroupedFrame;
+import std::grouped::agg_count;
+import std::grouped::agg_count_non_missing;
+import std::grouped::agg_max;
+import std::grouped::agg_mean;
+import std::grouped::agg_min;
+import std::grouped::agg_n_missing;
+import std::grouped::agg_sd;
+import std::grouped::agg_spec;
+import std::grouped::agg_sum;
+import std::grouped::agg_var;
+import std::grouped::grouped_first_rows;
+import std::grouped::grouped_group_ids;
+import std::grouped::grouped_keys;
+import std::grouped::grouped_n_groups;
+import std::grouped::tf_group_by;
+import std::grouped::tf_group_count;
+import std::grouped::tf_summarise;
+
+fun empty_names(): Vec<String> { return vec![]; }
+fun empty_cols(): Vec<Column> { return vec![]; }
+
+fun unwrap_tf(r: Result<TypedFrame, String>): TypedFrame {
+    match (r) {
+        Ok(t) -> t,
+        Err(e) -> { println(e); TypedFrame { names: empty_names(), cols: empty_cols(), nrows: 0 as Int64 } },
+    }
+}
+
+fun show(t: &TypedFrame) {
+    println(tf_names(t));
+    println(tf_nrows(t));
+    println(tf_kinds(t));
+    var i = 0 as Int64;
+    while (i < tf_names(t).len()) {
+        val c = tf_col_at(t, i);
+        match (c) {
+            Some(col) -> println(col_strings(col)),
+            None -> println("missing"),
+        };
+        i = i + (1 as Int64);
+    }
+}
+
+fun show_opt_f(o: Option<Float64>) {
+    match (o) { Some(v) -> println(v), None -> println("NA") };
+}
+
+fun show_opt_i(o: Option<Int64>) {
+    match (o) { Some(v) -> println(v), None -> println("NA") };
+}
+
+fun show_err(r: Result<TypedFrame, String>) {
+    match (r) { Ok(t) -> show(&t), Err(e) -> println(e) };
+}
+
+fun base_frame(): TypedFrame {
+    val ints: Vec<Missing<Int64>> = vec![Missing::Present(1 as Int64), Missing, Missing::Present(3 as Int64), Missing::Present(4 as Int64)];
+    val floats: Vec<Missing<Float64>> = vec![Missing::Present(1.5), Missing, Missing::Present(2.5), Missing::Present(4.0)];
+    val bools: Vec<Missing<Bool>> = vec![Missing::Present(true), Missing, Missing::Present(false), Missing::Present(true)];
+    val strs: Vec<Missing<String>> = vec![Missing::Present("a".clone()), Missing, Missing::Present("".clone()), Missing::Present("c".clone())];
+    val fac = parse_factor_col(vec!["a".clone(), "b".clone(), "a".clone(), "".clone()]);
+    val cols: Vec<Column> = vec![Column::Int(ints), Column::Float(floats), Column::Bool(bools), Column::Str(strs), Column::Factor(fac)];
+    val names: Vec<String> = vec!["i".clone(), "f".clone(), "b".clone(), "s".clone(), "g".clone()];
+    return unwrap_tf(tf_new(names, cols, 4 as Int64));
+}
+
+fun group_frame(): TypedFrame {
+    val k1: Vec<Missing<String>> = vec![Missing::Present("b".clone()), Missing::Present("a".clone()), Missing::Present("b".clone()), Missing::Present("a".clone()), Missing, Missing::Present("b".clone())];
+    val k2: Vec<Missing<Int64>> = vec![Missing::Present(1 as Int64), Missing::Present(1 as Int64), Missing::Present(2 as Int64), Missing::Present(1 as Int64), Missing::Present(1 as Int64), Missing];
+    val x: Vec<Missing<Int64>> = vec![Missing::Present(10 as Int64), Missing::Present(20 as Int64), Missing::Present(30 as Int64), Missing::Present(40 as Int64), Missing::Present(50 as Int64), Missing::Present(60 as Int64)];
+    val y: Vec<Missing<Float64>> = vec![Missing::Present(1.5), Missing::Present(2.5), Missing::Present(3.5), Missing, Missing::Present(5.5), Missing::Present(6.5)];
+    val s: Vec<Missing<String>> = vec![Missing::Present("u".clone()), Missing::Present("v".clone()), Missing::Present("w".clone()), Missing::Present("x".clone()), Missing::Present("y".clone()), Missing::Present("z".clone())];
+    val b: Vec<Missing<Bool>> = vec![Missing::Present(true), Missing::Present(false), Missing::Present(true), Missing::Present(false), Missing::Present(true), Missing::Present(false)];
+    val cols: Vec<Column> = vec![Column::Str(k1), Column::Int(k2), Column::Int(x), Column::Float(y), Column::Str(s), Column::Bool(b)];
+    val names: Vec<String> = vec!["k1".clone(), "k2".clone(), "x".clone(), "y".clone(), "s".clone(), "b".clone()];
+    return unwrap_tf(tf_new(names, cols, 6 as Int64));
+}
+
+fun empty_grouped(): GroupedFrame {
+    val ids: Vec<Int64> = vec![];
+    val first: Vec<Int64> = vec![];
+    val keys: Vec<String> = vec![];
+    return GroupedFrame { frame: group_frame(), keys: keys, index: GroupIndex { ids: ids, first_rows: first, n_groups: 0 as Int64 } };
+}
+
+fun unwrap_group(r: Result<GroupedFrame, String>): GroupedFrame {
+    match (r) { Ok(g) -> g, Err(e) -> { println(e); empty_grouped() } }
+}
+
+fun main() {
+    val specs: Vec<AggSpec> = vec![
+        agg_spec("n".clone(), agg_count()),
+        agg_spec("nx".clone(), agg_count_non_missing("x".clone())),
+        agg_spec("mx".clone(), agg_n_missing("x".clone())),
+        agg_spec("sx".clone(), agg_sum("x".clone())),
+        agg_spec("ax".clone(), agg_mean("x".clone())),
+        agg_spec("inx".clone(), agg_min("x".clone())),
+        agg_spec("axx".clone(), agg_max("x".clone())),
+        agg_spec("vx".clone(), agg_var("x".clone())),
+        agg_spec("dx".clone(), agg_sd("x".clone())),
+        agg_spec("sy".clone(), agg_sum("y".clone())),
+        agg_spec("ay".clone(), agg_mean("y".clone())),
+        agg_spec("iny".clone(), agg_min("y".clone())),
+        agg_spec("axy".clone(), agg_max("y".clone())),
+        agg_spec("vy".clone(), agg_var("y".clone())),
+        agg_spec("dy".clone(), agg_sd("y".clone())),
+        agg_spec("ins".clone(), agg_min("s".clone())),
+        agg_spec("axs".clone(), agg_max("s".clone())),
+        agg_spec("nb".clone(), agg_count_non_missing("b".clone())),
+    ];
+    val grp = unwrap_group(tf_group_by(group_frame(), vec!["k1".clone()]));
+    val out = unwrap_tf(tf_summarise(grp, specs));
+    show(&out);
+}

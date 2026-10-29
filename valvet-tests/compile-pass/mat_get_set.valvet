@@ -1,0 +1,22 @@
+struct Boxed { m: Mat }
+
+fun main() {
+    var m = match (mat_from_rows(vec![vec![1.0, 2.0], vec![3.0, 4.0]])) {
+        Ok(v) -> v,
+        Err(_) -> mat_zeros(0, 0),
+    }
+    // Multi-index reads are row-major.
+    println(m[0, 0])
+    println(m[1, 1])
+    // Multi-index writes hit the same slot as the read.
+    m[0, 1] = 20.0
+    m[1, 0] = 30.0
+    println(m)
+    m[1, 1] = m[0, 1] + m[1, 0]
+    println(m[1, 1])
+    println(m)
+    // Field bases resolve through the same place-type path.
+    var b = Boxed { m: m.clone() }
+    b.m[0, 0] = 7.0
+    println(b.m[0, 0])
+}

@@ -1,0 +1,790 @@
+Source: https://kenneth-cho-infosec.github.io/Valvet/docs.html
+Fetched: 2026-10-20
+Page title: Valvet Docs
+
+## Documentation
+
+[Start](#start) · [Modes](#modes) · [Lexical](#lex) · [Types](#types) · [Variables](#vars) · [Operators](#ops) · [Control flow](#flow) · [Structs and enums](#structs) · [Matching](#match) · [Vectors](#vec) · [Ownership](#own) · [References](#refs) · [Memory](#memory) · [Modules](#modules) · [Units](#units) · [Frames](#frames) · [Autodiff](#autodiff) · [Parallel](#parallel) · [Stdlib](#stdlib) · [Pipeline](#pipeline) · [Testing](#testing) · [CLI](#cli) · [Errors](#errors) · [Scope](#scope)
+
+### Getting started
+
+Install stable Rust and a C compiler, clone the repo, and build:
+
+Bash:
+```bash
+cargo build --release
+./target/release/valvet run hello.valvet
+```
+
+Two toolchains cooperate here, and each has one job. Rust builds the `valvet` compiler itself: parsing, type checking, borrow checking, and C lowering all run as safe Rust code. The C compiler handles only the last mile, turning generated C11 into a native binary. A missing C compiler therefore fails only `build` and `run`; `check` and the whole test suite frontend keep working. For day-to-day work, debug builds compile faster while release builds produce the binaries you benchmark.
+
+A Valvet program is a script by default: top-level statements run from top to bottom with no wrapper. Functions and types still live at the top level beside them:
+
+Input · Valvet:
+```valvet
+println("hello, valvet")
+```
+
+Output:
+```text
+hello, valvet
+```
+
+### Script and explicit modes
+
+The entry file runs in `imp` mode unless told otherwise: statements at the top level are the program, and helper functions sit beside them. Writing `mode imp;` as the first line states the default explicitly and changes nothing. Writing `mode exp;` instead opts into the strict classic rule: the entry must define `fun main()`, and top-level statements are rejected with E0604. Mixing both forms in one entry is also E0604. Imported files always hold items only, never statements. The mode changes entry rules alone: types, ownership, and generated code are identical either way, so there is no runtime cost to either choice. `valvet new` scaffolds explicit-mode projects.
+
+Input · Valvet:
+```valvet
+mode exp;
+fun main() {
+    println("hello, valvet")
+}
+```
+
+Output:
+```text
+hello, valvet
+```
+
+Top-level statements under `mode exp` stop with a diagnostic, not a half-built binary:
+
+Input · Valvet:
+```valvet
+mode exp;
+println("nope");
+```
+
+Error:
+```text
+error[E0604]: top-level statements need imp mode (this file declares `mode exp`) --> hello.valvet:2:1
+```
+
+A bare `return n;` at the top level sets the process exit status, and `?` propagates through a synthesized `Result` entry whose message prints on failure.
+
+### Lexical structure
+
+Sources are UTF-8 with LF or CRLF endings. Identifiers are ASCII and case sensitive; prefix with `r#` to use a keyword as a name. Integer literals accept decimal, hex (`0x2A`), octal, and binary (`0b101010`), plus `_` separators. Floats always carry a decimal point or exponent. Strings support escapes such as `\"`, `\\`, `\n`, and `\t`.
+
+Comments come in two forms: `//` to end of line, and nestable block comments `/* ... */`. Nesting means an inner `/*` must be closed before the outer one ends, which keeps large commented-out regions safe to delimit. An unterminated block comment is a compile error instead of silently swallowing the rest of the file. There are no doc-comment tokens: `///` is an ordinary line comment.
+
+Statements end at newlines, and a semicolon separates two statements on one line. Inside parentheses, brackets, and braces, a newline never ends a statement, so long calls and literals break freely across lines. A trailing operator also continues the statement onto the next line. The one hard rule: a bare `;` turns a trailing expression into a statement and discards its value, which is exactly the tool the FizzBuzz example uses to keep prints in statement position inside branches.
+
+Numbers are lexed generously and typed strictly. Underscores may separate any digits (`1_000_000`), and an out-of-range integer literal is E0010 rather than a silent wrap. Adjacent suffixes such as `42i64` lex successfully but do not change typing: the type always follows the value, as the Types section explains. Multiline strings use triple quotes and keep newlines verbatim, which suits embedded text blocks. Character literals are lexed but explicitly unsupported (E0800): there is no `Char` type yet, so the compiler tells you so instead of accepting a value it cannot type.
+
+Input · Valvet:
+```valvet
+val t = """line one
+line two"""
+println(t)
+println(42i64) // suffix accepted, type follows value
+println(70000)
+```
+
+Output:
+```text
+line one
+line two
+42
+70000
+```
+
+Input · Valvet:
+```valvet
+// line comment runs to end of line
+/* block comments nest /* like this */ still comment */
+println(0x2A)
+println(1_000)
+println(0b101010)
+```
+
+Output:
+```text
+42
+1000
+42
+```
+
+### Values and types
+
+| Type | Literals | Notes |
+| --- | --- | --- |
+| `Int32`, `Int64` | `42`, `70000` | Unannotated integers default to `Int32` |
+| `Float64` | `2.5`, `1.0` | Always written with a decimal point |
+| `Bool` | `true`, `false` | Conditions must be `Bool`, no truthiness |
+| `String` | `"hi"` | Owned; supports `+` and `==` |
+| `Option<T>`, `Result<T, E>` | `Some(7)`, `Ok(1)` | Bare constructors need annotation context |
+| `Vec<T>` | `vec![1, 2, 3]` | Homogeneous; empty needs annotation |
+
+Integers come in two widths. `Int32` spans -2147483648 to 2147483647 and `Int64` covers the 64-bit range. Unannotated literals default by value: anything that fits in `Int32` is `Int32`, anything larger is `Int64`. This keeps small programs on 32-bit arithmetic while letting big constants just work. `Float64` is an IEEE double, always written with a decimal point or exponent so it never parses as an integer. `Bool` has exactly two values and no truthiness: conditions must be `Bool`, full stop.
+
+`String` is an owned, growable byte string with content equality (`==` compares contents, never identity) and concatenation with `+`. It moves rather than copies, like vectors. There is no character type and no string indexing or slicing. `()`, the unit value, is the type of blocks with no trailing expression and of statements used for effect; a `main` with no return annotation returns it.
+
+`Option<T>` and `Result<T, E>` are builtin generic enums that live in every program without imports. Their constructors (`Some`, `None`, `Ok`, `Err`) can be used bare whenever the expected type is known from context, as in `val o: Option<Int32> = Some(7)`. Without that context the compiler asks for an annotation instead of guessing. They are also the only generic types alongside `Vec<T>`: user-defined generics do not exist yet, which keeps type checking total and error messages short.
+
+Convert between numeric types with `as`, as in `total / (v.len() as Float64)`. Every conversion is infallible and never traps. Integer to integer wraps by truncating high bits. Float to integer truncates toward zero and saturates: NaN becomes 0 and out-of-range values clamp to the target minimum or maximum. Integer to float rounds to nearest, which can lose precision on very large values. There are no implicit conversions: mixing types without `as` is E0201.
+
+Input · Valvet:
+```valvet
+println(7.9 as Int32) // truncate toward zero
+println((0.0 / 0.0) as Int32) // NaN saturates to 0
+println(42 as Float64 + 0.5) // int to float rounds
+println(100000 as Int64) // widening is exact
+```
+
+Output:
+```text
+7
+0
+42.5
+100000
+```
+
+### Variables
+
+`val` bindings never change; `var` bindings do. Most bindings need no annotation: the compiler infers the type from the initializer, and parameters plus return types (which are always annotated) propagate inward. Rebinding the same name in the same scope is rejected (E0401); shadowing is not a feature to lean on. To change a value, declare it `var` once and assign: each assignment frees the old value before installing the new one, so there is never a leak window and never a double free.
+
+Mutation has a second gate besides `var`: the place being written must be exclusively owned. Assigning through a shared reference or into a `val` struct field is E0205, with a hint pointing at `var` and `&mut`. Compound assignment (`+= -= *= /= %=`) works on numeric bindings and desugars to read, operate, and write back through the same exclusive path. Note one sharp edge: compound assignment on `String` is not supported by the backend, so write `s = s + "cd"` in full.
+
+Input · Valvet:
+```valvet
+var y = 1
+y *= 6 // 6
+y -= 2 // 4
+y /= 2 // 2
+y %= 2 // 0
+println(y)
+var s = "ab"
+s = s + "cd" // full form for strings
+println(s)
+```
+
+Output:
+```text
+0
+abcd
+```
+
+Input · Valvet:
+```valvet
+val name = "valvet"
+var count = 0
+count += 41
+println(name)
+println(count)
+println(count as Float64 / 2.0)
+```
+
+Output:
+```text
+valvet
+41
+20.5
+```
+
+### Functions
+
+Parameters and returns are always annotated. A trailing expression is the return value; `return` exits early.
+
+Input · Valvet:
+```valvet
+fun fib(n: Int32): Int32 {
+    if (n < 2) { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+println(fib(10))
+```
+
+Output:
+```text
+55
+```
+
+### Operators and precedence
+
+Assignment sits at the very bottom of the table and groups right, so `a = b = 1` parses as written. Everything else groups left except comparisons, which never chain: `a < b < c` is rejected rather than parsed as a confusing surprise. Mixed-type arithmetic does not exist: both sides must already share one numeric type, and the compiler names the offending side with E0201 instead of inserting a conversion. Ranges deserve special mention: `0..n` excludes its end while `1..=5` includes it, and both are values you can hand directly to `for`.
+
+From tightest to loosest: calls, field access, and indexing; unary minus, logical not, dereference, and borrowing; `as` casts; `* / %`; `+ -` (with `+` also concatenating strings); ranges `..` and `..=`; shifts; bitwise `& ^ |`; comparisons, which never chain (`a < b < c` is rejected); short-circuit `&&` then `||`; assignment last. Integer division truncates toward zero and panics on division by zero; float division follows IEEE, so `0.0 / 0.0` is NaN rather than an error.
+
+Input · Valvet:
+```valvet
+println(2 + 3 * 4) // * binds tighter: 14
+println((2 + 3) * 4) // parens override: 20
+println(10 % 3) // remainder: 1
+println(true && false || true) // && first: true
+println(0 - 3) // unary minus: -3
+```
+
+Output:
+```text
+14
+20
+1
+true
+-3
+```
+
+### Control flow
+
+`if` is an expression when both branches yield values, and both branches must agree on one type. An `if` without `else` used as a value is E0201: there is no unit to fall back on silently. Conditions are always `Bool`; assignment inside a condition is rejected rather than warned about. `for` iterates ranges and vectors alike. Iterating a vector borrows it, so the vector stays fully usable after the loop, and the loop variable takes each element in turn. `while` repeats on a `Bool` condition. `loop` repeats until `break`, which can carry a value out and turn the whole loop into an expression. A `break` or `continue` outside any loop is E0005. `return` exits the function immediately, running every pending free on its way out.
+
+Input · Valvet:
+```valvet
+val v = vec![10, 20, 30]
+var total = 0
+for (x in v) { // borrows v; v stays usable
+    total += x
+}
+println(total)
+println(v.len()) // still here: 3
+```
+
+Output:
+```text
+60
+3
+```
+
+Input · Valvet:
+```valvet
+var total = 0
+for (i in 1..=5) {
+    total += i
+}
+println(total)
+var i = 3
+while (i > 0) {
+    println(i)
+    i -= 1
+}
+var k = 0
+val v = loop {
+    k += 1
+    if (k >= 5) {
+        break k * 10
+    }
+}
+println(v)
+```
+
+Output:
+```text
+15
+3
+2
+1
+50
+```
+
+Style note: a branch that ends in a `println` call needs a trailing `;` so the call stays a statement. See the FizzBuzz [example](examples.html).
+
+### Structs and enums
+
+Named-field, tuple, and unit structs; enums with payload variants. Construction names every field or payload in order, and field access uses the same dot syntax for reads and writes. Writing a field needs a `var` root: the struct value itself must be mutable and exclusively owned, otherwise the assignment is E0205. Structs, enums, and functions share one qualified namespace per module, so a struct and a function may not claim the same name in one module. Recursive types (a struct containing itself by value) are rejected, since the C layout would be infinitely large. There are no user-written methods or implementation blocks: the only methods that exist are the builtin `Vec`, `String`, and `Rng` kernels, which keeps method resolution trivial and total.
+
+Input · Valvet:
+```valvet
+struct Cell { v: Int32 }
+
+var c = Cell { v: 1 } // var root: fields writable
+c.v = 41 // exclusive write through owned value
+println(c.v + 1)
+```
+
+Output:
+```text
+42
+```
+
+Input · Valvet:
+```valvet
+struct Point { x: Float64, y: Float64 }
+
+enum Shape { Circle(Float64), Rect(Float64, Float64), Point }
+
+fun area(s: Shape): Float64 {
+    match (s) {
+        Shape::Circle(r) -> 3.141592653589793 * r * r,
+        Shape::Rect(w, h) -> w * h,
+        Shape::Point -> 0.0,
+    }
+}
+
+val p = Point { x: 1.5, y: 2.5 }
+println(p.x + p.y)
+println(area(Shape::Circle(1.0)))
+```
+
+Output:
+```text
+4
+3.1415926535897931
+```
+
+Structs also come in tuple and unit forms. A tuple struct wraps values without field names and reads them back with numeric access (`.0`, `.1`). Fields are private to their module unless marked `pub`.
+
+Input · Valvet:
+```valvet
+struct Meters(Float64);
+
+val m = Meters(1.5) // wrap
+println(m.0) // read field 0
+```
+
+Output:
+```text
+1.5
+```
+
+`Option` and `Result` participate in the same `match`, and `?` propagates errors out of functions that return them.
+
+Input · Valvet:
+```valvet
+fun half(n: Int32): Result<Int32, String> {
+    if (n == 0) {
+        return Err("zero");
+    }
+    return Ok(n / 2);
+}
+
+val h = half(84)?;
+println(h);
+```
+
+Output:
+```text
+42
+```
+
+### Pattern matching
+
+Arms are checked for exhaustiveness: miss a variant and the program does not compile. Patterns include literals, enum variants with bindings, struct patterns that bind by field name (or rename with `x: 0`), and the wildcard `_`. A guard (`if` after the pattern) refines an arm further, and arms are tried top to bottom. For the common single-variant test, `if let` skips the full `match`.
+
+The checker distinguishes value matches from statement matches. A `match` used as a value must cover every case and every arm must yield the same type; a statement match only requires unit arms. Coverage is precise rather than textual: `Bool` needs both `true` and `false`, `Option` needs `Some(_)` plus `None`, and an enum needs every variant at the right arity. Guards never count toward coverage, so a guarded arm plus a wildcard still needs the wildcard. A constructor with a literal inside, like `Some(0)`, covers only that literal, not the whole variant. When coverage fails, the diagnostic lists what is missing and suggests adding a `_` arm.
+
+Input · Valvet:
+```valvet
+fun name(n: Int32): String {
+    match (n) {
+        0 -> "zero", // literal pattern
+        1 -> "one",
+        _ -> "many", // wildcard covers the rest
+    }
+}
+
+println(name(0))
+println(name(7))
+println(match (true) { true -> 1, false -> 0, }) // Bool: both sides present
+```
+
+Output:
+```text
+zero
+many
+1
+```
+
+Input · Valvet:
+```valvet
+struct Point { x: Int32, y: Int32 }
+
+fun quad(p: Point): String {
+    match (p) {
+        Point { x, y } if x > 0 && y > 0 -> "q1", // guard refines the arm
+        _ -> "other", // wildcard catches the rest
+    }
+}
+
+println(quad(Point { x: 3, y: 4 }))
+println(quad(Point { x: 0 - 1, y: 5 }))
+val o: Option<Int32> = Some(7)
+if let Some(v) = o { // single-variant shortcut
+    println(v)
+} else {
+    println(0)
+}
+```
+
+Output:
+```text
+q1
+other
+7
+```
+
+### Vectors
+
+`Vec<T>` owns a heap buffer, so it moves rather than copies; `.clone()` duplicates explicitly. Subscript reads (`v[i]`) copy the element out and trap out of bounds, while `.get(i)` yields an `Option` copy instead: `Some` in range, `None` outside. Index stores (`v[i] = x`) bounds-check the same way. An empty literal needs an annotation (`val v: Vec<Int32> = vec![]`) since there is nothing to infer the element type from. `vec![...]` is the single builtin macro in the language; general macros do not exist yet.
+
+Method receivers always borrow: calling a kernel never consumes the vector, whatever the method returns. `push` is the one method that moves its argument into the buffer, transferring the element. `get` clones the element on the way out, so the copy you hold is fully independent of the buffer. `pop` moves the last element out as an `Option`, yielding `None` when empty. Arithmetic kernels (`add`, `mul`, `dot`) check shapes at runtime and report mismatch as `Result` carrying the expected and found lengths, so the caller learns both numbers. `dot` exists only for `Float64` vectors; `add_scalar` broadcasts one constant across numeric vectors.
+
+Input · Valvet:
+```valvet
+val a = vec![1.0, 2.0, 3.0]
+val b = vec![4.0, 5.0, 6.0]
+val d = match (a.dot(b)) { Ok(v) -> v, Err(e) -> -1.0, }
+println(d)
+println(a.len())
+println(b.get(0))
+```
+
+Output:
+```text
+32
+3
+Some(4)
+```
+
+| Method | Effect |
+| --- | --- |
+| `len` | Element count as `Int64` |
+| `push`, `pop`, `get` | Grow, shrink (as `Option`), safe read |
+| `clone` | Deep duplicate |
+| `cast`, `add_scalar` | Element-wise convert, add constant |
+| `add`, `mul`, `dot` | Vector arithmetic; `dot` reports shape errors as `Result` |
+
+### Ownership
+
+Scalars (`Bool`, integers, `Float64`) copy on assignment; `String` does not. Shared references (`&T`) copy too, while exclusive references (`&mut T`) move. A struct or enum whose every field is `Copy` is itself `Copy`, so small value types stay cheap without annotation. Everything else has exactly one owner: assigning a `Vec`, `String`, struct, or enum moves it, and the old binding is gone. Moves happen at more places than assignment: function arguments move (except into `print` and `println`, which borrow), return values and tail expressions move out, and `push` moves its element into the buffer. String concatenation and comparison, by contrast, only borrow: `+` and `==` never take ownership of either side. Reading a moved value is E0301 at compile time, as is moving a field and then using the whole value. Moves also refuse to run through live borrows: moving a value while it is borrowed is E0301 with the loan named. Branch merging stays conservative, so a value moved on any path counts as moved after the join. Sharing is explicit: `.clone()` deep-duplicates, and there is no silent aliasing anywhere in the language. This is the core design bet borrowed from systems languages: memory safety by construction, with no collector and no reference counting in safe code.
+
+Input · Valvet:
+```valvet
+val a = vec![1, 2, 3]
+val b = a // move: a is gone here
+println(b.len())
+val c = b.clone() // explicit deep duplicate
+println(c.len())
+```
+
+Output:
+```text
+3
+3
+```
+
+### References
+
+Borrow with `&` (shared) or `&mut` (exclusive, needs a `var` root). A borrow ends at its last use, so the owner is usable again right after. Dereference with `*`.
+
+Input · Valvet:
+```valvet
+var y = 20
+val m = &mut y
+*m = *m + 5
+println(y)
+```
+
+Output:
+```text
+25
+```
+
+Borrowing is non-lexical: a borrow ends at its last use, so the owner becomes usable again on the very next line. Shared borrows (`&`) allow many readers; a mutable borrow (`&mut`) is exclusive and needs a `var` root. Borrows are field-precise: borrowing one field does not lock the others.
+
+Input · Valvet:
+```valvet
+var x = 1
+val r = &x // shared borrow starts
+println(*r) // last use: borrow ends here
+x = 2 // owner usable again
+println(x)
+```
+
+Output:
+```text
+1
+2
+```
+
+Lifetimes elide in the common single-input case; ambiguous signatures take explicit `&'a T` annotations that tie each output reference to its input. Returning a reference to a local is E0303, as is borrowing a temporary past its statement: the compiler proves no dangling reference escapes, and the diagnostic names the offending lifetime. The exact elision rule: when the output contains an elided borrow, exactly one borrow across the inputs may be elided or named, and the output ties to it. Zero input borrows, or two or more candidate borrows, demand explicit names on the output. Every declared lifetime must appear in the inputs, and references may only appear at the top level of a signature: nested references and references inside generic arguments are rejected. Taking `&mut` of an immutable binding is E0205, which points back at declaring a `var` root.
+
+Input · Valvet:
+```valvet
+fun first(a: &'a Int32, b: &'b Int32): &'a Int32 {
+    a // tied to the first input by 'a
+}
+
+var x = 1
+var y = 2
+println(*first(&x, &y))
+```
+
+Output:
+```text
+1
+```
+
+### Memory model
+
+There is no garbage collector. Scalars copy; everything else has exactly one owner and is freed deterministically when its scope exits, on every path including early `return`. Reassigning a `var` frees the old value first, so there is no leak window. Moves out of live borrows, uses of moved values, and dangling returns are compile errors long before any of this machinery matters. Locals free in reverse construction order, temporaries free at the end of their statement, and loop exits are covered too: `break` and `continue` run the frees for everything they leave behind. A moved-from slot is poisoned to null at the C level, so a defect would crash loudly instead of freeing twice; the generated code is verified ASan/UBSan-clean. The price of the model is explicitness: cloning, bounds checks, and error paths all appear in the source, which is what makes performance predictable. Programs that need shared ownership must say so with explicit types; the language never invents aliasing behind your back.
+
+### Modules
+
+The project root is the entry file's directory. Each non-entry file declares its module with dots (`module math;`), while every path and import uses `::`. A dotted import is its own error (E0602) with an autofix suggestion, so the two separators are never confused: dots declare, colons travel. The entry file needs no module declaration, and its entry point is either `fun main()` or top-level statements in imp mode; with neither, the compiler stops with E0603, and with both it stops with E0604.
+
+Structs, enums, and functions share one qualified namespace per module, keyed as `module::name`, so cross-kind collisions are impossible to miss. Everything is private by default and cross-module access needs `pub` on the item itself; there is no field-level visibility, only item-level. Touching a private item is E0401, as is redefining an imported name locally or importing a name that does not exist. Imports rename with `as` and group with braces (`import shapes::{Point as Pt, origin};`). Cycles are rejected (E0601) with the load stack shown; diamonds, where two modules import one shared module, load once and are fine. A missing file is E0701. Units are parsed separately so errors attribute per file, then checked jointly with one environment per module.
+
+Input · Valvet:
+```valvet
+// main.valvet
+import math::double as db; // rename on import
+println(db(20))
+```
+
+Output:
+```text
+40
+```
+
+Input · Valvet:
+```valvet
+
+// math.valvet
+module math;
+
+pub fun double(n: Int32): Int32 {
+    n * 2
+}
+```
+
+Input · Valvet:
+```valvet
+// main.valvet
+import math::double;
+println(double(21))
+```
+
+Output:
+```text
+42
+```
+
+Input · Valvet:
+```valvet
+
+// math.valvet
+module math;
+
+pub fun double(n: Int32): Int32 {
+    n * 2
+}
+```
+
+### Units of measure
+
+Annotate a numeric binding, parameter, return, or cast with `@unit` and the dimension becomes part of the type. Same dimensions unify; compatible scales convert silently with the left side winning; dimensionless literals coerce. Multiplying and dividing composes dimensions, and mismatches are E0201 at compile time instead of wrong numbers at runtime. Struct fields and vector element types stay dimensionless; `expr as @unit` asserts and converts explicitly.
+
+Input · Valvet:
+```valvet
+fun speed(d: Float64 @m, t: Float64 @s): Float64 @m/s {
+    d / t
+}
+
+println(speed(100.0, 9.58))
+val v: Float64 @km/h = 72.0
+val w: Float64 @m/s = v // auto-scales: 20
+println(w)
+println(w * 10.0) // (m/s) times seconds: 200 m
+```
+
+Output:
+```text
+10.438413361169102
+20
+200
+```
+
+### Frames and audited joins
+
+The standard library turns CSV tables into data frames with borrowed views, then groups and joins them. Missing cells stay explicit (`NA` is skipped by sums, never silently zero), and joins never silently drop rows: every join returns the frame plus an audit of matched, left-only, and right-only counts, printable with `audit_summary`. A missing key column is `Err`, not an empty frame.
+
+Input · Valvet:
+```valvet
+import std::csv::CsvTable;
+import std::frame::frame_from_table;
+import std::frame::frame_col;
+import std::frame::frame_group_count;
+import std::frame::frame_group_sum;
+
+val h = vec!["region", "sales"];
+val r0 = vec!["east", "10"];
+val r1 = vec!["west", "20"];
+val r2 = vec!["east", "NA"];
+val r3 = vec!["west", "40"];
+val t = CsvTable { header: h, rows: vec![r0, r1, r2, r3] };
+val f = frame_from_table(t);
+val g = frame_group_count(&f, "region");
+val e: Vec<String> = vec![];
+println(match (frame_col(&g, "region")) { Some(c) -> c, None -> e, });
+println(match (frame_col(&g, "count")) { Some(c) -> c, None -> e, });
+val gs = frame_group_sum(&f, "region", "sales");
+println(match (frame_col(&gs, "sum")) { Some(c) -> c, None -> e, });
+```
+
+Output:
+```text
+[east, west]
+[2, 2]
+[10, 60]
+```
+
+### Forward differentiation
+
+Write the loss once over dual numbers, seed each dimension, and read the derivative back out. The `Dual` type carries value plus tangent through ordinary arithmetic, so gradients come from the same code that computes the objective, with no separate backward pass to keep in sync.
+
+Input · Valvet:
+```valvet
+import std::autodiff::Dual;
+import std::autodiff::dual_mul;
+import std::autodiff::seed;
+
+fun sq(p: Vec<Dual>): Dual {
+    dual_mul(p[0], p[0])
+}
+
+val d = sq(seed(vec![3.0], 0 as Int64)).d;
+println(d) // d(x^2)/dx at 3
+```
+
+Output:
+```text
+6
+```
+
+### Deterministic parallelism
+
+`par_sum` adds a `Vec<Float64>` on a thread pool with fixed-size blocks and ordered combining, so every thread count agrees bit for bit. There is no runtime to configure and no nondeterminism to average away: one thread or eight, the sum in this example is 10 either way.
+
+Input · Valvet:
+```valvet
+val v = vec![1.0, 2.0, 3.0, 4.0];
+println(par_sum(v.clone(), 1 as Int64));
+println(par_sum(v.clone(), 4 as Int64));
+```
+
+Output:
+```text
+10
+10
+```
+
+### Standard library and REPL
+
+The library ships as Valvet sources under `stdlib/` with explicit imports and no prelude. Set `VALVET_STDLIB` to override the search path. For exploration, `valvet repl` keeps definitions across lines: type `println(6 * 7);` and it answers `42`.
+
+| Module | Contents |
+| --- | --- |
+| `std::math` | sqrt, exp, log, pow, trigonometry |
+| `std::str` | Split, trim, join, case, interpolation helpers |
+| `std::re` | Thompson-NFA regular expressions |
+| `std::csv` | RFC-style CSV plus flat JSON |
+| `std::frame` | Selection, filtering, grouping, audited joins, window verbs (Lag/Lead/RowNum/Cumsum/Rank), cut/qcut, crosstab, pivots |
+| `std::schema` | Missing-aware typed column parsing |
+| `std::validate` | Type, range, set, uniqueness, and no-missing contracts with reports |
+| `std::sql` | SELECT/WHERE/GROUP BY/ORDER BY/LIMIT over frames |
+| `std::stats` | Missing-aware means and sums |
+| `std::dist` | Normal, exponential, uniform, binomial, Poisson, hypergeometric, negative binomial, lognormal, Weibull, logistic, Cauchy, Gumbel, exact gamma/Dirichlet, multivariate normal |
+| `std::infer` | t, chi-square, F, correlation, Mann-Whitney, Fisher exact, one-way ANOVA |
+| `std::model` | Formulas with treatment contrasts, `lm`, binomial `glm`, weighted fits, ANOVA, summaries, Cook's distance, VIF, Durbin-Watson, Breusch-Pagan |
+| `std::select` | Train splits, k-fold ids, AIC/BIC/AICc, jackknife, permutation tests |
+| `std::causal` | Diff-in-diff, Wald 2SLS, propensity matching, HC0 robust standard errors |
+| `std::meta` | Cohen's d, eta-squared, odds ratios, fixed/random-effects meta-analysis, power approximations, Holm/BH adjustments |
+| `std::features` | Standardization, polynomial expansion, target encoding, mean fill, missing indicators, date parts |
+| `std::synth` | Typed random frames for testing |
+| `std::report` | LaTeX and HTML model tables |
+| `std::date` | Civil-date arithmetic |
+| `std::time` | Timestamps and durations |
+| `std::complex` | Complex numbers over borrows |
+| `std::factor` | Level and code helpers |
+| `std::plot` | Static SVG: points, lines, bars, histograms, pairs, ECDF, correlograms |
+| `std::units` | Known units for `@unit` checking |
+| `std::provenance` | Source hashes plus transform logs |
+| `std::autodiff` | Dual-number forward differentiation with `seed` |
+| `std::sys` | Run, capture, environment, working directory (imp scripts only) |
+
+## Build pipeline
+
+One Valvet program becomes one C translation unit. The frontend (lex, parse, type check, borrow check) runs first; only checked code lowers to readable C11 with deterministic frees, which a plain C compiler then links into a dependency-free binary. There is no separate compilation and no runtime library to deploy: the prelude (strings, vectors, printing, numeric helpers) is emitted into the same file. `check` stops before linking, so it needs only Rust. `build` and `run` need a C compiler, found in order as `VALVET_CC`, then a user-local install, then `gcc` or `cc` on PATH. Compilation uses `-std=c11 -O2 -fwrapv -pthread` with no other hidden flags. Generated artifacts land in `target/valvet/` next to the project, never inside the source tree.
+
+Inside the translation unit, layout is deliberate. Algebraic types are ordered topologically so every definition precedes its uses, then forward declarations cover every function except `main`, which fixes forward calls in any order. Drop, clone, vector-kernel, and print helpers are emitted only for the type instantiations the program actually uses, keeping binaries lean. Names are sanitized into an unambiguous C namespace: entry items keep plain names while cross-module items become `v_module___name`, so no Valvet program can collide with C keywords or with itself. Because the C is readable, a miscompilation can be inspected directly: the generated file sits next to the binary that came from it.
+
+## Testing
+
+`valvet test` runs the fixture suite: every `.valvet` file under the suite directory builds and executes, with `.stdout` and `.exit` sidecars pinning expected output and status. Compile-fail fixtures pin the expected error code in a `.error` sidecar instead. Fixtures are organized by kind: pass, fail, runtime behavior, conformance, regression, ownership, lexer, parser, diagnostics, and multi-file projects with their own directories. Release runs repeat the whole suite with optimizations on, so codegen differences between profiles cannot hide. The gates are strict: 103 unit tests, 152 out of 152 fixtures green in both debug and release, formatter and linter clean, and sanitizer-clean generated code. Adding a test means adding files: one `.valvet` plus its sidecars, no registration step.
+
+## CLI
+
+| Command | Effect |
+| --- | --- |
+| `valvet check <file>` | Parse and analyse, no linking |
+| `valvet build <file>` | Compile to `target/valvet/<name>` |
+| `valvet run <file>` | Build, execute, exit with program status |
+| `valvet run <file> -- args` | Run with script arguments in `args` |
+| `valvet run --watch <file>` | Re-run on file change |
+| `valvet fmt <file>` | Normalize whitespace and trailing newline |
+| `valvet -e 'expr'` | Evaluate a scriptlet and print its value |
+| `valvet test [dir]` | Run the fixture suite |
+| `valvet new <name>` | Scaffold a single-dir project |
+| `valvet repl` | Interactive session, definitions persist |
+
+`check` parses and analyses without linking, which makes it the fastest feedback loop and the one to run on every save. `build` compiles and links to `target/valvet/<name>` and prints the artifact path. `run` builds, executes, and exits with the program status, so a `main` returning `Ok(7)` yields exit 7. `test` runs the fixture suite in an optional directory (defaulting to the repo suite). `new` scaffolds an explicit-mode single-directory project with an entry file and a hint toward multi-file layout. `repl` opens an interactive session where definitions persist across lines with `:help`, `:reset`, and `:quit`. `run --watch` re-runs the file whenever it changes, `fmt` normalizes trailing whitespace, and `-e` evaluates a one-liner as either an expression (printed) or statements. Warnings never fail a build: they render to stderr with the same file and position format as errors while compilation succeeds. Exit codes: 0 success, 1 compilation failure, 2 usage error.
+
+### Errors
+
+Errors never panic the compiler. They carry file, position, code, and help:
+
+Input · Valvet:
+```valvet
+error[E0205]: cannot assign through this place (immutable binding or shared reference) --> prog.valvet:3:5
+  help: use `var` bindings and `&mut` for mutation
+```
+
+A `main` that can fail declares it: `fun main(): Result<Int32, String>` may use `?` directly, and the process exits with the `Ok` value as its status. The program below prints `hi` and exits 7.
+
+Input · Valvet:
+```valvet
+fun main(): Result<Int32, String> {
+    println("hi");
+    return Ok(7);
+}
+```
+
+Output:
+```text
+hi
+```
+
+| Code | Meaning | Typical fix |
+| --- | --- | --- |
+| `E0001` | Invalid character in source | Remove or replace the character |
+| `E0003` | Unterminated literal or block comment | Close the string, char, or comment |
+| `E0005` | Control-flow misuse (`break` outside a loop) | Move the statement inside the loop |
+| `E0010` | Malformed literal (bad separator, suffix, exponent) | Rewrite the literal |
+| `E0201` | Type mismatch, including missing `as` | Convert explicitly or fix the annotation |
+| `E0204` | Value `match` is non-exhaustive | Add the missing arms or `_` |
+| `E0205` | Write through immutable place | Use `var` bindings and `&mut` |
+| `E0301` | Use of moved value, or move while borrowed | Clone explicitly or reorder the uses |
+| `E0302` | Conflicting borrows, or assign while borrowed | End the borrow before writing |
+| `E0303` | Dangling reference or ambiguous lifetime | Name the output lifetime explicitly |
+| `E0401` | Unknown name, duplicate, or private access | Check spelling, imports, and `pub` |
+| `E0601` | Import cycle | Break the cycle between modules |
+| `E0602` | Dotted import path | Use `::` separators |
+| `E0603` | Missing entry point | Add `fun main()` or top-level statements |
+| `E0604` | Mode violation: statements under `mode exp`, or statements plus `fun main` | Delete one form or switch the mode header |
+| `E0701` | Unresolved module file | Create the file or fix the path |
+| `E0702` | `?` outside a `Result`/`Option` function | Return `Result` or `match` instead |
+| `E0800` | Valid syntax, not yet supported | Follow the suggested alternative |
+| `W1002` | Deprecated `print` (warning only) | Use `println` |
+
+The table covers every code the compiler emits. Warnings like `W1002` never fail a build; every `E` code does.
+
+## Scope
+
+- Single C translation unit per program; local machine target.
+- 0.2.0 analytical foundation: units of measure, audited joins, provenance, dual-number autodiff, deterministic `par_sum`, script mode, file I/O, CSV/JSON, statistics, plotting, and an interactive REPL.
+- 0.3.0 modeling release: R-style formulas with contrasts, weighted fits, ANOVA plus diagnostics, a SQL subset over frames, validation contracts, window verbs, selection and causal helpers, meta-analysis, and LaTeX/HTML model tables.
+- Full test gates: 185 unit tests, 258/258 fixtures in debug and release, ASan/UBSan-clean output.
+- Nothing in earlier versions needs relearning: frames are owned values with borrowed views, missing data is explicit, and every fallible operation returns `Result`.
+- Deliberately absent: closures, traits, user generics, and methods beyond the builtins. Each is a tracked future phase, not an oversight, and E0800 marks the boundary at compile time.
+
+Copyright 2026 Kenneth Cho. All rights reserved. Source: [GitHub](https://github.com/Kenneth-Cho-InfoSec/valvet).

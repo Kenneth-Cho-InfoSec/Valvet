@@ -1,0 +1,13 @@
+matched=3 left_only=0 right_only=0 out=3
+[i, f, b, s, g, f_right, b_right, s_right, g_right]
+[int, float, bool, string, factor, float, bool, string, factor]
+3
+[1, 2, 3]
+[1.5, NA, 2.5]
+[true, false, NA]
+[a, NA, c]
+[x, y, x]
+[1.5, NA, 2.5]
+[true, false, NA]
+[a, NA, c]
+[x, y, x]

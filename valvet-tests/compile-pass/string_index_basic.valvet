@@ -1,0 +1,18 @@
+fun main() {
+    val idx = StringIndex::new();
+    println(idx.len());
+    println(idx.contains("a"));
+    println(idx.get("a"));
+    println(idx.get_or_insert("a"));
+    println(idx.get_or_insert("b"));
+    println(idx.get_or_insert("a"));
+    println(idx.len());
+    println(idx.contains("a"));
+    println(idx.get("a"));
+    println(idx.get("b"));
+    println(idx.get("c"));
+    println(idx.keys());
+    val copy = idx.clone();
+    println(copy.len());
+    println(copy.keys());
+}

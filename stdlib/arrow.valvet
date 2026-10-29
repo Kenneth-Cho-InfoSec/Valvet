@@ -1,0 +1,1110 @@
+// std::arrow: narrow typed Arrow IPC file reader (P5A). Supported subset:
+// one record batch, flat primitive columns (Int32, Int64, Float64, Bool,
+// Utf8), optional validity bitmaps, uncompressed bodies. Nested, dictionary,
+// compressed, stream, and multi-batch inputs are rejected with Err.
+module std.arrow;
+
+import std::bytes::bytes_bit;
+import std::bytes::bytes_i32_le;
+import std::bytes::bytes_finish;
+import std::bytes::bytes_put_f64_le;
+import std::bytes::bytes_put_i64_le;
+import std::bytes::bytes_put_u32_le;
+import std::bytes::bytes_put_u8;
+import std::bytes::bytes_pow2;
+import std::bytes::bytes_i64_le;
+import std::bytes::bytes_slice;
+import std::bytes::bytes_u32_le;
+import std::bytes::bytes_u8;
+import std::flatbuf::FbTable;
+import std::flatbuf::fb_i32;
+import std::flatbuf::fb_i64;
+import std::flatbuf::fb_i32_at;
+import std::flatbuf::fb_i64_at;
+import std::flatbuf::fb_root;
+import std::flatbuf::fb_string;
+import std::flatbuf::fb_table;
+import std::flatbuf::fb_u8;
+import std::flatbuf::fb_u8_at;
+import std::flatbuf::fb_vector_len;
+import std::flatbuf::fb_vector_struct;
+import std::flatbuf::fb_vector_table;
+import std::flatbuf::fbw_align;
+import std::flatbuf::fbw_append_bytes;
+import std::flatbuf::fbw_append_string;
+import std::flatbuf::fbw_finish;
+import std::flatbuf::fbw_push_i32;
+import std::flatbuf::fbw_push_i64;
+import std::flatbuf::fbw_push_u16;
+import std::flatbuf::fbw_push_u32;
+import std::flatbuf::fbw_push_u8;
+import std::flatbuf::fbw_set_i32;
+import std::flatbuf::fbw_set_i64;
+import std::flatbuf::fbw_set_u16;
+import std::flatbuf::fbw_set_u32;
+import std::flatbuf::fbw_set_u8;
+import std::typed_frame::Column;
+import std::typed_frame::TypedFrame;
+import std::typed_frame::tf_col_at;
+import std::typed_frame::tf_names;
+import std::typed_frame::tf_new;
+import std::typed_frame::tf_nrows;
+
+struct ArrowField {
+    name: String,
+    kind: Int64,
+    nullable: Bool,
+}
+
+struct ArrowBlock {
+    offset: Int64,
+    meta_len: Int64,
+    body_len: Int64,
+}
+
+struct ArrowBuffer {
+    offset: Int64,
+    length: Int64,
+}
+
+struct ArrowData {
+    cols: Vec<Column>,
+    nrows: Int64,
+}
+
+fun arrow_max_file(): Int64 { return 268435456 as Int64; }
+fun arrow_max_rows(): Int64 { return 268435456 as Int64; }
+fun arrow_max_cols(): Int64 { return 4096 as Int64; }
+
+fun fail_if(cond: Bool, msg: String): Result<Bool, String> {
+    if (cond) {
+        return Err(msg);
+    }
+    return Ok(true);
+}
+
+fun arrow_pow2f(n: Int64): Float64 {
+    var v = 1.0;
+    var i = 0 as Int64;
+    if (n >= (0 as Int64)) {
+        while (i < n) {
+            v = v * 2.0;
+            i = i + (1 as Int64);
+        }
+    } else {
+        while (i < (0 as Int64) - n) {
+            v = v / 2.0;
+            i = i + (1 as Int64);
+        }
+    }
+    return v;
+}
+
+fun arrow_f64_exact(s: &String, at: Int64): Option<Float64> {
+    if (at < (0 as Int64) || at + (8 as Int64) > (*s).len()) {
+        return None;
+    }
+    var b: Vec<Int64> = vec![];
+    var i = 0 as Int64;
+    while (i < (8 as Int64)) {
+        val x = bytes_u8(s, at + i);
+        val ok = match (x) { Some(v) -> true, None -> false, };
+        if (!ok) {
+            return None;
+        }
+        val v = match (bytes_u8(s, at + i)) { Some(x) -> x, None -> 0 as Int64, };
+        b.push(v);
+        i = i + (1 as Int64);
+    }
+    val sign = if (b[7] >= (128 as Int64)) { 0.0 - 1.0 } else { 1.0 };
+    val exp = (b[7] % (128 as Int64)) * (16 as Int64) + b[6] / (16 as Int64);
+    val mant = (b[6] % (16 as Int64)) * (281474976710656 as Int64) + b[5] * (1099511627776 as Int64) + b[4] * (4294967296 as Int64) + b[3] * (16777216 as Int64) + b[2] * (65536 as Int64) + b[1] * (256 as Int64) + b[0];
+    if (exp == (2047 as Int64)) {
+        if (mant == (0 as Int64)) {
+            return Some(sign * (1.0 / 0.0));
+        }
+        return Some(0.0 / 0.0);
+    }
+    if (exp == (0 as Int64)) {
+        return Some(sign * (mant as Float64) * arrow_pow2f((0 as Int64) - (1074 as Int64)));
+    }
+    return Some(sign * (1.0 + (mant as Float64) / arrow_pow2f(52)) * arrow_pow2f(exp - (1023 as Int64)));
+}
+
+fun arrow_magic_at(s: &String, at: Int64): Bool {
+    val m = bytes_slice(s, at, at + (6 as Int64));
+    val ok = match (m) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return false;
+    }
+    val v = match (bytes_slice(s, at, at + (6 as Int64))) { Some(x) -> x, None -> "".clone(), };
+    return v == "ARROW1";
+}
+
+fun arrow_footer(file: &String): Result<FbTable, String> {
+    val n = (*file).len();
+    fail_if(n < (16 as Int64), "arrow: file too short")?;
+    fail_if(!arrow_magic_at(file, 0 as Int64), "arrow: bad start magic")?;
+    fail_if(!arrow_magic_at(file, n - (6 as Int64)), "arrow: bad end magic")?;
+    val fl = bytes_u32_le(file, n - (10 as Int64));
+    val fok = match (fl) { Some(v) -> true, None -> false, };
+    fail_if(!fok, "arrow: missing footer length")?;
+    val flen = match (bytes_u32_le(file, n - (10 as Int64))) { Some(v) -> v, None -> 0 as Int64, };
+    fail_if(flen <= (0 as Int64) || flen > n - (16 as Int64), "arrow: bad footer length")?;
+    val start = n - (10 as Int64) - flen;
+    val fs = bytes_slice(file, start, n - (10 as Int64));
+    val sok = match (fs) { Some(v) -> true, None -> false, };
+    fail_if(!sok, "arrow: bad footer slice")?;
+    val footer_bytes = match (bytes_slice(file, start, n - (10 as Int64))) { Some(v) -> v, None -> "".clone(), };
+    val root = fb_root(&footer_bytes);
+    val rok = match (root) { Some(v) -> true, None -> false, };
+    fail_if(!rok, "arrow: bad footer flatbuffer")?;
+    return Ok(match (fb_root(&footer_bytes)) { Some(v) -> v, None -> FbTable { data: "".clone(), pos: 0 as Int64 } });
+}
+
+fun arrow_type_kind(f: &FbTable): Result<Int64, String> {
+    val ty = fb_u8(f, 2);
+    val tok = match (ty) { Some(v) -> true, None -> false, };
+    fail_if(!tok, "arrow: missing field type")?;
+    val typ = match (fb_u8(f, 2)) { Some(v) -> v, None -> 0 as Int64, };
+    if (typ == (2 as Int64)) {
+        val it = fb_table(f, 3);
+        val iok = match (it) { Some(v) -> true, None -> false, };
+        fail_if(!iok, "arrow: missing int type")?;
+        val int_t = match (fb_table(f, 3)) { Some(v) -> v, None -> FbTable { data: "".clone(), pos: 0 as Int64 } };
+        val bw = fb_i32(&int_t, 0);
+        val bok = match (bw) { Some(v) -> true, None -> false, };
+        fail_if(!bok, "arrow: missing int width")?;
+        val width = match (fb_i32(&int_t, 0)) { Some(v) -> v, None -> 0 as Int64, };
+        val sg = fb_u8(&int_t, 1);
+        val sgok = match (sg) { Some(v) -> true, None -> false, };
+        fail_if(!sgok, "arrow: missing int signedness")?;
+        val signed = match (fb_u8(&int_t, 1)) { Some(v) -> v, None -> 0 as Int64, };
+        fail_if(signed != (1 as Int64), "arrow: unsigned int is unsupported")?;
+        fail_if(width != (32 as Int64) && width != (64 as Int64), "arrow: unsupported int width")?;
+        if (width == (64 as Int64)) {
+            return Ok(1 as Int64);
+        }
+        return Ok(2 as Int64);
+    }
+    if (typ == (3 as Int64)) {
+        val ft = fb_table(f, 3);
+        val fok = match (ft) { Some(v) -> true, None -> false, };
+        fail_if(!fok, "arrow: missing float type")?;
+        val float_t = match (fb_table(f, 3)) { Some(v) -> v, None -> FbTable { data: "".clone(), pos: 0 as Int64 } };
+        val pr = fb_u8(&float_t, 0);
+        val pok = match (pr) { Some(v) -> true, None -> false, };
+        fail_if(!pok, "arrow: missing float precision")?;
+        val prec = match (fb_u8(&float_t, 0)) { Some(v) -> v, None -> 0 as Int64, };
+        fail_if(prec != (2 as Int64), "arrow: unsupported float precision")?;
+        return Ok(3 as Int64);
+    }
+    if (typ == (6 as Int64)) {
+        return Ok(4 as Int64);
+    }
+    if (typ == (5 as Int64)) {
+        return Ok(5 as Int64);
+    }
+    fail_if(true, "arrow: unsupported field type")?;
+    return Err("arrow: unsupported field type");
+}
+
+fun arrow_fields(footer: &FbTable): Result<Vec<ArrowField>, String> {
+    val st = fb_table(footer, 1);
+    val sok = match (st) { Some(v) -> true, None -> false, };
+    fail_if(!sok, "arrow: missing schema")?;
+    val schema = match (fb_table(footer, 1)) { Some(v) -> v, None -> FbTable { data: "".clone(), pos: 0 as Int64 } };
+    val nf = fb_vector_len(&schema, 1);
+    val nok = match (nf) { Some(v) -> true, None -> false, };
+    fail_if(!nok, "arrow: missing schema fields")?;
+    val n = match (fb_vector_len(&schema, 1)) { Some(v) -> v, None -> 0 as Int64, };
+    fail_if(n <= (0 as Int64) || n > arrow_max_cols(), "arrow: bad field count")?;
+    val seen = StringIndex::new();
+    var out: Vec<ArrowField> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val ft = fb_vector_table(&schema, 1, i);
+        val fok = match (ft) { Some(v) -> true, None -> false, };
+        fail_if(!fok, "arrow: bad field table")?;
+        val f = match (fb_vector_table(&schema, 1, i)) { Some(v) -> v, None -> FbTable { data: "".clone(), pos: 0 as Int64 } };
+        val nm = fb_string(&f, 0);
+        val nmok = match (nm) { Some(v) -> true, None -> false, };
+        fail_if(!nmok, "arrow: missing field name")?;
+        val name = match (fb_string(&f, 0)) { Some(v) -> v, None -> "".clone() };
+        val pos = seen.get_or_insert(name.clone());
+        fail_if(pos != i, "arrow: duplicate field name")?;
+        val nl = fb_u8(&f, 1);
+        val nullable = match (nl) { Some(v) -> v == (1 as Int64), None -> false };
+        val dict = fb_table(&f, 4);
+        val has_dict = match (dict) { Some(v) -> true, None -> false, };
+        fail_if(has_dict, "arrow: dictionary fields are unsupported")?;
+        val ch = fb_vector_len(&f, 5);
+        val nch = match (ch) { Some(v) -> v, None -> 0 as Int64 };
+        fail_if(nch != (0 as Int64), "arrow: nested fields are unsupported")?;
+        val kind = arrow_type_kind(&f)?;
+        out.push(ArrowField { name: name, kind: kind, nullable: nullable });
+        i = i + (1 as Int64);
+    }
+    return Ok(out);
+}
+
+fun arrow_blocks(footer: &FbTable): Result<Vec<ArrowBlock>, String> {
+    val nb = fb_vector_len(footer, 3);
+    val nok = match (nb) { Some(v) -> true, None -> false, };
+    fail_if(!nok, "arrow: missing record batch blocks")?;
+    val n = match (fb_vector_len(footer, 3)) { Some(v) -> v, None -> 0 as Int64, };
+    fail_if(n != (1 as Int64), "arrow: expected exactly one record batch")?;
+    var out: Vec<ArrowBlock> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val p = fb_vector_struct(footer, 3, i, 24 as Int64);
+        val pok = match (p) { Some(v) -> true, None -> false, };
+        fail_if(!pok, "arrow: bad record batch block")?;
+        val at = match (fb_vector_struct(footer, 3, i, 24 as Int64)) { Some(v) -> v, None -> 0 as Int64 };
+        val off = fb_i64_at(footer, at);
+        val ook = match (off) { Some(v) -> true, None -> false, };
+        fail_if(!ook, "arrow: missing block offset")?;
+        val offset = match (fb_i64_at(footer, at)) { Some(v) -> v, None -> 0 as Int64 };
+        val ml = fb_i32_at(footer, at + (8 as Int64));
+        val mok = match (ml) { Some(v) -> true, None -> false, };
+        fail_if(!mok, "arrow: missing block metadata length")?;
+        val meta_len = match (fb_i32_at(footer, at + (8 as Int64))) { Some(v) -> v, None -> 0 as Int64 };
+        val bl = fb_i64_at(footer, at + (16 as Int64));
+        val bok = match (bl) { Some(v) -> true, None -> false, };
+        fail_if(!bok, "arrow: missing block body length")?;
+        val body_len = match (fb_i64_at(footer, at + (16 as Int64))) { Some(v) -> v, None -> 0 as Int64 };
+        out.push(ArrowBlock { offset: offset, meta_len: meta_len, body_len: body_len });
+        i = i + (1 as Int64);
+    }
+    return Ok(out);
+}
+
+fun arrow_buffer(rb: &FbTable, index: Int64, body_len: Int64): Result<ArrowBuffer, String> {
+    val p = fb_vector_struct(rb, 2, index, 16 as Int64);
+    val pok = match (p) { Some(v) -> true, None -> false, };
+    fail_if(!pok, "arrow: missing buffer")?;
+    val at = match (fb_vector_struct(rb, 2, index, 16 as Int64)) { Some(v) -> v, None -> 0 as Int64 };
+    val off = fb_i64_at(rb, at);
+    val ook = match (off) { Some(v) -> true, None -> false, };
+    fail_if(!ook, "arrow: bad buffer offset")?;
+    val offset = match (fb_i64_at(rb, at)) { Some(v) -> v, None -> 0 as Int64 };
+    val ln = fb_i64_at(rb, at + (8 as Int64));
+    val lok = match (ln) { Some(v) -> true, None -> false, };
+    fail_if(!lok, "arrow: bad buffer length")?;
+    val length = match (fb_i64_at(rb, at + (8 as Int64))) { Some(v) -> v, None -> 0 as Int64 };
+    fail_if(offset < (0 as Int64) || length < (0 as Int64) || offset + length > body_len, "arrow: buffer outside body")?;
+    return Ok(ArrowBuffer { offset: offset, length: length });
+}
+
+fun arrow_valid(file: &String, body_start: Int64, validity: ArrowBuffer, row: Int64): Result<Bool, String> {
+    if (validity.length == (0 as Int64)) {
+        return Ok(true);
+    }
+    fail_if(row / (8 as Int64) >= validity.length, "arrow: validity buffer too short")?;
+    val b = bytes_bit(file, (body_start + validity.offset) * (8 as Int64) + row);
+    val bok = match (b) { Some(v) -> true, None -> false, };
+    fail_if(!bok, "arrow: bad validity bit")?;
+    return Ok(match (bytes_bit(file, (body_start + validity.offset) * (8 as Int64) + row)) { Some(v) -> v, None -> false });
+}
+
+fun arrow_int_col(file: &String, body_start: Int64, n: Int64, kind: Int64, validity: ArrowBuffer, data: ArrowBuffer): Result<Column, String> {
+    val width = if (kind == (1 as Int64)) { 8 as Int64 } else { 4 as Int64 };
+    fail_if(data.length < n * width, "arrow: int data buffer too short")?;
+    var out: Vec<Missing<Int64>> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val valid = arrow_valid(file, body_start, validity, i)?;
+        if (!valid) {
+            out.push(Missing);
+        } else {
+            val at = body_start + data.offset + i * width;
+            if (kind == (1 as Int64)) {
+                val v = bytes_i64_le(file, at);
+                val vok = match (v) { Some(x) -> true, None -> false, };
+                fail_if(!vok, "arrow: bad int64 value")?;
+                out.push(Missing::Present(match (bytes_i64_le(file, at)) { Some(x) -> x, None -> 0 as Int64 }));
+            } else {
+                val v = bytes_i32_le(file, at);
+                val vok = match (v) { Some(x) -> true, None -> false, };
+                fail_if(!vok, "arrow: bad int32 value")?;
+                out.push(Missing::Present(match (bytes_i32_le(file, at)) { Some(x) -> x, None -> 0 as Int64 }));
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    return Ok(Column::Int(out));
+}
+
+fun arrow_float_col(file: &String, body_start: Int64, n: Int64, validity: ArrowBuffer, data: ArrowBuffer): Result<Column, String> {
+    fail_if(data.length < n * (8 as Int64), "arrow: float data buffer too short")?;
+    var out: Vec<Missing<Float64>> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val valid = arrow_valid(file, body_start, validity, i)?;
+        if (!valid) {
+            out.push(Missing);
+        } else {
+            val at = body_start + data.offset + i * (8 as Int64);
+            val v = arrow_f64_exact(file, at);
+            val vok = match (v) { Some(x) -> true, None -> false, };
+            fail_if(!vok, "arrow: bad float64 value")?;
+            out.push(Missing::Present(match (arrow_f64_exact(file, at)) { Some(x) -> x, None -> 0.0 }));
+        }
+        i = i + (1 as Int64);
+    }
+    return Ok(Column::Float(out));
+}
+
+fun arrow_bool_col(file: &String, body_start: Int64, n: Int64, validity: ArrowBuffer, data: ArrowBuffer): Result<Column, String> {
+    fail_if(data.length * (8 as Int64) < n, "arrow: bool data buffer too short")?;
+    var out: Vec<Missing<Bool>> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val valid = arrow_valid(file, body_start, validity, i)?;
+        if (!valid) {
+            out.push(Missing);
+        } else {
+            val b = bytes_bit(file, (body_start + data.offset) * (8 as Int64) + i);
+            val bok = match (b) { Some(x) -> true, None -> false, };
+            fail_if(!bok, "arrow: bad bool value")?;
+            out.push(Missing::Present(match (bytes_bit(file, (body_start + data.offset) * (8 as Int64) + i)) { Some(x) -> x, None -> false }));
+        }
+        i = i + (1 as Int64);
+    }
+    return Ok(Column::Bool(out));
+}
+
+fun arrow_str_col(file: &String, body_start: Int64, n: Int64, validity: ArrowBuffer, offsets: ArrowBuffer, data: ArrowBuffer): Result<Column, String> {
+    fail_if(offsets.length < (n + (1 as Int64)) * (4 as Int64), "arrow: utf8 offsets buffer too short")?;
+    var out: Vec<Missing<String>> = vec![];
+    var i = 0 as Int64;
+    while (i < n) {
+        val valid = arrow_valid(file, body_start, validity, i)?;
+        if (!valid) {
+            out.push(Missing);
+        } else {
+            val a = bytes_i32_le(file, body_start + offsets.offset + i * (4 as Int64));
+            val b = bytes_i32_le(file, body_start + offsets.offset + (i + (1 as Int64)) * (4 as Int64));
+            val aok = match (a) { Some(x) -> true, None -> false, };
+            val bok = match (b) { Some(x) -> true, None -> false, };
+            fail_if(!aok || !bok, "arrow: bad utf8 offset")?;
+            val start = match (bytes_i32_le(file, body_start + offsets.offset + i * (4 as Int64))) { Some(x) -> x, None -> 0 as Int64 };
+            val end = match (bytes_i32_le(file, body_start + offsets.offset + (i + (1 as Int64)) * (4 as Int64))) { Some(x) -> x, None -> 0 as Int64 };
+            fail_if(start < (0 as Int64) || end < start || end > data.length, "arrow: bad utf8 slice")?;
+            val v = bytes_slice(file, body_start + data.offset + start, body_start + data.offset + end);
+            val vok = match (v) { Some(x) -> true, None -> false, };
+            fail_if(!vok, "arrow: bad utf8 value")?;
+            out.push(Missing::Present(match (bytes_slice(file, body_start + data.offset + start, body_start + data.offset + end)) { Some(x) -> x, None -> "".clone() }));
+        }
+        i = i + (1 as Int64);
+    }
+    return Ok(Column::Str(out));
+}
+
+fun arrow_columns(file: &String, fields: Vec<ArrowField>, block: ArrowBlock): Result<ArrowData, String> {
+    val n = (*file).len();
+    fail_if(block.offset < (0 as Int64) || block.meta_len < (8 as Int64) || block.body_len < (0 as Int64), "arrow: bad block bounds")?;
+    fail_if(block.offset + block.meta_len > n || block.offset + block.meta_len + block.body_len > n, "arrow: block outside file")?;
+    val cont = bytes_u32_le(file, block.offset);
+    val cok = match (cont) { Some(v) -> true, None -> false, };
+    fail_if(!cok, "arrow: missing message continuation")?;
+    val contv = match (bytes_u32_le(file, block.offset)) { Some(v) -> v, None -> 0 as Int64 };
+    fail_if(contv != (4294967295 as Int64), "arrow: bad message continuation")?;
+    val mlen = bytes_u32_le(file, block.offset + (4 as Int64));
+    val mok = match (mlen) { Some(v) -> true, None -> false, };
+    fail_if(!mok, "arrow: missing message length")?;
+    val meta_len = match (bytes_u32_le(file, block.offset + (4 as Int64))) { Some(v) -> v, None -> 0 as Int64 };
+    fail_if(meta_len <= (0 as Int64) || block.offset + (8 as Int64) + meta_len > block.offset + block.meta_len, "arrow: bad message length")?;
+    val ms = bytes_slice(file, block.offset + (8 as Int64), block.offset + (8 as Int64) + meta_len);
+    val msok = match (ms) { Some(v) -> true, None -> false, };
+    fail_if(!msok, "arrow: bad message slice")?;
+    val msg_bytes = match (bytes_slice(file, block.offset + (8 as Int64), block.offset + (8 as Int64) + meta_len)) { Some(v) -> v, None -> "".clone() };
+    val root = fb_root(&msg_bytes);
+    val rok = match (root) { Some(v) -> true, None -> false, };
+    fail_if(!rok, "arrow: bad message flatbuffer")?;
+    val msg = match (fb_root(&msg_bytes)) { Some(v) -> v, None -> FbTable { data: "".clone(), pos: 0 as Int64 } };
+    val ht = fb_u8(&msg, 1);
+    val htok = match (ht) { Some(v) -> true, None -> false, };
+    fail_if(!htok, "arrow: missing message header type")?;
+    val htype = match (fb_u8(&msg, 1)) { Some(v) -> v, None -> 0 as Int64 };
+    fail_if(htype != (3 as Int64), "arrow: message is not a record batch")?;
+    val rbt = fb_table(&msg, 2);
+    val rbok = match (rbt) { Some(v) -> true, None -> false, };
+    fail_if(!rbok, "arrow: missing record batch header")?;
+    val rb = match (fb_table(&msg, 2)) { Some(v) -> v, None -> FbTable { data: "".clone(), pos: 0 as Int64 } };
+    val ln = fb_i64(&rb, 0);
+    val lnok = match (ln) { Some(v) -> true, None -> false, };
+    fail_if(!lnok, "arrow: missing record batch length")?;
+    val nrows = match (fb_i64(&rb, 0)) { Some(v) -> v, None -> 0 as Int64 };
+    fail_if(nrows < (0 as Int64) || nrows > arrow_max_rows(), "arrow: bad row count")?;
+    val nn = fb_vector_len(&rb, 1);
+    val nnok = match (nn) { Some(v) -> true, None -> false, };
+    fail_if(!nnok, "arrow: missing field nodes")?;
+    val nodes = match (fb_vector_len(&rb, 1)) { Some(v) -> v, None -> 0 as Int64 };
+    fail_if(nodes != fields.len(), "arrow: field node count mismatch")?;
+    val nb = fb_vector_len(&rb, 2);
+    val nbok = match (nb) { Some(v) -> true, None -> false, };
+    fail_if(!nbok, "arrow: missing buffers")?;
+    val nbuf = match (fb_vector_len(&rb, 2)) { Some(v) -> v, None -> 0 as Int64 };
+    val body_start = block.offset + block.meta_len;
+    var out: Vec<Column> = vec![];
+    var bi = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < fields.len()) {
+        val np = fb_vector_struct(&rb, 1, i, 16 as Int64);
+        val npok = match (np) { Some(v) -> true, None -> false, };
+        fail_if(!npok, "arrow: bad field node")?;
+        val npos = match (fb_vector_struct(&rb, 1, i, 16 as Int64)) { Some(v) -> v, None -> 0 as Int64 };
+        val nl = fb_i64_at(&rb, npos);
+        val nlok = match (nl) { Some(v) -> true, None -> false, };
+        fail_if(!nlok, "arrow: bad node length")?;
+        val node_len = match (fb_i64_at(&rb, npos)) { Some(v) -> v, None -> 0 as Int64 };
+        val nc = fb_i64_at(&rb, npos + (8 as Int64));
+        val ncok = match (nc) { Some(v) -> true, None -> false, };
+        fail_if(!ncok, "arrow: bad null count")?;
+        val null_count = match (fb_i64_at(&rb, npos + (8 as Int64))) { Some(v) -> v, None -> 0 as Int64 };
+        fail_if(node_len != nrows || null_count < (0 as Int64) || null_count > nrows, "arrow: bad node")?;
+        val validity = arrow_buffer(&rb, bi, block.body_len)?;
+        bi = bi + (1 as Int64);
+        if (fields[i].kind == (5 as Int64)) {
+            val offsets = arrow_buffer(&rb, bi, block.body_len)?;
+            bi = bi + (1 as Int64);
+            val data = arrow_buffer(&rb, bi, block.body_len)?;
+            bi = bi + (1 as Int64);
+            val col = arrow_str_col(file, body_start, nrows, validity, offsets, data)?;
+            out.push(col);
+        } else {
+            val data = arrow_buffer(&rb, bi, block.body_len)?;
+            bi = bi + (1 as Int64);
+            if (fields[i].kind == (1 as Int64) || fields[i].kind == (2 as Int64)) {
+                val col = arrow_int_col(file, body_start, nrows, fields[i].kind, validity, data)?;
+                out.push(col);
+            } else if (fields[i].kind == (3 as Int64)) {
+                val col = arrow_float_col(file, body_start, nrows, validity, data)?;
+                out.push(col);
+            } else {
+                val col = arrow_bool_col(file, body_start, nrows, validity, data)?;
+                out.push(col);
+            }
+        }
+        i = i + (1 as Int64);
+    }
+    fail_if(bi != nbuf, "arrow: unexpected extra buffers")?;
+    return Ok(ArrowData { cols: out, nrows: nrows });
+}
+
+fun arrow_load(path: String): Result<String, String> {
+    return read_file_limit(path, arrow_max_file());
+}
+
+pub fun read_arrow_schema(path: String): Result<Vec<String>, String> {
+    val file = arrow_load(path)?;
+    val footer = arrow_footer(&file)?;
+    val fields = arrow_fields(&footer)?;
+    var out: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < fields.len()) {
+        out.push(fields[i].name.clone());
+        i = i + (1 as Int64);
+    }
+    return Ok(out);
+}
+
+pub fun read_arrow(path: String): Result<TypedFrame, String> {
+    val file = arrow_load(path)?;
+    val footer = arrow_footer(&file)?;
+    val fields = arrow_fields(&footer)?;
+    val blocks = arrow_blocks(&footer)?;
+    val block = blocks[0];
+    var names: Vec<String> = vec![];
+    var i = 0 as Int64;
+    while (i < fields.len()) {
+        names.push(fields[i].name.clone());
+        i = i + (1 as Int64);
+    }
+    val data = arrow_columns(&file, fields, block)?;
+    val ArrowData { cols, nrows } = data;
+    return tf_new(names, cols, nrows);
+}
+
+struct ArrowWriteCol {
+    name: String,
+    kind: Int64,
+    optional: Bool,
+    ints: Vec<Missing<Int64>>,
+    floats: Vec<Missing<Float64>>,
+    bools: Vec<Missing<Bool>>,
+    strs: Vec<Missing<String>>,
+}
+
+struct ArrowBufOut {
+    validity_off: Int64,
+    validity_len: Int64,
+    data_off: Int64,
+    data_len: Int64,
+    offsets_off: Int64,
+    offsets_len: Int64,
+}
+
+struct ArrowBodyCol {
+    body: Vec<Int64>,
+    meta: ArrowBufOut,
+    null_count: Int64,
+}
+
+struct ArrowNodeOut {
+    length: Int64,
+    null_count: Int64,
+}
+
+struct ArrowBufferOut {
+    offset: Int64,
+    length: Int64,
+}
+
+fun arrow_any_missing_int(v: &Vec<Missing<Int64>>): Bool {
+    var i = 0 as Int64;
+    while (i < (*v).len()) {
+        match ((*v)[i]) {
+            Missing::Present(x) -> { },
+            Missing -> { return true; },
+        };
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun arrow_any_missing_float(v: &Vec<Missing<Float64>>): Bool {
+    var i = 0 as Int64;
+    while (i < (*v).len()) {
+        match ((*v)[i]) {
+            Missing::Present(x) -> { },
+            Missing -> { return true; },
+        };
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun arrow_any_missing_bool(v: &Vec<Missing<Bool>>): Bool {
+    var i = 0 as Int64;
+    while (i < (*v).len()) {
+        match ((*v)[i]) {
+            Missing::Present(x) -> { },
+            Missing -> { return true; },
+        };
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun arrow_any_missing_str(v: &Vec<Missing<String>>): Bool {
+    var i = 0 as Int64;
+    while (i < (*v).len()) {
+        match ((*v)[i]) {
+            Missing::Present(x) -> { },
+            Missing -> { return true; },
+        };
+        i = i + (1 as Int64);
+    }
+    return false;
+}
+
+fun arrow_write_int_col(name: String, v: Vec<Missing<Int64>>): ArrowWriteCol {
+    val opt = arrow_any_missing_int(&v);
+    val f: Vec<Missing<Float64>> = vec![];
+    val b: Vec<Missing<Bool>> = vec![];
+    val s: Vec<Missing<String>> = vec![];
+    return ArrowWriteCol { name: name, kind: 1 as Int64, optional: opt, ints: v, floats: f, bools: b, strs: s };
+}
+
+fun arrow_write_float_col(name: String, v: Vec<Missing<Float64>>): ArrowWriteCol {
+    val opt = arrow_any_missing_float(&v);
+    val i: Vec<Missing<Int64>> = vec![];
+    val b: Vec<Missing<Bool>> = vec![];
+    val s: Vec<Missing<String>> = vec![];
+    return ArrowWriteCol { name: name, kind: 3 as Int64, optional: opt, ints: i, floats: v, bools: b, strs: s };
+}
+
+fun arrow_write_bool_col(name: String, v: Vec<Missing<Bool>>): ArrowWriteCol {
+    val opt = arrow_any_missing_bool(&v);
+    val i: Vec<Missing<Int64>> = vec![];
+    val f: Vec<Missing<Float64>> = vec![];
+    val s: Vec<Missing<String>> = vec![];
+    return ArrowWriteCol { name: name, kind: 4 as Int64, optional: opt, ints: i, floats: f, bools: v, strs: s };
+}
+
+fun arrow_write_str_col(name: String, v: Vec<Missing<String>>): ArrowWriteCol {
+    val opt = arrow_any_missing_str(&v);
+    val i: Vec<Missing<Int64>> = vec![];
+    val f: Vec<Missing<Float64>> = vec![];
+    val b: Vec<Missing<Bool>> = vec![];
+    return ArrowWriteCol { name: name, kind: 5 as Int64, optional: opt, ints: i, floats: f, bools: b, strs: v };
+}
+
+fun arrow_write_factor_col(name: String, f: Factor): ArrowWriteCol {
+    val lv = f.levels();
+    val cd = f.codes();
+    var v: Vec<Missing<String>> = vec![];
+    var i = 0 as Int64;
+    while (i < cd.len()) {
+        if (cd[i] == (0 as Int32)) {
+            v.push(Missing);
+        } else {
+            v.push(Missing::Present(lv[(cd[i] as Int64) - (1 as Int64)].clone()));
+        }
+        i = i + (1 as Int64);
+    }
+    return arrow_write_str_col(name, v);
+}
+
+fun arrow_write_ok(c: ArrowWriteCol): Result<ArrowWriteCol, String> {
+    return Ok(c);
+}
+
+fun arrow_write_col(name: String, c: Column): Result<ArrowWriteCol, String> {
+    match (c) {
+        Column::Int(v) -> arrow_write_ok(arrow_write_int_col(name, v)),
+        Column::Float(v) -> arrow_write_ok(arrow_write_float_col(name, v)),
+        Column::Bool(v) -> arrow_write_ok(arrow_write_bool_col(name, v)),
+        Column::Str(v) -> arrow_write_ok(arrow_write_str_col(name, v)),
+        Column::Factor(f) -> arrow_write_ok(arrow_write_factor_col(name, f)),
+    }
+}
+
+fun arrow_col_body(c: ArrowWriteCol, n: Int64, body: Vec<Int64>): Result<ArrowBodyCol, String> {
+    var out = body;
+    var null_count = 0 as Int64;
+    var i = 0 as Int64;
+    while (i < n) {
+        var present = true;
+        if (c.kind == (1 as Int64)) {
+            match (c.ints[i]) { Missing::Present(x) -> { }, Missing -> { present = false; } };
+        } else if (c.kind == (3 as Int64)) {
+            match (c.floats[i]) { Missing::Present(x) -> { }, Missing -> { present = false; } };
+        } else if (c.kind == (4 as Int64)) {
+            match (c.bools[i]) { Missing::Present(x) -> { }, Missing -> { present = false; } };
+        } else {
+            match (c.strs[i]) { Missing::Present(x) -> { }, Missing -> { present = false; } };
+        }
+        if (!present) {
+            null_count = null_count + (1 as Int64);
+        }
+        i = i + (1 as Int64);
+    }
+    var validity_off = 0 as Int64;
+    var validity_len = 0 as Int64;
+    if (null_count > (0 as Int64)) {
+        fbw_align(&mut out, 8 as Int64);
+        validity_off = out.len();
+        validity_len = (n + (7 as Int64)) / (8 as Int64);
+        var b = 0 as Int64;
+        var bit = 0 as Int64;
+        var r = 0 as Int64;
+        while (r < n) {
+            var present = true;
+            if (c.kind == (1 as Int64)) {
+                match (c.ints[r]) { Missing::Present(x) -> { }, Missing -> { present = false; } };
+            } else if (c.kind == (3 as Int64)) {
+                match (c.floats[r]) { Missing::Present(x) -> { }, Missing -> { present = false; } };
+            } else if (c.kind == (4 as Int64)) {
+                match (c.bools[r]) { Missing::Present(x) -> { }, Missing -> { present = false; } };
+            } else {
+                match (c.strs[r]) { Missing::Present(x) -> { }, Missing -> { present = false; } };
+            }
+            if (present) {
+                b = b + bytes_pow2(bit);
+            }
+            bit = bit + (1 as Int64);
+            if (bit == (8 as Int64)) {
+                out.push(b);
+                b = 0 as Int64;
+                bit = 0 as Int64;
+            }
+            r = r + (1 as Int64);
+        }
+        if (bit != (0 as Int64)) {
+            out.push(b);
+        }
+    }
+    var data_off = 0 as Int64;
+    var data_len = 0 as Int64;
+    var offsets_off = 0 as Int64;
+    var offsets_len = 0 as Int64;
+    if (c.kind == (1 as Int64)) {
+        fbw_align(&mut out, 8 as Int64);
+        data_off = out.len();
+        i = 0 as Int64;
+        while (i < n) {
+            match (c.ints[i]) {
+                Missing::Present(x) -> bytes_put_i64_le(&mut out, x),
+                Missing -> bytes_put_i64_le(&mut out, 0 as Int64),
+            };
+            i = i + (1 as Int64);
+        }
+        data_len = out.len() - data_off;
+    } else if (c.kind == (3 as Int64)) {
+        fbw_align(&mut out, 8 as Int64);
+        data_off = out.len();
+        i = 0 as Int64;
+        while (i < n) {
+            match (c.floats[i]) {
+                Missing::Present(x) -> {
+                    val ok = bytes_put_f64_le(&mut out, x)?;
+                },
+                Missing -> {
+                    val ok = bytes_put_f64_le(&mut out, 0.0)?;
+                },
+            };
+            i = i + (1 as Int64);
+        }
+        data_len = out.len() - data_off;
+    } else if (c.kind == (4 as Int64)) {
+        fbw_align(&mut out, 8 as Int64);
+        data_off = out.len();
+        val nbytes = (n + (7 as Int64)) / (8 as Int64);
+        var g = 0 as Int64;
+        while (g < nbytes) {
+            var b = 0 as Int64;
+            var j = 0 as Int64;
+            while (j < (8 as Int64)) {
+                val row = g * (8 as Int64) + j;
+                if (row < n) {
+                    var bit = false;
+                    match (c.bools[row]) {
+                        Missing::Present(x) -> { bit = x; },
+                        Missing -> { },
+                    };
+                    if (bit) {
+                        b = b + bytes_pow2(j);
+                    }
+                }
+                j = j + (1 as Int64);
+            }
+            out.push(b);
+            g = g + (1 as Int64);
+        }
+        data_len = out.len() - data_off;
+    } else {
+        fbw_align(&mut out, 8 as Int64);
+        offsets_off = out.len();
+        var off = 0 as Int64;
+        i = 0 as Int64;
+        while (i < n) {
+            bytes_put_u32_le(&mut out, off);
+            match (c.strs[i]) {
+                Missing::Present(x) -> { off = off + x.len(); },
+                Missing -> { },
+            };
+            i = i + (1 as Int64);
+        }
+        bytes_put_u32_le(&mut out, off);
+        offsets_len = out.len() - offsets_off;
+        fbw_align(&mut out, 8 as Int64);
+        data_off = out.len();
+        i = 0 as Int64;
+        while (i < n) {
+            match (c.strs[i]) {
+                Missing::Present(x) -> {
+                    var k = 0 as Int64;
+                    while (k < x.len()) {
+                        out.push(x.byte_at(k));
+                        k = k + (1 as Int64);
+                    }
+                },
+                Missing -> { },
+            };
+            i = i + (1 as Int64);
+        }
+        data_len = out.len() - data_off;
+    }
+    fbw_align(&mut out, 8 as Int64);
+    return Ok(ArrowBodyCol {
+        body: out,
+        meta: ArrowBufOut {
+            validity_off: validity_off,
+            validity_len: validity_len,
+            data_off: data_off,
+            data_len: data_len,
+            offsets_off: offsets_off,
+            offsets_len: offsets_len,
+        },
+        null_count: null_count,
+    });
+}
+
+struct ArrowTableStart {
+    vt: Int64,
+    pos: Int64,
+    size: Int64,
+}
+
+fun arrow_table_start(out: &mut Vec<Int64>, maxid: Int64, body_size: Int64, align: Int64): ArrowTableStart {
+    var bout = (*out).clone();
+    fbw_align(&mut bout, 2 as Int64);
+    val vt = bout.len();
+    val vtsize = 4 as Int64 + (maxid + (1 as Int64)) * (2 as Int64);
+    var i = 0 as Int64;
+    while (i < vtsize) {
+        bout.push(0 as Int64);
+        i = i + (1 as Int64);
+    }
+    fbw_align(&mut bout, align);
+    val pos = bout.len();
+    var j = 0 as Int64;
+    while (j < body_size) {
+        bout.push(0 as Int64);
+        j = j + (1 as Int64);
+    }
+    fbw_set_u16(&mut bout, vt, vtsize);
+    fbw_set_u16(&mut bout, vt + (2 as Int64), body_size);
+    fbw_set_i32(&mut bout, pos, pos - vt);
+        *out = bout;
+    return ArrowTableStart { vt: vt, pos: pos, size: body_size };
+}
+
+fun arrow_set_field(out: &mut Vec<Int64>, t: ArrowTableStart, id: Int64, off: Int64) {
+    fbw_set_u16(out, t.vt + (4 as Int64) + id * (2 as Int64), off);
+}
+
+fun arrow_patch_uoffset(out: &mut Vec<Int64>, at: Int64, target: Int64) {
+    fbw_set_u32(out, at, target - at);
+}
+
+fun arrow_append_empty_type(out: &mut Vec<Int64>): Int64 {
+    val t = arrow_table_start(out, 0 as Int64 - (1 as Int64), 4 as Int64, 4 as Int64);
+    return t.pos;
+}
+
+fun arrow_append_int_type(out: &mut Vec<Int64>, width: Int64): Int64 {
+    var bout = (*out).clone();
+    val t = arrow_table_start(&mut bout, 1 as Int64, 12 as Int64, 4 as Int64);
+    arrow_set_field(&mut bout, t, 0 as Int64, 4 as Int64);
+    arrow_set_field(&mut bout, t, 1 as Int64, 8 as Int64);
+    fbw_set_i32(&mut bout, t.pos + (4 as Int64), width);
+    fbw_set_u8(&mut bout, t.pos + (8 as Int64), 1 as Int64);
+        *out = bout;
+    return t.pos;
+}
+
+fun arrow_append_float_type(out: &mut Vec<Int64>): Int64 {
+    var bout = (*out).clone();
+    val t = arrow_table_start(&mut bout, 0 as Int64, 8 as Int64, 4 as Int64);
+    arrow_set_field(&mut bout, t, 0 as Int64, 4 as Int64);
+    fbw_set_u8(&mut bout, t.pos + (4 as Int64), 2 as Int64);
+        *out = bout;
+    return t.pos;
+}
+
+fun arrow_append_field(out: &mut Vec<Int64>, name: String, kind: Int64, nullable: Bool): Result<Int64, String> {
+    var bout = (*out).clone();
+    val t = arrow_table_start(&mut bout, 3 as Int64, 16 as Int64, 4 as Int64);
+    arrow_set_field(&mut bout, t, 0 as Int64, 8 as Int64);
+    arrow_set_field(&mut bout, t, 1 as Int64, 4 as Int64);
+    arrow_set_field(&mut bout, t, 2 as Int64, 5 as Int64);
+    arrow_set_field(&mut bout, t, 3 as Int64, 12 as Int64);
+    fbw_set_u8(&mut bout, t.pos + (4 as Int64), if (nullable) { 1 as Int64 } else { 0 as Int64 });
+    var tt = 0 as Int64;
+    if (kind == (1 as Int64)) {
+        tt = 2 as Int64;
+    } else if (kind == (3 as Int64)) {
+        tt = 3 as Int64;
+    } else if (kind == (4 as Int64)) {
+        tt = 6 as Int64;
+    } else {
+        tt = 5 as Int64;
+    }
+    fbw_set_u8(&mut bout, t.pos + (5 as Int64), tt);
+    val name_pos = fbw_append_string(&mut bout, name);
+    arrow_patch_uoffset(&mut bout, t.pos + (8 as Int64), name_pos);
+    var type_pos = 0 as Int64;
+    if (kind == (1 as Int64)) {
+        type_pos = arrow_append_int_type(&mut bout, 64 as Int64);
+    } else if (kind == (3 as Int64)) {
+        type_pos = arrow_append_float_type(&mut bout);
+    } else {
+        type_pos = arrow_append_empty_type(&mut bout);
+    }
+    arrow_patch_uoffset(&mut bout, t.pos + (12 as Int64), type_pos);
+        *out = bout;
+    return Ok(t.pos);
+}
+
+fun arrow_append_schema(out: &mut Vec<Int64>, cols: Vec<ArrowWriteCol>): Result<Int64, String> {
+    var bout = (*out).clone();
+    val t = arrow_table_start(&mut bout, 1 as Int64, 8 as Int64, 4 as Int64);
+    arrow_set_field(&mut bout, t, 1 as Int64, 4 as Int64);
+    fbw_align(&mut bout, 4 as Int64);
+    val vecpos = bout.len();
+    fbw_push_u32(&mut bout, cols.len());
+    var i = 0 as Int64;
+    while (i < cols.len()) {
+        bout.push(0 as Int64);
+        bout.push(0 as Int64);
+        bout.push(0 as Int64);
+        bout.push(0 as Int64);
+        i = i + (1 as Int64);
+    }
+    i = 0 as Int64;
+    while (i < cols.len()) {
+        val c = cols[i];
+        val fp = arrow_append_field(&mut bout, c.name.clone(), c.kind, c.optional)?;
+        arrow_patch_uoffset(&mut bout, vecpos + (4 as Int64) + i * (4 as Int64), fp);
+        i = i + (1 as Int64);
+    }
+    arrow_patch_uoffset(&mut bout, t.pos + (4 as Int64), vecpos);
+        *out = bout;
+    return Ok(t.pos);
+}
+
+fun arrow_append_record_batch(out: &mut Vec<Int64>, nrows: Int64, nodes: Vec<ArrowNodeOut>, buffers: Vec<ArrowBufferOut>): Result<Int64, String> {
+    var bout = (*out).clone();
+    val t = arrow_table_start(&mut bout, 2 as Int64, 24 as Int64, 8 as Int64);
+    arrow_set_field(&mut bout, t, 0 as Int64, 8 as Int64);
+    arrow_set_field(&mut bout, t, 1 as Int64, 16 as Int64);
+    arrow_set_field(&mut bout, t, 2 as Int64, 20 as Int64);
+    fbw_set_i64(&mut bout, t.pos + (8 as Int64), nrows);
+    fbw_align(&mut bout, 8 as Int64);
+    val npos = bout.len();
+    fbw_push_u32(&mut bout, nodes.len());
+    var i = 0 as Int64;
+    while (i < nodes.len()) {
+        fbw_push_i64(&mut bout, nodes[i].length);
+        fbw_push_i64(&mut bout, nodes[i].null_count);
+        i = i + (1 as Int64);
+    }
+    arrow_patch_uoffset(&mut bout, t.pos + (16 as Int64), npos);
+    fbw_align(&mut bout, 8 as Int64);
+    val bpos = bout.len();
+    fbw_push_u32(&mut bout, buffers.len());
+    i = 0 as Int64;
+    while (i < buffers.len()) {
+        fbw_push_i64(&mut bout, buffers[i].offset);
+        fbw_push_i64(&mut bout, buffers[i].length);
+        i = i + (1 as Int64);
+    }
+    arrow_patch_uoffset(&mut bout, t.pos + (20 as Int64), bpos);
+        *out = bout;
+    return Ok(t.pos);
+}
+
+fun arrow_append_message(out: &mut Vec<Int64>, body_len: Int64, nrows: Int64, nodes: Vec<ArrowNodeOut>, buffers: Vec<ArrowBufferOut>): Result<Int64, String> {
+    var bout = (*out).clone();
+    val t = arrow_table_start(&mut bout, 3 as Int64, 24 as Int64, 8 as Int64);
+    arrow_set_field(&mut bout, t, 1 as Int64, 4 as Int64);
+    arrow_set_field(&mut bout, t, 2 as Int64, 16 as Int64);
+    arrow_set_field(&mut bout, t, 3 as Int64, 8 as Int64);
+    fbw_set_u8(&mut bout, t.pos + (4 as Int64), 3 as Int64);
+    fbw_set_i64(&mut bout, t.pos + (8 as Int64), body_len);
+    val rb = arrow_append_record_batch(&mut bout, nrows, nodes, buffers)?;
+    arrow_patch_uoffset(&mut bout, t.pos + (16 as Int64), rb);
+        *out = bout;
+    return Ok(t.pos);
+}
+
+fun arrow_append_footer(out: &mut Vec<Int64>, cols: Vec<ArrowWriteCol>, block_offset: Int64, block_meta_len: Int64, block_body_len: Int64): Result<Int64, String> {
+    var bout = (*out).clone();
+    val t = arrow_table_start(&mut bout, 3 as Int64, 12 as Int64, 4 as Int64);
+    arrow_set_field(&mut bout, t, 1 as Int64, 4 as Int64);
+    arrow_set_field(&mut bout, t, 3 as Int64, 8 as Int64);
+    val sp = arrow_append_schema(&mut bout, cols)?;
+    arrow_patch_uoffset(&mut bout, t.pos + (4 as Int64), sp);
+    fbw_align(&mut bout, 8 as Int64);
+    val bpos = bout.len();
+    fbw_push_u32(&mut bout, 1 as Int64);
+    fbw_push_i64(&mut bout, block_offset);
+    fbw_push_i32(&mut bout, block_meta_len);
+    fbw_push_u32(&mut bout, 0 as Int64);
+    fbw_push_i64(&mut bout, block_body_len);
+    arrow_patch_uoffset(&mut bout, t.pos + (8 as Int64), bpos);
+        *out = bout;
+    return Ok(t.pos);
+}
+
+fun arrow_message_meta(body_len: Int64, nrows: Int64, nodes: Vec<ArrowNodeOut>, buffers: Vec<ArrowBufferOut>): Result<String, String> {
+    var out: Vec<Int64> = vec![];
+    fbw_push_u32(&mut out, 0 as Int64);
+    val msg = arrow_append_message(&mut out, body_len, nrows, nodes, buffers)?;
+    fbw_set_u32(&mut out, 0 as Int64, msg);
+    return fbw_finish(out);
+}
+
+fun arrow_footer_meta(cols: Vec<ArrowWriteCol>, block_offset: Int64, block_meta_len: Int64, block_body_len: Int64): Result<String, String> {
+    var out: Vec<Int64> = vec![];
+    fbw_push_u32(&mut out, 0 as Int64);
+    val f = arrow_append_footer(&mut out, cols, block_offset, block_meta_len, block_body_len)?;
+    fbw_set_u32(&mut out, 0 as Int64, f);
+    return fbw_finish(out);
+}
+
+fun arrow_append_vec(out: &mut Vec<Int64>, v: Vec<Int64>) {
+    var i = 0 as Int64;
+    while (i < v.len()) {
+        (*out).push(v[i]);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun write_arrow(f: &TypedFrame, path: String): Result<Int64, String> {
+    val names = tf_names(f);
+    val nrows = tf_nrows(f);
+    fail_if(names.len() > arrow_max_cols(), "arrow: too many columns")?;
+    fail_if(nrows < (0 as Int64) || nrows > arrow_max_rows(), "arrow: too many rows")?;
+    var wcols: Vec<ArrowWriteCol> = vec![];
+    val empty_int: Vec<Missing<Int64>> = vec![];
+    var i = 0 as Int64;
+    while (i < names.len()) {
+        val c = tf_col_at(f, i);
+        val cok = match (c) { Some(v) -> true, None -> false, };
+        fail_if(!cok, "arrow: missing column")?;
+        val col = match (tf_col_at(f, i)) { Some(v) -> v, None -> Column::Int(empty_int) };
+        val wc = arrow_write_col(names[i].clone(), col)?;
+        wcols.push(wc);
+        i = i + (1 as Int64);
+    }
+    var body: Vec<Int64> = vec![];
+    var metas: Vec<ArrowBufOut> = vec![];
+    var nodes: Vec<ArrowNodeOut> = vec![];
+    i = 0 as Int64;
+    while (i < wcols.len()) {
+        val c = wcols[i];
+        val bc = arrow_col_body(c, nrows, body)?;
+        val m = bc.meta;
+        val nc = bc.null_count;
+        body = bc.body;
+        metas.push(m);
+        nodes.push(ArrowNodeOut { length: nrows, null_count: nc });
+        i = i + (1 as Int64);
+    }
+    var buffers: Vec<ArrowBufferOut> = vec![];
+    i = 0 as Int64;
+    while (i < wcols.len()) {
+        val m = metas[i];
+        buffers.push(ArrowBufferOut { offset: m.validity_off, length: m.validity_len });
+        if (wcols[i].kind == (5 as Int64)) {
+            buffers.push(ArrowBufferOut { offset: m.offsets_off, length: m.offsets_len });
+            buffers.push(ArrowBufferOut { offset: m.data_off, length: m.data_len });
+        } else {
+            buffers.push(ArrowBufferOut { offset: m.data_off, length: m.data_len });
+        }
+        i = i + (1 as Int64);
+    }
+    val meta = arrow_message_meta(body.len(), nrows, nodes, buffers)?;
+    var file: Vec<Int64> = vec![];
+    fbw_append_bytes(&mut file, "ARROW1".clone());
+    fbw_push_u16(&mut file, 0 as Int64);
+    val block_offset = file.len();
+    fbw_push_u32(&mut file, 4294967295 as Int64);
+    fbw_push_u32(&mut file, meta.len());
+    fbw_append_bytes(&mut file, meta.clone());
+    fbw_align(&mut file, 8 as Int64);
+    val block_meta_len = file.len() - block_offset;
+    arrow_append_vec(&mut file, body);
+    val footer = arrow_footer_meta(wcols, block_offset, block_meta_len, file.len() - block_offset - block_meta_len)?;
+    fbw_append_bytes(&mut file, footer.clone());
+    fbw_push_u32(&mut file, footer.len());
+    fbw_append_bytes(&mut file, "ARROW1".clone());
+    fail_if(file.len() > arrow_max_file(), "arrow: file exceeds cap")?;
+    val data = fbw_finish(file)?;
+    return write_file(path, data);
+}

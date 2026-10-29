@@ -1,0 +1,391 @@
+// std::flatbuf: minimal checked FlatBuffers table/vector reader used by the
+// Arrow IPC file footer plus small forward writer helpers used by P5B.
+module std.flatbuf;
+
+import std::bytes::bytes_i32_le;
+import std::bytes::bytes_i64_le;
+import std::bytes::bytes_slice;
+import std::bytes::bytes_u16_le;
+import std::bytes::bytes_u32_le;
+import std::bytes::bytes_u8;
+
+pub struct FbTable {
+    data: String,
+    pos: Int64,
+}
+
+pub fun fb_root(s: &String): Option<FbTable> {
+    val off = bytes_u32_le(s, 0 as Int64);
+    val ok = match (off) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val at = match (bytes_u32_le(s, 0 as Int64)) { Some(v) -> v, None -> 0 as Int64, };
+    if (at < (4 as Int64) || at >= (*s).len()) {
+        return None;
+    }
+    val d = (*s).clone();
+    return Some(FbTable { data: d, pos: at });
+}
+
+pub fun fb_field(t: &FbTable, field: Int64): Option<Int64> {
+    if (field < (0 as Int64) || t.pos < (0 as Int64) || t.pos + (4 as Int64) > t.data.len()) {
+        return None;
+    }
+    val so = bytes_i32_le(&t.data, t.pos);
+    val sok = match (so) { Some(v) -> true, None -> false, };
+    if (!sok) {
+        return None;
+    }
+    val soff = match (bytes_i32_le(&t.data, t.pos)) { Some(v) -> v, None -> 0 as Int64, };
+    val vt = t.pos - soff;
+    if (vt < (0 as Int64) || vt + (4 as Int64) > t.data.len()) {
+        return None;
+    }
+    val vl = bytes_u16_le(&t.data, vt);
+    val vok = match (vl) { Some(v) -> true, None -> false, };
+    if (!vok) {
+        return None;
+    }
+    val vlen = match (bytes_u16_le(&t.data, vt)) { Some(v) -> v, None -> 0 as Int64, };
+    val entry = vt + (4 as Int64) + field * (2 as Int64);
+    if (entry + (2 as Int64) > vt + vlen || entry + (2 as Int64) > t.data.len()) {
+        return None;
+    }
+    val off = bytes_u16_le(&t.data, entry);
+    val ook = match (off) { Some(v) -> true, None -> false, };
+    if (!ook) {
+        return None;
+    }
+    val o = match (bytes_u16_le(&t.data, entry)) { Some(v) -> v, None -> 0 as Int64, };
+    if (o == (0 as Int64)) {
+        return None;
+    }
+    return Some(t.pos + o);
+}
+
+pub fun fb_i64(t: &FbTable, field: Int64): Option<Int64> {
+    val p = fb_field(t, field);
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val at = match (fb_field(t, field)) { Some(v) -> v, None -> 0 as Int64, };
+    return bytes_i64_le(&t.data, at);
+}
+
+pub fun fb_i32(t: &FbTable, field: Int64): Option<Int64> {
+    val p = fb_field(t, field);
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val at = match (fb_field(t, field)) { Some(v) -> v, None -> 0 as Int64, };
+    return bytes_i32_le(&t.data, at);
+}
+
+pub fun fb_u8(t: &FbTable, field: Int64): Option<Int64> {
+    val p = fb_field(t, field);
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val at = match (fb_field(t, field)) { Some(v) -> v, None -> 0 as Int64, };
+    return bytes_u8(&t.data, at);
+}
+
+pub fun fb_string(t: &FbTable, field: Int64): Option<String> {
+    val p = fb_field(t, field);
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val at = match (fb_field(t, field)) { Some(v) -> v, None -> 0 as Int64, };
+    val uo = bytes_u32_le(&t.data, at);
+    val uok = match (uo) { Some(v) -> true, None -> false, };
+    if (!uok) {
+        return None;
+    }
+    val off = match (bytes_u32_le(&t.data, at)) { Some(v) -> v, None -> 0 as Int64, };
+    val sp = at + off;
+    val ln = bytes_u32_le(&t.data, sp);
+    val lok = match (ln) { Some(v) -> true, None -> false, };
+    if (!lok) {
+        return None;
+    }
+    val n = match (bytes_u32_le(&t.data, sp)) { Some(v) -> v, None -> 0 as Int64, };
+    if (n < (0 as Int64) || sp + (4 as Int64) + n > t.data.len()) {
+        return None;
+    }
+    return bytes_slice(&t.data, sp + (4 as Int64), sp + (4 as Int64) + n);
+}
+
+pub fun fb_vector_len(t: &FbTable, field: Int64): Option<Int64> {
+    val p = fb_field(t, field);
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val at = match (fb_field(t, field)) { Some(v) -> v, None -> 0 as Int64, };
+    val uo = bytes_u32_le(&t.data, at);
+    val uok = match (uo) { Some(v) -> true, None -> false, };
+    if (!uok) {
+        return None;
+    }
+    val off = match (bytes_u32_le(&t.data, at)) { Some(v) -> v, None -> 0 as Int64, };
+    val sp = at + off;
+    val ln = bytes_u32_le(&t.data, sp);
+    val lok = match (ln) { Some(v) -> true, None -> false, };
+    if (!lok) {
+        return None;
+    }
+    val n = match (bytes_u32_le(&t.data, sp)) { Some(v) -> v, None -> 0 as Int64, };
+    if (n < (0 as Int64) || sp + (4 as Int64) + n * (4 as Int64) > t.data.len()) {
+        return None;
+    }
+    return Some(n);
+}
+
+pub fun fb_vector_struct(t: &FbTable, field: Int64, index: Int64, elem_size: Int64): Option<Int64> {
+    val n = fb_vector_len(t, field);
+    val ok = match (n) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val len = match (fb_vector_len(t, field)) { Some(v) -> v, None -> 0 as Int64, };
+    if (index < (0 as Int64) || index >= len || elem_size <= (0 as Int64)) {
+        return None;
+    }
+    val p = fb_field(t, field);
+    val pok = match (p) { Some(v) -> true, None -> false, };
+    if (!pok) {
+        return None;
+    }
+    val at = match (fb_field(t, field)) { Some(v) -> v, None -> 0 as Int64, };
+    val off = match (bytes_u32_le(&t.data, at)) { Some(v) -> v, None -> 0 as Int64, };
+    val sp = at + off;
+    val ep = sp + (4 as Int64) + index * elem_size;
+    if (ep < (0 as Int64) || ep + elem_size > t.data.len()) {
+        return None;
+    }
+    return Some(ep);
+}
+
+pub fun fb_vector_table(t: &FbTable, field: Int64, index: Int64): Option<FbTable> {
+    val p = fb_field(t, field);
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val at = match (fb_field(t, field)) { Some(v) -> v, None -> 0 as Int64, };
+    val off = match (bytes_u32_le(&t.data, at)) { Some(v) -> v, None -> 0 as Int64, };
+    val sp = at + off;
+    val n = bytes_u32_le(&t.data, sp);
+    val nok = match (n) { Some(v) -> true, None -> false, };
+    if (!nok) {
+        return None;
+    }
+    val len = match (bytes_u32_le(&t.data, sp)) { Some(v) -> v, None -> 0 as Int64, };
+    if (index < (0 as Int64) || index >= len) {
+        return None;
+    }
+    val ep = sp + (4 as Int64) + index * (4 as Int64);
+    return fb_table_at(t, ep);
+}
+
+pub fun fb_table(t: &FbTable, field: Int64): Option<FbTable> {
+    val p = fb_field(t, field);
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val at = match (fb_field(t, field)) { Some(v) -> v, None -> 0 as Int64, };
+    return fb_table_at(t, at);
+}
+
+pub fun fb_table_at(t: &FbTable, at: Int64): Option<FbTable> {
+    if (at < (0 as Int64) || at + (4 as Int64) > t.data.len()) {
+        return None;
+    }
+    val uo = bytes_u32_le(&t.data, at);
+    val uok = match (uo) { Some(v) -> true, None -> false, };
+    if (!uok) {
+        return None;
+    }
+    val off = match (bytes_u32_le(&t.data, at)) { Some(v) -> v, None -> 0 as Int64, };
+    val target = at + off;
+    if (target < (0 as Int64) || target + (4 as Int64) > t.data.len()) {
+        return None;
+    }
+    val d = t.data.clone();
+    return Some(FbTable { data: d, pos: target });
+}
+
+pub fun fb_i64_at(t: &FbTable, at: Int64): Option<Int64> {
+    return bytes_i64_le(&t.data, at);
+}
+
+pub fun fb_i32_at(t: &FbTable, at: Int64): Option<Int64> {
+    return bytes_i32_le(&t.data, at);
+}
+
+pub fun fb_u8_at(t: &FbTable, at: Int64): Option<Int64> {
+    return bytes_u8(&t.data, at);
+}
+
+pub fun fb_vector_offset(t: &FbTable, field: Int64, index: Int64): Option<Int64> {
+    val p = fb_field(t, field);
+    val ok = match (p) { Some(v) -> true, None -> false, };
+    if (!ok) {
+        return None;
+    }
+    val at = match (fb_field(t, field)) { Some(v) -> v, None -> 0 as Int64, };
+    val off = match (bytes_u32_le(&t.data, at)) { Some(v) -> v, None -> 0 as Int64, };
+    val sp = at + off;
+    val n = bytes_u32_le(&t.data, sp);
+    val nok = match (n) { Some(v) -> true, None -> false, };
+    if (!nok) {
+        return None;
+    }
+    val len = match (bytes_u32_le(&t.data, sp)) { Some(v) -> v, None -> 0 as Int64, };
+    if (index < (0 as Int64) || index >= len) {
+        return None;
+    }
+    val ep = sp + (4 as Int64) + index * (4 as Int64);
+    val uo = bytes_u32_le(&t.data, ep);
+    val uok = match (uo) { Some(v) -> true, None -> false, };
+    if (!uok) {
+        return None;
+    }
+    val eoff = match (bytes_u32_le(&t.data, ep)) { Some(v) -> v, None -> 0 as Int64, };
+    return Some(ep + eoff);
+}
+
+pub fun fbw_push_u8(out: &mut Vec<Int64>, v: Int64) {
+    (*out).push(((v % (256 as Int64)) + (256 as Int64)) % (256 as Int64));
+}
+
+pub fun fbw_push_u16(out: &mut Vec<Int64>, v: Int64) {
+    var x = v;
+    var i = 0 as Int64;
+    while (i < (2 as Int64)) {
+        (*out).push(((x % (256 as Int64)) + (256 as Int64)) % (256 as Int64));
+        x = x / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun fbw_push_u32(out: &mut Vec<Int64>, v: Int64) {
+    var x = v;
+    var i = 0 as Int64;
+    while (i < (4 as Int64)) {
+        (*out).push(((x % (256 as Int64)) + (256 as Int64)) % (256 as Int64));
+        x = x / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun fbw_push_i32(out: &mut Vec<Int64>, v: Int64) {
+    var x = v;
+    var i = 0 as Int64;
+    while (i < (4 as Int64)) {
+        val b = ((x % (256 as Int64)) + (256 as Int64)) % (256 as Int64);
+        (*out).push(b);
+        x = (x - b) / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun fbw_push_i64(out: &mut Vec<Int64>, v: Int64) {
+    var x = v;
+    var i = 0 as Int64;
+    while (i < (8 as Int64)) {
+        val b = ((x % (256 as Int64)) + (256 as Int64)) % (256 as Int64);
+        (*out).push(b);
+        x = (x - b) / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun fbw_align(out: &mut Vec<Int64>, n: Int64) {
+    while ((*out).len() % n != (0 as Int64)) {
+        (*out).push(0 as Int64);
+    }
+}
+
+pub fun fbw_set_u8(out: &mut Vec<Int64>, at: Int64, v: Int64) {
+    (*out)[at] = ((v % (256 as Int64)) + (256 as Int64)) % (256 as Int64);
+}
+
+pub fun fbw_set_u16(out: &mut Vec<Int64>, at: Int64, v: Int64) {
+    var x = v;
+    var i = 0 as Int64;
+    while (i < (2 as Int64)) {
+        (*out)[at + i] = ((x % (256 as Int64)) + (256 as Int64)) % (256 as Int64);
+        x = x / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun fbw_set_u32(out: &mut Vec<Int64>, at: Int64, v: Int64) {
+    var x = v;
+    var i = 0 as Int64;
+    while (i < (4 as Int64)) {
+        (*out)[at + i] = ((x % (256 as Int64)) + (256 as Int64)) % (256 as Int64);
+        x = x / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun fbw_set_i32(out: &mut Vec<Int64>, at: Int64, v: Int64) {
+    var x = v;
+    var i = 0 as Int64;
+    while (i < (4 as Int64)) {
+        val b = ((x % (256 as Int64)) + (256 as Int64)) % (256 as Int64);
+        (*out)[at + i] = b;
+        x = (x - b) / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun fbw_set_i64(out: &mut Vec<Int64>, at: Int64, v: Int64) {
+    var x = v;
+    var i = 0 as Int64;
+    while (i < (8 as Int64)) {
+        val b = ((x % (256 as Int64)) + (256 as Int64)) % (256 as Int64);
+        (*out)[at + i] = b;
+        x = (x - b) / (256 as Int64);
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun fbw_append_string(out: &mut Vec<Int64>, s: String): Int64 {
+    var bout = (*out).clone();
+    fbw_align(&mut bout, 4 as Int64);
+    val pos = bout.len();
+    fbw_push_u32(&mut bout, s.len());
+    var i = 0 as Int64;
+    while (i < s.len()) {
+        bout.push(s.byte_at(i));
+        i = i + (1 as Int64);
+    }
+    bout.push(0 as Int64);
+        *out = bout;
+    return pos;
+}
+
+pub fun fbw_append_bytes(out: &mut Vec<Int64>, s: String) {
+    var i = 0 as Int64;
+    while (i < s.len()) {
+        (*out).push(s.byte_at(i));
+        i = i + (1 as Int64);
+    }
+}
+
+pub fun fbw_finish(out: Vec<Int64>): Result<String, String> {
+    return bytes_to_string(out);
+}
+
+pub fun fb_finish_table(out: Vec<Int64>): Result<String, String> {
+    return bytes_to_string(out);
+}

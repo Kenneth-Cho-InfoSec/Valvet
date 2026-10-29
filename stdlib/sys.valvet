@@ -1,7 +1,8 @@
 // std::sys: scripting runtime (imp mode). Subprocess spawns are gated to
-// imp (`mode exp` is hermetic); environment reads work everywhere.
-// `run` inherits stdio and returns the exit status; `capture` returns
-// stdout up to 1MB (stderr inherits, exit status dropped).
+// imp (`mode exp` is hermetic); environment reads and `cwd` are also denied
+// under `valvet run --hermetic`. `--hermetic` is a compile-time policy gate,
+// not an OS sandbox. `run` inherits stdio and returns the exit status;
+// `capture` returns stdout up to 1MB (stderr inherits, exit status dropped).
 
 module std.sys;
 
