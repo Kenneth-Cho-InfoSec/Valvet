@@ -4387,3 +4387,50 @@ html[data-theme="dark"] .filter-btn.is-active span {
     box-shadow: none;
   }
 }
+
+.feature-flow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 9px;
+  max-width: none !important;
+  margin: 18px 0 26px !important;
+  padding: 0 !important;
+  list-style: none;
+}
+
+.feature-flow li {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 13px 11px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+}
+
+.feature-step {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.feature-flow strong {
+  color: var(--ink);
+  font-size: 0.83rem;
+}
+
+.feature-flow small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 980px) {
+  .feature-flow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 580px) {
+  .feature-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
