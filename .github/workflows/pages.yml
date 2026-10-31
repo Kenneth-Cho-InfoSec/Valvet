@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Generate robots.txt and sitemap.xml
+        run: python3 .github/scripts/generate_sitemap.py --site-dir site --base-url https://kenneth-cho-infosec.github.io/Valvet/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
