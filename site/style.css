@@ -82,6 +82,10 @@ html[data-theme="dark"] {
   --footer-ink: #f7f2ff;
 }
 
+html[data-theme="light"] {
+  --faint: #595762;
+}
+
 /* ---------- Reset and base ---------- */
 
 *,
