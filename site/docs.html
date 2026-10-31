@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Documentation · Valvet</title>
-<meta name="description" content="The complete Valvet language guide: values and types, ownership, modules, units, frames, autodiff, the standard library, and the CLI.">
+<meta name="description" content="The complete Valvet language guide covers values, types, ownership, modules, units, frames, autodiff, the standard library, CLI use, and build instructions.">
 <meta name="theme-color" content="#f7f7f9">
 <link rel="canonical" href="https://kenneth-cho-infosec.github.io/Valvet/docs.html">
 <meta property="og:title" content="Documentation · Valvet">
-<meta property="og:description" content="The complete Valvet language guide: values and types, ownership, modules, units, frames, autodiff, the standard library, and the CLI.">
+<meta property="og:description" content="The complete Valvet language guide covers values, types, ownership, modules, units, frames, autodiff, the standard library, CLI use, and build instructions.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://kenneth-cho-infosec.github.io/Valvet/docs.html">
 <meta property="og:site_name" content="Valvet">
@@ -18,7 +18,7 @@
 <meta property="og:image:alt" content="Valvet: Data work, compiled. A dark code window and lavender background.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Documentation · Valvet">
-<meta name="twitter:description" content="The complete Valvet language guide: values and types, ownership, modules, units, frames, autodiff, the standard library, and the CLI.">
+<meta name="twitter:description" content="The complete Valvet language guide covers values, types, ownership, modules, units, frames, autodiff, the standard library, CLI use, and build instructions.">
 <meta name="twitter:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
 <link rel="icon" href="assets/favicon.png" type="image/png">
 <link rel="stylesheet" href="style.css">
@@ -40,6 +40,47 @@
     if (saved === 'dark' || saved === 'light') document.documentElement.dataset.theme = saved;
   } catch (error) {}
 })();
+</script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "The Valvet language",
+  "description": "The complete Valvet language guide covers values, types, ownership, modules, units, frames, autodiff, the standard library, CLI use, and build instructions.",
+  "url": "https://kenneth-cho-infosec.github.io/Valvet/docs.html",
+  "inLanguage": "en",
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Valvet",
+    "url": "https://kenneth-cho-infosec.github.io/Valvet/"
+  },
+  "about": {
+    "@type": "SoftwareApplication",
+    "name": "Valvet",
+    "url": "https://kenneth-cho-infosec.github.io/Valvet/"
+  }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Valvet",
+      "item": "https://kenneth-cho-infosec.github.io/Valvet/"
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": "Documentation",
+      "item": "https://kenneth-cho-infosec.github.io/Valvet/docs.html"
+    }
+  ]
+}
 </script>
 </head>
 <body class="page-docs">
@@ -85,6 +126,11 @@
 </header>
 <main id="main">
 
+<nav class="breadcrumbs container" aria-label="Breadcrumb">
+  <a href="index.html">Valvet</a>
+  <span aria-hidden="true">/</span>
+  <span aria-current="page">Documentation</span>
+</nav>
 <div class="reading-progress" data-progress aria-hidden="true"></div>
 <section class="page-hero docs-hero">
   <div class="container page-hero-inner">
