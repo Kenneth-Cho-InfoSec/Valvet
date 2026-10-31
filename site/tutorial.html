@@ -2,10 +2,10 @@
 <html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Beginner tutorial · Valvet</title><meta name="description" content="Build Valvet 0.5.0, run the included example, and write a small analysis program."><meta name="theme-color" content="#f7f3ff">
+<title>Beginner tutorial · Valvet</title><meta name="description" content="Build Valvet 0.5.0, run the included example, and write a small analysis program."><meta name="theme-color" content="#f7f7f9">
 <link rel="canonical" href="https://kenneth-cho-infosec.github.io/Valvet/tutorial.html"><meta property="og:title" content="Beginner tutorial · Valvet"><meta property="og:description" content="Build Valvet 0.5.0, run the included example, and write a small analysis program."><meta property="og:type" content="website"><meta property="og:url" content="https://kenneth-cho-infosec.github.io/Valvet/tutorial.html"><meta property="og:site_name" content="Valvet"><meta property="og:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
 <meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="Beginner tutorial · Valvet"><meta name="twitter:description" content="Build Valvet 0.5.0, run the included example, and write a small analysis program."><meta name="twitter:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
-<link rel="icon" href="assets/favicon.png" type="image/png"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet"><link rel="stylesheet" href="style.css">
+<link rel="icon" href="assets/favicon.png" type="image/png"><link rel="stylesheet" href="style.css">
 <script>(function(){document.documentElement.classList.add('js');try{var t=localStorage.getItem('valvet-theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t}catch(e){}})();</script>
 </head><body class="page-privacy"><a class="skip-link" href="#main">Skip to content</a>
 <header class="site-header" id="site-header">
@@ -64,7 +64,7 @@ cargo build --workspace</code></pre></div><p>The compiler is created at <code>ta
 
 println(mean(vec![2.0, 4.0, 6.0, 8.0]))</code></pre></div><p>Run it with <code>./target/debug/valvet run mean.valvet</code>. It prints <code>5</code>. Check without linking by using <code>./target/debug/valvet check mean.valvet</code>.</p></section>
 <section class="doc-section" id="next"><h2>Where to go next</h2><ul><li>Browse the <a href="examples.html">runnable examples</a> for frames, SQL, units, and core language features.</li><li>Use the <a href="docs.html#typed-frames-0-5">typed-frame reference</a> for schemas, missing values, grouping, joins, windows, and lazy plans.</li><li>Read the <a href="compare.html">scope comparison</a> to decide whether Valvet fits your workflow.</li><li>Open a question or report an issue in the <a href="https://github.com/Kenneth-Cho-InfoSec/Valvet/issues">GitHub issue tracker</a>.</li></ul><p>Check the <a href="https://github.com/Kenneth-Cho-InfoSec/Valvet/releases">release notes</a> for the version you install.</p></section>
-</article><aside class="privacy-aside"><nav class="toc-group" aria-label="Tutorial sections"><p class="toc-group-title">In this guide</p><a href="#prerequisites">Before you start</a><a href="#build">Build</a><a href="#run">Run a program</a><a href="#write-a-script">Write an analysis</a><a href="#next">Next steps</a></nav><div class="sidebar-note"><p>Valvet 0.5.0</p><p>A small, safe, compiled language for data work. It emits C11 and has no Valvet runtime to deploy.</p><a href="index.html#install">Build from source <span aria-hidden="true">→</span></a></div></aside></div>
+</article><aside class="privacy-aside"><nav class="toc-group" aria-label="Tutorial sections"><p class="toc-group-title">In this guide</p><a href="#prerequisites">Before you start</a><a href="#build">Build</a><a href="#run">Run a program</a><a href="#write-a-script">Write an analysis</a><a href="#next">Next steps</a></nav><div class="sidebar-note"><p>Valvet 0.5.0</p><p>Valvet emits C11 and builds native programs without a Valvet runtime or garbage collector.</p><a href="index.html#install">Build from source <span aria-hidden="true">→</span></a></div></aside></div>
 </main>
 <footer class="site-footer">
   <div class="container footer-grid">
@@ -73,7 +73,7 @@ println(mean(vec![2.0, 4.0, 6.0, 8.0]))</code></pre></div><p>Run it with <code>.
         <img src="assets/logo-128.png" width="40" height="40" alt="">
         <span class="brand-name">Valvet</span>
       </a>
-      <p>A small, safe, compiled language for data work.</p>
+      <p>A compiled language for data programs.</p>
       <p class="footer-note">Native binaries. No Valvet runtime. No garbage collector.</p>
     </div>
     <div class="footer-col">
