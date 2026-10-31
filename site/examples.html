@@ -53,7 +53,7 @@
     <a class="brand" href="index.html" aria-label="Valvet home">
       <img src="assets/logo-128.png" width="36" height="36" alt="">
       <span class="brand-name">Valvet</span>
-      <span class="brand-version">0.3.0</span>
+      <span class="brand-version">0.5.0</span>
     </a>
     <nav class="nav-links" aria-label="Primary">
       <a href="index.html#why">Why Valvet</a><a href="index.html#features">Features</a><a href="index.html#code">Code</a><a href="docs.html">Docs</a><a href="examples.html" class="is-active" aria-current="page">Examples</a>
@@ -76,11 +76,13 @@
 <a href="index.html#code">Code<span aria-hidden="true">↗</span></a>
 <a href="docs.html">Docs<span aria-hidden="true">↗</span></a>
 <a href="examples.html">Examples<span aria-hidden="true">↗</span></a>
+<a href="tutorial.html">Tutorial<span aria-hidden="true">↗</span></a>
+<a href="compare.html">Compare<span aria-hidden="true">↗</span></a>
       <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub<span aria-hidden="true">↗</span></a>
     </nav>
     <div class="container mobile-menu-foot">
       <a class="btn btn-primary" href="index.html#install">Install Valvet</a>
-      <p>Native binaries. No garbage collector. No runtime.</p>
+      <p>Native binaries. No Valvet runtime. No garbage collector.</p>
     </div>
   </div>
 </header>
@@ -91,7 +93,7 @@
   <div class="container page-hero-inner">
     <h1>Examples</h1>
     <p class="page-lede">Every sample runs as shown with <code>valvet run</code>. Start with a mean, end with SQL over frames.</p>
-    <div class="page-meta"><span>14 programs</span><span>Every output verified</span><span>No runtime</span></div>
+    <div class="page-meta"><span>14 programs</span><span>Every output verified</span><span>No Valvet runtime</span></div>
   </div>
 </section>
 <div class="container examples-layout">
@@ -121,7 +123,7 @@
     <h2>Hello</h2>
     <span class="example-tag">Basics</span>
   </header>
-  <p>A complete Valvet program needs only statements and an output call: top-level code runs directly with no wrapper, no imports, and no runtime to initialize. The compiler turns this into a dependency-free native binary.</p>
+  <p>A complete Valvet program needs only statements and an output call: top-level code runs directly with no wrapper, no imports, and no Valvet runtime to initialize. The compiler turns this into a native binary with no Valvet runtime library.</p>
 
 <div class="code-card" data-ui>
   <div class="code-head">
@@ -174,7 +176,7 @@ println(match (o) { Some(x) -&gt; x * 2, None -&gt; 0, }) // unwrap and double, 
     <h2>Mean of a vector</h2>
     <span class="example-tag">Basics</span>
   </header>
-  <p>The whole data routine in nine lines: a growable heap vector, a snapshot loop that cannot alias the buffer, and an explicit <code data-ui>as</code> conversion at the division. Nothing is hidden. The loop runs at C speed and the vector frees itself when <code data-ui>main</code> exits.</p>
+  <p>The whole data routine in nine lines: a growable heap vector, a snapshot loop that cannot alias the buffer, and an explicit <code data-ui>as</code> conversion at the division. Nothing is hidden. The generated program runs as a native executable, and the vector is freed when its scope exits.</p>
 
 <div class="code-card" data-ui>
   <div class="code-head">
@@ -650,7 +652,7 @@ println(q.cols[1 as Int64]); // per-group sums</code></pre>
         <span class="brand-name">Valvet</span>
       </a>
       <p>A small, safe, compiled language for data work.</p>
-      <p class="footer-note">Native binaries. No garbage collector. No runtime.</p>
+      <p class="footer-note">Native binaries. No Valvet runtime. No garbage collector.</p>
     </div>
     <div class="footer-col">
       <h2>Language</h2>
@@ -662,7 +664,7 @@ println(q.cols[1 as Int64]); // per-group sums</code></pre>
     <div class="footer-col">
       <h2>Resources</h2>
       <a href="docs.html">Documentation</a>
-      <a href="examples.html">Examples</a>
+      <a href="examples.html">Examples</a><a href="tutorial.html">Tutorial</a><a href="compare.html">Compare</a>
       <a href="index.html#stdlib">Standard library</a>
       <a href="index.html#install">Install</a>
     </div>
@@ -670,7 +672,7 @@ println(q.cols[1 as Int64]); // per-group sums</code></pre>
       <h2>Project</h2>
       <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
       <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/blob/main/LICENSE">License</a>
-      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">Issues</a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/issues">Issues</a>
       <a href="privacy.html">Privacy policy</a>
     </div>
   </div>
