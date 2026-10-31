@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Valvet · A small, safe, compiled language for data work</title>
-<meta name="description" content="Valvet is a small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime. Frames, models, SQL, units, autodiff, and deterministic parallelism in one language.">
+<meta name="description" content="Valvet is a small, safe, compiled language for data work. Native binaries, no Valvet runtime, no garbage collector. Frames, models, SQL, units, autodiff, and deterministic parallelism in one language.">
 <meta name="theme-color" content="#f7f3ff">
 <link rel="canonical" href="https://kenneth-cho-infosec.github.io/Valvet/">
 <meta property="og:title" content="Valvet · Data work, compiled">
-<meta property="og:description" content="A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.">
+<meta property="og:description" content="A small, safe, compiled language for data work. Native binaries, no Valvet runtime, no garbage collector.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://kenneth-cho-infosec.github.io/Valvet/">
 <meta property="og:site_name" content="Valvet">
@@ -18,7 +18,7 @@
 <meta property="og:image:alt" content="Valvet: Data work, compiled. A dark code window and lavender background.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Valvet · Data work, compiled">
-<meta name="twitter:description" content="A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.">
+<meta name="twitter:description" content="A small, safe, compiled language for data work. Native binaries, no Valvet runtime, no garbage collector.">
 <meta name="twitter:image" content="https://kenneth-cho-infosec.github.io/Valvet/assets/og.png">
 <link rel="icon" href="assets/favicon.png" type="image/png">
 <script type="application/ld+json">
@@ -27,7 +27,7 @@
   "@type": "SoftwareApplication",
   "name": "Valvet",
   "applicationCategory": "DeveloperApplication",
-  "description": "A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.",
+  "description": "A small, safe, compiled language for data work. Native binaries, no Valvet runtime, no garbage collector.",
   "url": "https://kenneth-cho-infosec.github.io/Valvet/",
   "sameAs": ["https://github.com/Kenneth-Cho-InfoSec/valvet"]
 }
@@ -63,10 +63,10 @@
     <a class="brand" href="index.html" aria-label="Valvet home">
       <img src="assets/logo-128.png" width="36" height="36" alt="">
       <span class="brand-name">Valvet</span>
-      <span class="brand-version">0.3.0</span>
+      <span class="brand-version">0.5.0</span>
     </a>
     <nav class="nav-links" aria-label="Primary">
-      <a href="index.html#why">Why Valvet</a><a href="index.html#features">Features</a><a href="index.html#code">Code</a><a href="docs.html">Docs</a><a href="examples.html">Examples</a>
+      <a href="index.html#why">Why Valvet</a><a href="features.html">Features</a><a href="index.html#code">Code</a><a href="docs.html">Docs</a><a href="examples.html">Examples</a><a href="tutorial.html">Tutorial</a><a href="compare.html">Compare</a>
     </nav>
     <div class="nav-actions">
       <button class="icon-btn theme-toggle" type="button" aria-label="Switch to dark theme" title="Switch theme">
@@ -82,15 +82,17 @@
   <div class="mobile-menu" id="mobile-menu" hidden>
     <nav class="container mobile-nav" aria-label="Mobile">
       <a href="index.html#why">Why Valvet<span aria-hidden="true">↗</span></a>
-<a href="index.html#features">Features<span aria-hidden="true">↗</span></a>
+<a href="features.html">Features<span aria-hidden="true">↗</span></a>
 <a href="index.html#code">Code<span aria-hidden="true">↗</span></a>
 <a href="docs.html">Docs<span aria-hidden="true">↗</span></a>
 <a href="examples.html">Examples<span aria-hidden="true">↗</span></a>
+<a href="tutorial.html">Tutorial<span aria-hidden="true">↗</span></a>
+<a href="compare.html">Compare<span aria-hidden="true">↗</span></a>
       <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub<span aria-hidden="true">↗</span></a>
     </nav>
     <div class="container mobile-menu-foot">
       <a class="btn btn-primary" href="index.html#install">Install Valvet</a>
-      <p>Native binaries. No garbage collector. No runtime.</p>
+      <p>Native binaries. No Valvet runtime. No garbage collector.</p>
     </div>
   </div>
 </header>
@@ -132,7 +134,7 @@
         <h1 class="hero-title">
           <span class="hero-line"><span>Valvet</span></span>
         </h1>
-        <p class="hero-lede">A small, safe, compiled language for data work. Native binaries, no garbage collector, no runtime.</p>
+        <p class="hero-lede">A small, safe, compiled language for data work. Native binaries, no Valvet runtime, no garbage collector.</p>
         <div class="hero-actions">
           <a class="btn btn-primary btn-lg" href="#install">
             Install Valvet
@@ -189,7 +191,7 @@ println(mean(vec![2.0, 4.0, 6.0, 8.0]))</code></pre>
           <span class="float-icon">
             <svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18"/></svg>
           </span>
-          <span><strong>0 runtime deps</strong><small>one native binary</small></span>
+          <span><strong>No Valvet runtime</strong><small>compiled through C11</small></span>
         </div>
       </div>
     </div>
@@ -204,18 +206,18 @@ println(mean(vec![2.0, 4.0, 6.0, 8.0]))</code></pre>
       <div class="fact-row">
         <span>Native binaries</span><i></i>
         <span>No garbage collector</span><i></i>
-        <span>No runtime</span><i></i>
-        <span>27 stdlib modules</span><i></i>
-        <span>185 unit tests</span><i></i>
-        <span>258 / 258 fixtures</span><i></i>
+        <span>No Valvet runtime</span><i></i>
+        <span>Typed frames</span><i></i>
+        <span>246 Rust tests</span><i></i>
+        <span>432 / 432 fixtures</span><i></i>
       </div>
       <div class="fact-row" aria-hidden="true">
         <span>Native binaries</span><i></i>
         <span>No garbage collector</span><i></i>
-        <span>No runtime</span><i></i>
-        <span>27 stdlib modules</span><i></i>
-        <span>185 unit tests</span><i></i>
-        <span>258 / 258 fixtures</span><i></i>
+        <span>No Valvet runtime</span><i></i>
+        <span>Typed frames</span><i></i>
+        <span>246 Rust tests</span><i></i>
+        <span>432 / 432 fixtures</span><i></i>
       </div>
     </div>
   </section>
@@ -224,9 +226,9 @@ println(mean(vec![2.0, 4.0, 6.0, 8.0]))</code></pre>
     <div class="container">
       <div class="section-head split">
         <div>
-          <h2>Safe. Fast. Small.</h2>
+          <h2>Safe. Native. Small.</h2>
         </div>
-        <p class="section-lede">Every part of Valvet serves the same goal: analysis that compiles to one native binary you can reason about. No interpreter. No collector. No runtime to deploy.</p>
+        <p class="section-lede">Every part of Valvet serves the same goal: analysis that compiles to one native binary you can reason about. No Valvet interpreter or runtime to deploy, and no garbage collector.</p>
       </div>
       <div class="why-grid">
         <article class="feature-card why-safe reveal-up" data-tilt data-tilt-max="2.5">
@@ -241,24 +243,24 @@ println(mean(vec![2.0, 4.0, 6.0, 8.0]))</code></pre>
 <span class="diag-loc">  --&gt; prog.valvet:3:5</span>
 <span class="diag-help">  help: use `var` bindings and `&amp;mut` for mutation</span></pre>
           </div>
-          <p class="card-foot">Memory bugs that slip through testing in scripting languages are compile errors here.</p>
+          <p class="card-foot">Ownership and borrow checks diagnose invalid references before generated C runs.</p>
         </article>
 
-        <article class="feature-card why-fast reveal-up" data-tilt data-tilt-max="2.5">
+        <article class="feature-card why-native reveal-up" data-tilt data-tilt-max="2.5">
           <div class="card-copy">
-            <h3>Fast</h3>
-            <p>Tight loops over vectors run at C speed, with no interpreter and no collector pauses.</p>
+            <h3>Native</h3>
+            <p>Valvet lowers checked programs to C11, then a system compiler builds the native executable.</p>
           </div>
-          <div class="speed-visual" aria-label="A 3000 sweep model fit finishes in a tenth of a second">
-            <div class="speed-top">
-              <span class="speed-value">0.10<span>s</span></span>
-              <span class="speed-label">3000-sweep model fit<br><small>over real data</small></span>
+          <div class="compiler-visual" aria-label="Compilation path: Valvet source, C11, native executable">
+            <div class="compiler-top">
+              <span class="compiler-value">C11</span>
+              <span class="compiler-label">native output<br><small>one translation unit</small></span>
             </div>
-            <div class="speed-bars" aria-hidden="true">
-              <i style="--h: 28%"></i><i style="--h: 38%"></i><i style="--h: 34%"></i><i style="--h: 52%"></i><i style="--h: 47%"></i><i style="--h: 66%"></i><i style="--h: 61%"></i><i style="--h: 78%"></i><i style="--h: 72%"></i><i style="--h: 92%"></i>
+            <div class="compile-steps" aria-hidden="true">
+              <span class="compile-node">Valvet</span><span class="compile-arrow">→</span><span class="compile-node">C11</span><span class="compile-arrow">→</span><span class="compile-node">Native</span>
             </div>
           </div>
-          <p class="card-foot">Compiles through C11 to native binaries. No interpreter, no collector pauses.</p>
+          <p class="card-foot">Compiles through C11 to a native binary, with no Valvet runtime library or garbage collector.</p>
         </article>
 
         <article class="feature-card why-small reveal-up">
@@ -305,7 +307,7 @@ fun area(s: Shape): Float64 {
         <div>
           <h2>Built for data work.</h2>
         </div>
-        <p class="section-lede">0.3.0 brings R-style models, SQL over frames, inference, causal tools, and reporting. 0.2.0 added units, frames, autodiff, and deterministic parallelism.</p>
+        <p class="section-lede">Version 0.5.0 adds typed frames, explicit missing values, multi-key grouping, typed joins and windows, bounded Parquet and Arrow I/O, and flat lazy plans.</p>
       </div>
 
       <div class="bento">
@@ -414,7 +416,7 @@ formatted mean.valvet</code></pre>
         <div>
           <h2>Write the analysis.<br>Ship the binary.</h2>
         </div>
-        <p class="section-lede">Every sample below runs as shown with <code>valvet run</code>. No wrapper, no imports for the basics, no runtime to initialize.</p>
+        <p class="section-lede">Every sample below runs as shown with <code>valvet run</code>. No wrapper, no imports for the basics, no Valvet runtime to initialize.</p>
       </div>
 
       <div class="showcase">
@@ -638,8 +640,8 @@ println(q.cols[1 as Int64]);</code></pre>
 
           <div class="stage-panel" id="stage-panel-link" role="tabpanel" aria-labelledby="stage-link" data-stage-panel="link" hidden>
             <div class="stage-copy">
-              <h3>No runtime to install.</h3>
-              <p>A plain C compiler produces a dependency-free native binary. <code>check</code> needs only Rust; <code>build</code> and <code>run</code> add the C compiler.</p>
+              <h3>No Valvet runtime to install.</h3>
+              <p>A plain C compiler produces one native binary; Valvet has no runtime library to package. <code>check</code> needs only Rust; <code>build</code> and <code>run</code> add the C compiler.</p>
             </div>
             <div class="stage-visual link-visual" data-ui>
               <div class="terminal-mini large">
@@ -691,8 +693,8 @@ $ ./target/valvet/sample
         </article>
       </div>
       <div class="test-gates reveal-up">
-        <div><strong>185</strong><span>unit tests</span></div>
-        <div><strong>258 / 258</strong><span>fixtures in debug and release</span></div>
+        <div><strong>246</strong><span>Rust tests</span></div>
+        <div><strong>432 / 432</strong><span>fixtures in debug and release</span></div>
         <div><strong>ASan + UBSan</strong><span>clean output</span></div>
         <div><strong>0</strong><span>compiler panics</span></div>
       </div>
@@ -770,7 +772,7 @@ $ ./target/valvet/sample
               <div><h3>Clone and build</h3><p>Rust builds the compiler. The C compiler handles only the last mile.</p></div>
             </div>
             <div class="install-step">
-              <div><h3>Run a program</h3><p>Top-level statements run directly. No wrapper, no runtime to initialize.</p></div>
+              <div><h3>Run a program</h3><p>Top-level statements run directly. No wrapper and no Valvet runtime to initialize.</p></div>
             </div>
             <div class="install-step">
               <div><h3>Read the tour</h3><p>Ownership, units, frames, SQL, models, and the CLI in one guide.</p></div>
@@ -832,7 +834,7 @@ cargo build --release
             <li>CLI</li>
           </ul>
           <span class="cta-link">Read the docs <span aria-hidden="true">→</span></span>
-          <span class="cta-docs-mark" aria-hidden="true" data-ui>24</span>
+          <span class="cta-docs-mark" aria-hidden="true" data-ui>25</span>
           <span class="cta-docs-caption">reference sections</span>
         </a>
         <div class="cta-side">
@@ -864,19 +866,19 @@ cargo build --release
         <span class="brand-name">Valvet</span>
       </a>
       <p>A small, safe, compiled language for data work.</p>
-      <p class="footer-note">Native binaries. No garbage collector. No runtime.</p>
+      <p class="footer-note">Native binaries. No Valvet runtime. No garbage collector.</p>
     </div>
     <div class="footer-col">
       <h2>Language</h2>
       <a href="index.html#why">Why Valvet</a>
-      <a href="index.html#features">Features</a>
+      <a href="features.html">Features</a>
       <a href="index.html#code">Code</a>
       <a href="index.html#pipeline">How it runs</a>
     </div>
     <div class="footer-col">
       <h2>Resources</h2>
       <a href="docs.html">Documentation</a>
-      <a href="examples.html">Examples</a>
+      <a href="examples.html">Examples</a><a href="tutorial.html">Tutorial</a><a href="compare.html">Compare</a>
       <a href="index.html#stdlib">Standard library</a>
       <a href="index.html#install">Install</a>
     </div>
@@ -884,7 +886,7 @@ cargo build --release
       <h2>Project</h2>
       <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">GitHub</a>
       <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/blob/main/LICENSE">License</a>
-      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet">Issues</a>
+      <a href="https://github.com/Kenneth-Cho-InfoSec/valvet/issues">Issues</a>
       <a href="privacy.html">Privacy policy</a>
     </div>
   </div>

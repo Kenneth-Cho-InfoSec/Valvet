@@ -1238,7 +1238,7 @@ html[data-theme="dark"] .hero-deer {
   grid-column: span 7;
 }
 
-.why-fast {
+.why-native {
   grid-column: span 5;
 }
 
@@ -1328,7 +1328,7 @@ html[data-theme="dark"] .hero-deer {
   color: #6ee7d0;
 }
 
-.speed-visual {
+.compiler-visual {
   margin-top: 26px;
   padding: 22px;
   border: 1px solid var(--line);
@@ -1336,14 +1336,14 @@ html[data-theme="dark"] .hero-deer {
   background: var(--accent-3);
 }
 
-.speed-top {
+.compiler-top {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
   gap: 18px;
 }
 
-.speed-value {
+.compiler-value {
   color: var(--ink);
   font-family: var(--font-display);
   font-size: clamp(2.6rem, 5vw, 4rem);
@@ -1352,49 +1352,42 @@ html[data-theme="dark"] .hero-deer {
   line-height: 0.9;
 }
 
-.speed-value span {
-  margin-left: 2px;
-  color: var(--muted);
-  font-size: 0.35em;
-}
-
-.speed-label {
+.compiler-label {
   color: var(--muted);
   font-size: 0.82rem;
   line-height: 1.45;
   text-align: right;
 }
 
-.speed-label small {
+.compiler-label small {
   color: var(--faint);
 }
 
-.speed-bars {
+.compile-steps {
   display: flex;
-  align-items: flex-end;
-  gap: 6px;
-  height: 72px;
-  margin-top: 22px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
 }
 
-.speed-bars i {
-  flex: 1;
-  height: var(--h);
-  border-radius: 4px 4px 2px 2px;
-  background: linear-gradient(180deg, var(--accent), rgba(124, 92, 255, 0.16));
-  transform-origin: bottom;
-  animation: barGrow 1.1s var(--ease) both;
+.compile-node {
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  white-space: nowrap;
 }
 
-.speed-bars i:nth-child(2) { animation-delay: 0.04s; }
-.speed-bars i:nth-child(3) { animation-delay: 0.08s; }
-.speed-bars i:nth-child(4) { animation-delay: 0.12s; }
-.speed-bars i:nth-child(5) { animation-delay: 0.16s; }
-.speed-bars i:nth-child(6) { animation-delay: 0.2s; }
-.speed-bars i:nth-child(7) { animation-delay: 0.24s; }
-.speed-bars i:nth-child(8) { animation-delay: 0.28s; }
-.speed-bars i:nth-child(9) { animation-delay: 0.32s; }
-.speed-bars i:nth-child(10) { animation-delay: 0.36s; }
+.compile-arrow {
+  color: var(--accent);
+}
+
 
 .syntax-list {
   display: flex;
@@ -3645,11 +3638,6 @@ html[data-theme="dark"] .filter-btn.is-active span {
   100% { transform: translateX(100%); }
 }
 
-@keyframes barGrow {
-  from { transform: scaleY(0); }
-  to { transform: scaleY(1); }
-}
-
 @keyframes panelIn {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: none; }
@@ -3759,7 +3747,7 @@ html[data-theme="dark"] .filter-btn.is-active span {
   }
 
   .why-safe,
-  .why-fast {
+  .why-native {
     grid-column: span 12;
   }
 
@@ -4175,13 +4163,13 @@ html[data-theme="dark"] .filter-btn.is-active span {
     padding-left: 34px;
   }
 
-  .speed-top {
+  .compiler-top {
     align-items: flex-start;
     flex-direction: column;
     gap: 12px;
   }
 
-  .speed-label {
+  .compiler-label {
     text-align: left;
   }
 
@@ -4294,7 +4282,7 @@ html[data-theme="dark"] .filter-btn.is-active span {
   text-transform: none;
 }
 
-.speed-label small {
+.compiler-label small {
   font-size: 0.82rem;
 }
 
@@ -4398,4 +4386,51 @@ html[data-theme="dark"] .filter-btn.is-active span {
     border: 1px solid #ddd;
     box-shadow: none;
   }
+}
+
+.feature-flow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 9px;
+  max-width: none !important;
+  margin: 18px 0 26px !important;
+  padding: 0 !important;
+  list-style: none;
+}
+
+.feature-flow li {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 13px 11px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--surface);
+}
+
+.feature-step {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.feature-flow strong {
+  color: var(--ink);
+  font-size: 0.83rem;
+}
+
+.feature-flow small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 980px) {
+  .feature-flow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 580px) {
+  .feature-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
